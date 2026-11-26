@@ -1,9 +1,13 @@
-//! Sandboxed third-party server-side validators: opt-in, per-world, per-module WASM code run
-//! inside `wasmi` over the `system` band only, after the engine's own validation. A validator
-//! can refuse a write (a structured reason) and nothing else — see `runtime` for the host,
-//! `registry` for the compiled-module cache. Every validator call is fuel/memory/instance-capped
-//! and has no host imports beyond a rate-limited `env.log`; `VALIDATOR_FAULT_LIMIT` bounds how
-//! many consecutive technical failures a module gets before a caller auto-disables it.
+//! This module runs sandboxed third-party server-side validators.
+//!
+//! A validator is opt-in, per-world, per-module WASM code run inside `wasmi` over a document's
+//! `system` band and name, after the document passes `validate_structural`.
+//!
+//! A validator can refuse a write (a structured reason) and nothing else; see `runtime` for the
+//! host and `registry` for the compiled validators. Every validator call is
+//! fuel/memory/instance-capped and has no host imports beyond a rate-limited `env.log`;
+//! `VALIDATOR_FAULT_LIMIT` bounds how many consecutive technical failures a module gets before a
+//! caller auto-disables it.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -43,15 +47,10 @@ pub enum FaultKind {
     BadPointer,
     /// The serialized `ValidatorInput` exceeded 1 MiB; the module was never instantiated.
     InputTooLarge,
-    /// The call COMPLETED (an authored accept/refuse) but its `Instant`-measured duration
-    /// exceeded the 50 ms per-call budget — a slow-but-under-fuel validator, reclassified as
-    /// a fault. A call that instead traps keeps its precise kind (an infinite loop stays
-    /// `OutOfFuel`); both count toward auto-disable identically.
-    TooSlow,
-    /// The call never returned at all within the 250 ms `tokio::time::timeout` hang guard
+    /// The call never returned at all within the 10 s `tokio::time::timeout` hang guard
     /// around the `spawn_blocking` join (fuel bounds wasm instructions, not a stalled host
     /// import or allocator loop) — the blocking thread is abandoned, and this is logged at
-    /// `warn`.
+    /// `warn`. No other fault depends on elapsed wall-clock time.
     Hung,
     /// Any other wasmi trap (unreachable, integer overflow, out-of-bounds table access, ...).
     Trap,
@@ -157,8 +156,8 @@ pub enum ValidatorVerdict {
 pub struct ValidatorInput {
     /// The document's `doc_type`.
     pub doc_type: String,
-    /// `"create"` or `"update"` (a `Move` op never touches `system`, so a validator never sees
-    /// `"move"` in practice — the ABI reserves the value but nothing currently sends it).
+    /// `"create"` or `"update"` (`validate_document`, the only non-test constructor of this
+    /// input, writes only these two).
     pub op: String,
     /// Post-image `system` band.
     pub system: serde_json::Value,
@@ -187,16 +186,16 @@ struct ValidatedNode<'a> {
     name: Option<&'a str>,
 }
 
-/// Runs Phase 1's own pure structural validators against `doc` in place, in the EXACT order
-/// `SqliteRepository::apply_intent`'s Create and Update arms each run before their own Phase 2
+/// Runs the validation pass's own pure structural validators against `doc` in place, in the EXACT order
+/// `SqliteRepository::apply_intent`'s Create and Update arms each run before their own apply pass
 /// write: `validate_system_size`, `validate_property_overrides`, `validate_engine_tree`,
 /// `validate_system_size` again (the engine/note-derivation re-check both arms perform), then
 /// `validate_containment` and `validate_system_schema_tree` — every one of which already
 /// recurses `doc.embedded` on its own, so this runs once at the tree root, never per node.
-/// Returns Phase 1's own error on the first failure: a document that fails here would fail
-/// Phase 1 identically once it reaches the write transaction, so `validate_document` returns
+/// Returns the validation pass's own error on the first failure: a document that fails here would fail
+/// the validation pass identically once it reaches the write transaction, so `validate_document` returns
 /// before consulting any validator — a malformed submission never reaches, and never faults, a
-/// validator. Phase 1 inside the transaction re-runs this exact chain, unchanged, and remains
+/// validator. The validation pass inside the transaction re-runs this exact chain, unchanged, and remains
 /// the sole authority over what actually commits.
 fn validate_structural(doc: &mut Document, schemas: &[SchemaDeclaration]) -> Result<(), DataError> {
     validation::validate_system_size(doc)?;
@@ -231,7 +230,7 @@ fn collect_validated_nodes<'a>(
     }
 }
 
-/// First runs `validate_structural` (Phase 1's own pure structural chain) against `doc`,
+/// First runs `validate_structural` (the validation pass's own pure structural chain) against `doc`,
 /// returning its error untouched on failure without consulting any validator. Only a
 /// structurally valid `doc` reaches the wasm pass below: every matching enabled+opted-in
 /// validator, against `doc` and its embedded descendants, in ASCENDING module-id order —

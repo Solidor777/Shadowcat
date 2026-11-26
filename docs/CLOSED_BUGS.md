@@ -3,6 +3,203 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Gate gap — `svelte-ignore` suppressions were not scanned
+
+- [Medium, FIXED] `pnpm lint:allowances` read Rust and TypeScript suppressions but not Svelte
+  `svelte-ignore` comments, so the rule against unapproved suppressions was unenforced for
+  `.svelte` files. Fixed in `c475fd5a`: a `svelte-ignore` that opens a comment in a `.svelte`,
+  `.ts`, `.js` or `.mjs` file fails the gate, with or without an allowlist entry (it is never
+  approvable); prose that only names the directive passes. Every annotation was removed by fixing
+  the code, seeding the prop once through `untrack()`: `ToolRail` (`d516a7d9`),
+  `VisualKindEditor` (`5f386f49`), `AssetBrowser` (`727d4601`), and the `SurfaceHarness` and
+  `AppContextCapture` fixtures (`05443e7b`). Tests: four in `check-lint-allowances.test.mjs`;
+  `git grep svelte-ignore -- src` is empty.
+
+## Server — an in-app restore could swap the database and then fail on the assets, leaving a half restore
+
+- [High, FIXED] `restore_backup` swapped the database file and the assets directory as two
+  independent steps, so an assets failure after the database swap left a database from one backup
+  beside assets from another. The half restore was reproduced before the fix. Fixed in `4e7e7c13`:
+  `restore_backup` stages copies of both first, swaps the assets (old directory renamed to
+  `.restore-old`), and renames the database last, which is the one atomic step; a database rename
+  failure undoes the assets swap, and `.restore-old` goes to the trash after success. A trash
+  failure after both swaps succeed is a logged warning, never a failed restore, because the
+  restore already applied. Tests: three in the `backup` suite, one mutation observed red.
+
+## Server — `serve_with` did not stop on the WebSocket shutdown signal
+
+- [Medium, FIXED] `http::serve_with` kept serving after `ws.shutdown` fired, so a restore that
+  asked the server to stop (and every other shutdown trigger routed through the same signal) did
+  not end the listener. Fixed in `c54ade13` (the in-app backup routes).
+
+## Permissions — a player's template pull could write GM-only token fields
+
+- [High, FIXED] `merge_intents` applied a `TemplateMerge` without the field gates
+  `authorize_update_change` enforces, so a player could write the carried light and
+  `identity_hidden` of a token through a template pull. One list, `gm_only_field_touched`
+  (carried light, `identity_hidden`, `lock_rotation`, `facing_vision`), now feeds the Create gate,
+  the Update gate and `update_authorized` for the merge path. Fixed in `f2190a45` and `a5e4c9fa`
+  with three Rust tests and five mutations observed red.
+
+## Permissions — an instanced token's embedded actor copy leaked the hidden identity
+
+- [High, FIXED] With `identity_hidden` set, the identity pointers hid only the token's own fields;
+  the embedded actor copy on an instanced token still carried `/name`, `/engine/displayName`,
+  `/engine/visual` and `/engine/faction` to a player who may not read the actor. Three tests
+  failed before the fix. Fixed in `68f20779`: `redaction_target` and `redact_pointers` follow
+  `/embedded/<collection>/<index>/...` hops, and `identity_hidden_pointers` adds the four copy
+  pointers. Size, shape, conditions, light, vision and movement stay readable.
+
+## Permissions — recipient id lists leaked through `permissions.property_overrides`
+
+- [High, FIXED] A message or note with a `Recipients` visibility tier stored the recipient ids in
+  `permissions.property_overrides`, and `filter_properties` delivered those lists on Create and
+  Update to viewers who were not on them. Fixed in `bab28f4b`: the filters empty any list the viewer
+  is not on, and `scrub_recipient_lists` applies the same rule to a command's old and new images.
+  Tests run through `filter_command` with five of twenty-six sabotage cases red. A secret
+  segment's stub also now fails closed to `GmOnly` when its visibility is absent.
+
+## Chat — a recalculated roll lost its previous raw total from search
+
+- [Low, FIXED] A recalculated roll's previous raw total was dropped from search results. The serde
+  defaults added on the redacted roll fields for blind rolls (`060e4607`) close that gap.
+
+## Scene — `RegionEngine::validate` accepted non-finite coordinates
+
+- [Medium, FIXED] A region with a NaN or infinite coordinate passed validation. Fixed in
+  `f045c54a`; the mutation was observed red.
+
+## Build — `build:all` failed on strict typedoc warnings
+
+- [Medium, FIXED] The strict documentation build failed on 20 warnings: unused `@param` names on
+  `AudioEngine`, `OneShotPlayer` and `AudioApi`, duplicate comments on `CoreHooks`, and a link to
+  the unexported `PanTarget` from `Camera.panTo`. Fixed in `b53f98e5` (named `AudioChannelPatch`
+  and `OneShotOptions`, `CoreHooks` extends the two hook interfaces, `PanTarget` exported); a
+  later strict warning on the `Visibility::Recipients` and `NotePageKind` discriminants was fixed in
+  `6cfadcaa` (struct variant with the same wire form, and the typedoc exemption for the tag class).
+
+## Server — two load-dependent test flakes in the egress tests
+
+- [Flake, FIXED] `media_range_stall`'s keeps-reading control and the three ping-flood tests
+  (`egress_stall_h2`) failed under load; the media-range one shared the lump premise the `egress_stall` fix
+  established. Fixed in `e7ae4edd` (the shared floors-per-window and lump-gap
+  premise) and `2ec652e4` (an `EventTimes` gap control, `FLOOD_GAP_BOUND` 500 ms); windowed e2e
+  servers now pipe stdout so a cut line is visible (`6265588f`).
+- [Flake, FIX LANDED, CI CONFIRMATION OWED] `an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_a_stream`
+  failed on Windows CI with a cut at 3.57 s against a derived 1.25 s. The cause is inferred, not
+  reproduced: a later lump accepted by the CI socket restarted the stall window. Fixed in
+  `bc5c936f` by measuring the cut from the last floor-sized acceptance (`WriteStats::note_accepted`,
+  `last_progress_at`, `measure::record_cut_after_progress`) in the h1, h2 and ping-flood
+  stopped-reader tests; four tests pin the measure. Local Windows runs read 751 to 1002 ms alone.
+
+## E2E — WebKit on Linux reports a refused certificate as a cancelled navigation
+
+- [Flake, FIXED by an engine-specific allowance, CI CONFIRMATION OWED] In
+  `https-trust.spec.ts`, the `https-webkit` project on Linux reported a refused certificate as
+  "Operation was cancelled" in 18 of 310 isolated navigations (about 5.8 %), at about 25 ms and
+  with no detached frame. The spec accepts that wording for `https-webkit` on Linux only and still
+  asserts `CONNECTION_LEVEL_FAILURE`. The final CI pass confirms the Ubuntu leg.
+
+## E2E — the WebKit-on-Linux long-audio leg failed intermittently on the engine's own end-of-track behaviour
+
+- [Flake, FIXED by an engine-specific allowance] The `long-audio-https-webkit` leg of
+  `long-audio.spec.ts` failed in about 6 of 8 runs on Linux CI (Playwright WebKit, GStreamer
+  backend, WebM derivative). Two shapes, both from the engine's player, not from the server (the
+  server's responses are identical in passing and failing runs: `Accept-Ranges: bytes`, the same
+  lengths): (a) the element fires `ended` before the track's end, so the last-slot read at server
+  position about 1195.1 finds it paused; the element's `currentTime` was 1196.1 to 1196.3 s of the
+  1200 s track, 3.7 to 3.9 s early; (b) after the server `Seek` to 15 seconds before the end, the
+  engine re-requests the whole file with no `Range` header instead of the tail range, so the
+  "served by a ranged response" and "starts in the last slice region" checks fail. Removing the
+  once-per-second hard seek (`syncElementPosition` now adopts a constant reported offset) did not
+  change either shape. The spec's `ENGINE_ALLOWANCES` entry for `webkit:linux` now accepts an
+  early end of at most 5 s (`maxEarlyEndSecs`, about 1.1 s above the largest measured) from a
+  paused element with a recorded `ended` event, skipping only the paused and position-code checks
+  of that read, and accepts a full unranged `200` as the answer to the near-end seek when no `206`
+  arrives. Every other assertion is unchanged on that pair, and Chromium, Firefox and
+  WebKit-on-macOS have no allowance.
+
+## Server — `egress_stall`'s keeps-reading control was cut on Linux because the reader's rate sat at the socket's lump interval
+
+- [Flake, FIXED] `an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows` read 64 floors
+  (1 MiB) per 1 s window. Measured on the Linux runner (`egress_measure h1-progress` and
+  `socket-grants`, `tcp_wmem` 4096 16384 4194304): the socket accepts 0.92 to 1.05 MB lumps, so a
+  1 MiB/s reader sees a lump every 0.7 to 1.1 s, the same as the window, and a gap of a whole window
+  with fewer than the floor accepted is exactly what the connection unit cuts (gaps of 1011 to 1115
+  ms were printed). At 512 floors (8 MiB per window) the same measure printed 1.1 to 1.9 MB lumps
+  with a widest gap of 305 ms in 10 runs, no cut. The unit is unchanged; the test's premise was wrong for
+  Linux. The control now reads 512 floors per window and asserts the widest gap between
+  acceptances stays under half a window (`LUMP_GAP_BOUND`) and that the reader took at least 1 MiB
+  per window (`MIN_FLOORS_PER_WINDOW_READ`, lower than the request because the Windows socket
+  accepts less than 8 MiB per window).
+
+## Audio — a streaming track's element drifted ahead of the server position at about 2 percent per second
+
+- [High, FIXED] `TrackPlayer.sync`'s streaming arm set `el.playbackRate` to `1 + SYNC_RATE_NUDGE`
+  when the element was behind the server position and returned it to 1 only at a drift of exactly 0,
+  and `sync` ran only when `AudioEngine.applyState` did on an `audio-state` change, so the nudge
+  engaged once and stayed: the element's `currentTime` minus the server position grew 0.0202 seconds
+  per second and left the audible 10-second slot at about 305 seconds. Fixed by the engine's
+  `SYNC_TICK_MS` tick (`90a1f3e1`) and the single rate decision `rateForDrift` with an engage bound of
+  `SYNC_RATE_ENGAGE_SECS` and a release bound of `SYNC_RATE_RELEASE_SECS`, shared by the streaming
+  arm and `FallbackTrackPlayer` through `syncElementPosition` (`0b1eb013`). Tests:
+  `engine-sync.test.ts` (the 300-second simulated run stays under 0.05 seconds of drift; without the
+  tick it exceeds 1 second), `rate-deadband.test.ts` (jitter of 5 ms over 60 ticks writes
+  `playbackRate` zero times, real drift engages then releases). Mutants observed red: the tick
+  callback replaced by a no-op (2 red), both bounds set to 0 (all 6 red). End to end:
+  `long-audio-playthrough.spec.ts` over plain HTTP/1.1 and over HTTPS/h2, 20 minutes real time each,
+  release server, all 120 slots matched the position code with no media error and the natural end
+  stopped the server entry; element drift stayed within 0.0064 to 0.0800 seconds on h1 and 0.0151 to
+  0.0815 seconds on h2 (it was +6.05 seconds at slot 30 before the fix). A first h1 run (drift 0.0018
+  to 0.0455 seconds) failed only on the spec's own gap assertion, which counted the start-up requests
+  that precede the first possible reading; the assertion now counts gaps of at least the egress
+  window. The sampled `long-audio-*` projects stayed green (10 passed).
+
+## Audio — a suspended or interrupted context, or a refused `play()`, left playback silent until the page was reloaded
+
+- [High, FIXED] The engine did not observe its `AudioContext` leaving `running` (phone call, tab
+  backgrounding, OS interruption) nor a `play()` rejected for lack of a gesture, so playback stayed
+  silent and the unlock control stayed hidden. Fixed in three parts. A buffered track's audible
+  position is measured on the audio context clock (`PositionAnchor.ctxTime`), so a stalled context
+  surfaces as drift and the existing seek arm restarts the source at the server position
+  (`931c701b`). Elements start only through `PlaybackGate`, which always handles the `play()`
+  rejection and marks a `NotAllowedError` element blocked (`996badbc`). `AudioEngine` observes
+  `onstatechange` and page visibility, asks a non-running context to resume once per transition,
+  re-applies the latest state, and derives `needsGesture` (on `AudioApi` and `WorldSession.audio`)
+  from a rejected resume, a context still not running after `RESUME_WAIT_MS`, or a refused play
+  (`086d2fdb`); the status bar shows the unlock control whenever `needsGesture` is true and its click
+  retries (`efd08e7c`). Tests: `track-player.test.ts` "audio-clock position", `playback-gate.test.ts`,
+  `engine-recovery.test.ts` cases (the interruption, rejected-resume, pending-resume,
+  hidden-to-visible, statechange-to-running and after-dispose cases) plus the gesture-retry and
+  no-duplicate-player cases, `StatusBar` needsGesture cases. Mutants observed red: wall-clock
+  position arithmetic (2 red), gate without the paused/blocked check (6 red), no statechange handler
+  (the interruption, rejected-resume and statechange-to-running cases red), resume on every
+  statechange (the interruption and statechange-to-running cases red), `needsGesture` only from
+  rejection (the pending-resume case red), recovery with a fresh entry id (duplicate-player test
+  red), the visibility handler without its resume or resuming while hidden (the hidden-to-visible
+  case red), `dispose` leaving `onstatechange` installed (the after-dispose case red), the status bar
+  ignoring `needsGesture` (1 red). Not verified on a real device interruption.
+
+## Audio — no periodic synchronisation existed, so any drift or missed `audio-state` change persisted
+
+- [High, FIXED] `AudioEngine` re-synchronised its players only when an `audio-state` change arrived;
+  a position error, a dropped update or a page returning from the background was never corrected
+  until the next unrelated change. `AudioEngine` now runs a `SYNC_TICK_MS` tick and a page-visible
+  trigger, both through `applyState` over the latest state (idempotent per entry id), and `unlock`
+  replays the same latest state (`90a1f3e1`). Tests and mutants as in the drift entry above
+  (`engine-sync.test.ts`, 8 tests, including its dispose case: the timer is cleared, the observer is
+  removed and nothing re-applies; no-op timer callback 2 red).
+
+## Audio panel — the seek slider's range was the stored length in milliseconds, or only 60 seconds past the position
+
+- [Medium, FIXED] `AudioPanel`'s now-playing seek slider took its `max` from the asset listing it
+  fetched once at mount, as `Math.max(duration_ms, position + 60)`: the unit was milliseconds against
+  a slider in seconds, and an asset created after the panel mounted was absent from the listing, so
+  the slider stopped 60 seconds past the current position and the GM could not seek a long track to
+  its last seconds. The duration is now read per playing asset from its own metadata
+  (`getAssetMeta`) the first time an entry for it plays, in seconds. Test:
+  `AudioPanel.test.ts`'s seek-slider case.
+
 ## Server / realtime — replay redaction resolved a document's permission set against current policy instead of the policy in force at the historical seq being replayed
 
 - [Critical, FIXED] `filter_command`'s `Update` arm and `collect_hidden` derived the hidden-pointer

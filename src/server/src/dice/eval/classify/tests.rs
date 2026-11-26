@@ -76,3 +76,11 @@ fn oriented_margin_flips_with_direction() {
     assert_eq!(oriented_margin(Direction::HighWins, 15, 10), 5);
     assert_eq!(oriented_margin(Direction::LowWins, 8, 10), 2); // rolling under: lower is better
 }
+
+#[test]
+fn oriented_margin_saturates_at_the_i64_bounds() {
+    assert_eq!(oriented_margin(Direction::HighWins, i64::MIN, 1), i64::MIN);
+    assert_eq!(oriented_margin(Direction::HighWins, i64::MAX, -1), i64::MAX);
+    assert_eq!(oriented_margin(Direction::LowWins, i64::MIN, 1), i64::MAX);
+    assert_eq!(oriented_margin(Direction::LowWins, i64::MAX, -1), i64::MIN);
+}

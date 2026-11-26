@@ -1,20 +1,31 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
+  import { createDragController, type DragTarget, type DropResult } from "@shadowcat/core";
   import { computeGridWindow } from "./windowing";
+  import { applySelectionGesture } from "./selectionGesture";
 
   let {
     items,
     selected,
+    favorites = [],
+    onToggleFavorite,
     onSelectionChange,
     onOpen,
     onNearEnd,
     appendOnClick = false,
+    getDropTargets,
+    onDropAssets,
+    onDragHover,
   }: {
     /** The filtered listing, in server sort order. */
     items: Asset[];
     /** Selected asset ids (owned by the browser). */
     selected: string[];
+    /** The account's favorite asset ids, drawn as a filled star on their tiles. */
+    favorites?: string[];
+    /** Called with an asset id when its star is pressed. Omitted = no star is drawn. */
+    onToggleFavorite?: (id: string) => void;
     /** Called with the full next selection on any selection gesture. */
     onSelectionChange: (ids: string[]) => void;
     /** Double-click / keyboard activation of one tile. */
@@ -24,9 +35,30 @@
     /** Ordered multi-pick mode: a plain click APPENDS/toggles (preserving
      * pick order, shown as tile badges) instead of replacing the selection. */
     appendOnClick?: boolean;
+    /** The drop targets (folder rows, the all-assets row) a tile drag can land on. Omitted =
+     * tiles are not draggable. */
+    getDropTargets?: () => DragTarget[];
+    /** Called with the dragged asset ids (the selection when the dragged tile is selected, else
+     * just that tile) and the target id the pointer was released over. */
+    onDropAssets?: (ids: string[], targetId: string) => void;
+    /** Reports the live drop resolution while a tile is dragged, `null` when the drag ends. */
+    onDragHover?: (result: DropResult | null) => void;
   } = $props();
 
   const { assets: resolver, t } = getAppContext();
+
+  // Pointer-driven tile drag: touch-capable, unlike the native drag protocol. The controller
+  // is a drop zone (no snapping): a release outside every target drops nothing.
+  const drag = createDragController({
+    axis: "grid",
+    getTargets: () => getDropTargets?.() ?? [],
+    overIsContainer: () => true,
+    onHover: (result) => onDragHover?.(result),
+    onDrop: (result) => {
+      if (!result.over) return;
+      onDropAssets?.(selected.includes(result.dragged) ? selected : [result.dragged], result.over);
+    },
+  });
 
   // Scroll geometry backing the virtualized window — written only from real
   // measurement points (scroll handler, mount), never inferred.
@@ -59,8 +91,10 @@
     return () => ro.disconnect();
   });
 
-  // Tile track is minmax(72px,1fr) with a 0.25rem gap → ~76px per column.
-  const columns = $derived(Math.max(1, Math.floor(clientWidth / 76)));
+  // Tile track is minmax(96px,1fr) with a 0.25rem gap → ~100px per column. The 96px floor keeps the
+  // tile's centre clear of the 44px favourite star anchored at its bottom-left corner (star right
+  // edge 46px < centre 48px), so a click or tap on the middle of a tile always reaches the tile.
+  const columns = $derived(Math.max(1, Math.floor(clientWidth / 100)));
   const windowed = $derived.by(() =>
     computeGridWindow(scrollTop, clientHeight, scrollHeight, items.length, columns),
   );
@@ -91,21 +125,16 @@
    * ```
    */
   function select(idx: number, ev: MouseEvent): void {
-    const id = items[idx].id;
-    if (ev.shiftKey && anchor !== null) {
-      const [lo, hi] = anchor <= idx ? [anchor, idx] : [idx, anchor];
-      onSelectionChange(items.slice(lo, hi + 1).map((a) => a.id));
-      return;
-    }
-    if (ev.ctrlKey || ev.metaKey || appendOnClick) {
-      anchor = idx;
-      onSelectionChange(
-        selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id],
-      );
-      return;
-    }
-    anchor = idx;
-    onSelectionChange([id]);
+    const next = applySelectionGesture(
+      items.map((a) => a.id),
+      idx,
+      ev,
+      anchor,
+      selected,
+      appendOnClick,
+    );
+    anchor = next.anchor;
+    onSelectionChange(next.selection);
   }
 
   /** Scroll handler: refreshes geometry and fires load-more near the end.
@@ -120,7 +149,7 @@
     if (
       onNearEnd &&
       scrollHeight > 0 &&
-      scrollTop + clientHeight >= scrollHeight - 2 * Math.max(rowHeight, 76)
+      scrollTop + clientHeight >= scrollHeight - 2 * Math.max(rowHeight, 100)
     ) {
       onNearEnd();
     }
@@ -139,27 +168,37 @@
     <div style:height="{topSpacer}px"></div>
     <div class="grid">
       {#each windowedItems as a, i (a.id)}
-        <button
-          type="button"
-          class="tile"
-          class:selected={selected.includes(a.id)}
-          data-testid="asset-tile"
-          aria-pressed={selected.includes(a.id)}
-          title={a.original_name}
-          draggable="true"
-          ondragstart={(e) =>
-            e.dataTransfer?.setData(
-              "application/x-shadowcat-assets",
-              JSON.stringify(selected.includes(a.id) ? selected : [a.id]),
-            )}
-          onclick={(e) => select(windowed.start + i, e)}
-          ondblclick={() => onOpen?.(a.id)}
-        >
-          <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" />
-          {#if appendOnClick && selected.includes(a.id)}
-            <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
+        <div class="cell">
+          <button
+            type="button"
+            class="tile"
+            class:selected={selected.includes(a.id)}
+            data-testid="asset-tile"
+            aria-pressed={selected.includes(a.id)}
+            title={a.original_name}
+            onpointerdown={(e) => {
+              if (getDropTargets) drag.beginDrag(a.id, e);
+            }}
+            onclick={(e) => select(windowed.start + i, e)}
+            ondblclick={() => onOpen?.(a.id)}
+          >
+            <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" draggable="false" />
+            {#if appendOnClick && selected.includes(a.id)}
+              <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
+            {/if}
+          </button>
+          {#if onToggleFavorite}
+            <button
+              type="button"
+              class="star"
+              class:on={favorites.includes(a.id)}
+              data-testid="asset-favorite"
+              aria-pressed={favorites.includes(a.id)}
+              aria-label={favorites.includes(a.id) ? t("assetBrowser.unfavorite") : t("assetBrowser.favorite")}
+              onclick={() => onToggleFavorite(a.id)}
+            >{favorites.includes(a.id) ? "★" : "☆"}</button>
           {/if}
-        </button>
+        </div>
       {/each}
     </div>
     <div style:height="{bottomSpacer}px"></div>
@@ -174,9 +213,29 @@
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
     gap: 0.25rem;
     padding: 0.25rem;
+  }
+  .cell {
+    position: relative;
+    display: grid;
+  }
+  .star {
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    &.on {
+      color: var(--accent);
+    }
   }
   .tile {
     position: relative;
@@ -187,6 +246,8 @@
     border: 1px solid var(--border);
     background: var(--surface-raised);
     cursor: pointer;
+    user-select: none;
+    -webkit-touch-callout: none;
     &.selected {
       outline: 2px solid var(--accent);
       outline-offset: -2px;

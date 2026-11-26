@@ -1,3 +1,6 @@
+//! This module implements `Repository` for `SqliteRepository`, including the `apply_command` and
+//! `apply_intent` apply loops.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -16,16 +19,15 @@ use crate::data::document::{
     World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE,
-    COMBAT_HISTORY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
-    RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBATANT_GROUP_DOC_TYPE,
+    COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
-    declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
+    cap, declared_caps_for_document, declared_caps_for_path, gm_only_field_in_body,
+    gm_only_field_touched, required_cap_for_path, resolve_access_world, Access,
 };
-use crate::data::repository::Repository;
+use crate::data::repository::{Repository, WorldMemberRow};
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
 use crate::data::validation;
 use crate::data::world_bundle::{
@@ -40,20 +42,10 @@ use crate::data::DataError;
 /// chokepoint — a stray second singleton doc would otherwise resolve
 /// nondeterministically-but-safely via lowest-UUID ordering (see
 /// `chat::settings::resolve_content_policy`'s doc comment); this closes that
-/// gap at construction time rather than leaving it to read-side tolerance.
-const SINGLETON_DOC_TYPES: &[&str] = &[
-    WORLD_SETTINGS_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE,
-    CONDITION_REGISTRY_DOC_TYPE,
-    RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE,
-    AUDIO_STATE_DOC_TYPE,
-    crate::chat::CHAT_SETTINGS_DOC_TYPE,
-    crate::chat::DICE_SETTINGS_DOC_TYPE,
-    crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
-    crate::data::engine::LIGHT_GRADATION_DOC_TYPE,
-    crate::data::engine::VISION_MODES_DOC_TYPE,
-];
+/// gap at construction time rather than leaving it to read-side tolerance. The set IS
+/// `world_seed::CONFIG_SINGLETON_DOC_TYPES`, never a second list: the seed pass and this gate
+/// agree on which doc_types are singletons by construction.
+const SINGLETON_DOC_TYPES: &[&str] = &crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES;
 
 /// Auth-facing projection of a user row.
 ///
@@ -68,6 +60,8 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
 ///     username: "MOCK_USER".into(),
 ///     password_hash: None,
 ///     server_role: ServerRole::User,
+///     colour: None,
+///     pronouns: None,
 /// };
 /// assert_eq!(record.username, "MOCK_USER");
 /// ```
@@ -81,13 +75,18 @@ pub struct UserRecord {
     pub password_hash: Option<String>,
     /// Server tier (admin/user), orthogonal to any per-world role.
     pub server_role: ServerRole,
+    /// Account colour accent as `#rrggbb`, or `None` when unset. The avatar bytes are not part
+    /// of this record (it is read on every login); `SqliteRepository::avatar_for` fetches them.
+    pub colour: Option<String>,
+    /// Free-text pronouns, or `None` when unset.
+    pub pronouns: Option<String>,
 }
 
 /// A world invite as stored. `secret_hash` is an Argon2 PHC string over the
 /// code's verifier half; the code itself is never stored. The lifecycle
 /// columns are read-only context for the GM's listing — they are NOT the
 /// redemption gate, which lives entirely in `consume_invite`'s single guarded
-/// UPDATE (see [[two-query-guard-needs-tx]]).
+/// UPDATE.
 ///
 /// # Examples
 ///
@@ -153,6 +152,34 @@ pub struct SeatedByInvite {
     pub world_name: String,
     /// The role they hold there (pre-existing role if already a member).
     pub role: WorldRole,
+}
+
+/// One account's roster projection: the username and the three profile fields a member list
+/// row shows. No avatar bytes; `has_avatar` is the flag the client builds the avatar URL from.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::sqlite::MemberProfileRecord;
+///
+/// let row = MemberProfileRecord {
+///     username: "mock_player".into(),
+///     colour: Some("#336699".into()),
+///     pronouns: None,
+///     has_avatar: false,
+/// };
+/// assert_eq!(row.username, "mock_player");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberProfileRecord {
+    /// The account's username.
+    pub username: String,
+    /// Colour accent as `#rrggbb`, or `None` when unset.
+    pub colour: Option<String>,
+    /// Pronouns text, or `None` when unset.
+    pub pronouns: Option<String>,
+    /// Whether the account has an avatar.
+    pub has_avatar: bool,
 }
 
 /// The fields of an invite row at mint time.
@@ -238,7 +265,9 @@ pub struct SqliteRepository {
 
 impl SqliteRepository {
     /// Connect to `url` (e.g. "sqlite::memory:" or "sqlite:///path/to.db")
-    /// and run migrations. `url` is parsed once via
+    /// and run migrations. A database file that does not exist is created; that is logged at
+    /// info with its path, so a mistyped `db` on an existing deployment (which yields an empty
+    /// database, not an error) is visible in the first log lines. `url` is parsed once via
     /// [`crate::db::parse_connect_options`] and the resulting options open
     /// the pool through [`crate::db::connect_pool_with_options`] — never
     /// restated here.
@@ -257,7 +286,16 @@ impl SqliteRepository {
     /// # }
     /// ```
     pub async fn connect(url: &str) -> Result<Self, DataError> {
-        let connect_options = crate::db::parse_connect_options(url)?;
+        // Server startup creates a missing database file: a first run against the default
+        // `./shadowcat.db` (or any bare path) must succeed. The one-shot backup/restore paths
+        // open their pools through `db::connect_pool` instead and never create, so a mistyped
+        // path there stays an error instead of yielding an empty database.
+        let connect_options = crate::db::parse_connect_options(url)?.create_if_missing(true);
+        if let Ok(Some(file)) = crate::db::database_file(url) {
+            if !file.exists() {
+                tracing::info!(path = %file.display(), "database file does not exist; creating a new empty database");
+            }
+        }
         let pool = crate::db::connect_pool_with_options(connect_options.clone()).await?;
         sqlx::migrate!()
             .run(&pool)
@@ -376,17 +414,21 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_link_preview_cache("https://example.com").await?.is_none());
+    /// let world = repo.create_world("w", 0).await?;
+    /// assert!(repo.get_link_preview_cache(world.id, "https://example.com").await?.is_none());
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
         let row = sqlx::query(
-            "SELECT title, description, image_asset_id, fetched_at FROM link_preview_cache WHERE url = ?",
+            "SELECT title, description, image_asset_id, fetched_at FROM link_preview_cache \
+             WHERE world_id = ? AND url = ?",
         )
+        .bind(world_id.to_string())
         .bind(url)
         .fetch_optional(&self.pool)
         .await?;
@@ -416,25 +458,72 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// repo.upsert_link_preview_cache("https://example.com", Some("MOCK_TITLE"), None, 0).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let world = repo.create_world("w", 0).await?;
+    /// repo.upsert_link_preview_cache(world.id, "https://example.com", Some("MOCK_TITLE"), None, 0)
+    ///     .await?;
+    /// let row = repo.get_link_preview_cache(world.id, "https://example.com").await?.unwrap();
     /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
     /// # Ok(())
     /// # }
     /// ```
     pub async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
         sqlx::query(
-            "INSERT INTO link_preview_cache (url, title, description, fetched_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(url) DO UPDATE SET \
-               title = excluded.title, description = excluded.description, fetched_at = excluded.fetched_at",
+            "INSERT INTO link_preview_cache (world_id, url, title, description, fetched_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(world_id, url) DO UPDATE SET \
+               title = excluded.title, description = excluded.description, \
+               fetched_at = excluded.fetched_at",
         )
+        .bind(world_id.to_string())
+        .bind(url)
+        .bind(title)
+        .bind(description)
+        .bind(fetched_at_ms.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// See `Repository::insert_link_preview_cache_if_absent`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let url = "https://example.com";
+    /// repo.insert_link_preview_cache_if_absent(world.id, url, Some("MOCK_TITLE"), None, 7).await?;
+    /// repo.insert_link_preview_cache_if_absent(world.id, url, None, None, 9).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
+    /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    /// assert_eq!(row.fetched_at_ms, 7);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO link_preview_cache (world_id, url, title, description, fetched_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(world_id, url) DO NOTHING",
+        )
+        .bind(world_id.to_string())
         .bind(url)
         .bind(title)
         .bind(description)
@@ -456,39 +545,52 @@ impl SqliteRepository {
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
     /// let world = repo.create_world("w", 0).await?;
     /// let asset = uuid::Uuid::new_v4();
-    /// repo.insert_asset(&Asset {
-    ///     id: asset,
-    ///     world_id: world.id,
-    ///     storage_key: format!("{}/{asset}", world.id),
-    ///     original_name: "preview.png".into(),
-    ///     content_type: "image/webp".into(),
-    ///     byte_size: 10,
-    ///     created_by: None,
-    ///     created_at: 0,
-    ///     version: 1,
-    ///     folder_id: None,
-    ///     tags: vec![],
-    ///     derived_tags: vec![],
-    ///     meta: AssetMeta::unprocessed("image/png", 10),
-    /// })
-    /// .await?;
-    /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
-    /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let rival = uuid::Uuid::new_v4();
+    /// for id in [asset, rival] {
+    ///     repo.insert_asset(&Asset {
+    ///         id,
+    ///         world_id: world.id,
+    ///         storage_key: format!("{}/{id}", world.id),
+    ///         original_name: "preview.png".into(),
+    ///         content_type: "image/webp".into(),
+    ///         byte_size: 10,
+    ///         created_by: None,
+    ///         created_at: 0,
+    ///         version: 1,
+    ///         folder_id: None,
+    ///         tags: vec![],
+    ///         derived_tags: vec![],
+    ///         meta: AssetMeta::unprocessed("image/png", 10),
+    ///     })
+    ///     .await?;
+    /// }
+    /// let url = "https://example.com";
+    /// repo.upsert_link_preview_cache(world.id, url, None, None, 0).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, asset).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, rival).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
     /// assert_eq!(row.image_asset_id, Some(asset));
     /// # Ok(())
     /// # }
     /// ```
     pub async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
-        sqlx::query("UPDATE link_preview_cache SET image_asset_id = ? WHERE url = ?")
-            .bind(image_asset_id.to_string())
-            .bind(url)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE link_preview_cache SET image_asset_id = ? \
+             WHERE world_id = ? AND url = ? AND image_asset_id IS NULL \
+             AND EXISTS (SELECT 1 FROM assets WHERE id = ? AND world_id = ?)",
+        )
+        .bind(image_asset_id.to_string())
+        .bind(world_id.to_string())
+        .bind(url)
+        .bind(image_asset_id.to_string())
+        .bind(world_id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
@@ -505,12 +607,12 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
     }
 }
 
-/// Phase 1's Create authorization, resolved per op through ONE function both the
-/// in-transaction Phase-1 arm and `apply_intent`'s pre-transaction validator screen
+/// The validation pass's Create authorization, resolved per op through ONE function both the
+/// in-transaction validation-pass arm and `apply_intent`'s pre-transaction validator screen
 /// call — authz is the codebase's never-fork class, so the screen never re-spells
 /// any of these checks. Returns the resolved `Access` (the screen additionally reads
 /// it for the validator `prior` band's READ gate). `executor` is the write
-/// transaction for Phase 1, a read-only pool connection for the screen — both only
+/// transaction for the validation pass, a read-only pool connection for the screen — both only
 /// ever feed `load_effective_owner`.
 async fn authorize_create_intent<'e, E>(
     executor: E,
@@ -587,24 +689,25 @@ where
             return Err(DataError::Forbidden);
         }
     }
-    // Create carries no field paths, so the carried-light GM gate (see
-    // `authorize_update_change`) checks the body directly: a non-GM may not
-    // create a token/actor already carrying an emission, even in a world whose
-    // `core:create` grant otherwise admits the Create itself.
+    // Create carries no field paths, so the GM-only engine fields (see
+    // `authorize_update_change`) are checked on the body directly
+    // (`permission::gm_only_field_in_body`): a non-GM may not create a token/actor already
+    // carrying an emission, a secret identity, a rotation lock or a facing arc, even in a
+    // world whose `core:create` grant otherwise admits the Create itself.
     if !origin.skips_capability_gates()
         && ctx.world_role != WorldRole::Gm
-        && carried_light_in_body(&doc.doc_type, &doc_json)
+        && gm_only_field_in_body(&doc.doc_type, &doc_json)
     {
         tracing::debug!(
             user = %ctx.user_id, doc_type = %doc.doc_type,
-            "create denied: carried-light authoring is GM-only"
+            "create denied: GM-only field authoring"
         );
         return Err(DataError::Forbidden);
     }
     Ok(access)
 }
 
-/// Phase 1's stored-type rejections and access resolution for an Update, shared by
+/// The validation pass's stored-type rejections and access resolution for an Update, shared by
 /// the in-transaction arm and the pre-transaction validator screen (see
 /// `authorize_create_intent` for why this is one function). Returns the resolved
 /// `Access` plus whether the op is a `ServerMessageRevision` write to a message
@@ -662,6 +765,7 @@ where
             all: false,
             see_gm_only: true,
             is_owner: true,
+            user_id: Some(ctx.user_id),
         }
     } else {
         // Effective owner joined from the LIVE linked actor — a linked token's
@@ -696,11 +800,37 @@ struct UpdateAuthzContext<'a> {
     is_server_message_revision: bool,
 }
 
-/// Phase 1's per-change authorization for an Update — the structural capability
+/// The exact `/permissions` field paths a `WriteOrigin::ServerMessageRevision`
+/// write may touch on a message doc: `/permissions/property_overrides`
+/// (`chat::handle_recalc_roll`) plus the readership trio `/permissions/default`,
+/// `/permissions/gm_role` and `/permissions/users` (`chat::handle_revise_audience`).
+/// `authorize_update_change` reads this one list for BOTH the missing-capability
+/// admission and the additive declared-requirement skip. Deliberately not a
+/// prefix or `all: true`: that would also admit `/embedded` and every other
+/// `/permissions` sub-path.
+const SMR_PERMISSION_PATHS: [&str; 4] = [
+    "/permissions/default",
+    "/permissions/gm_role",
+    "/permissions/users",
+    "/permissions/property_overrides",
+];
+
+/// The readership subset of `SMR_PERMISSION_PATHS`: the three paths that move who
+/// can read a message. `authorize_update_change` admits them under
+/// `WriteOrigin::ServerMessageRevision` only when the intent's author holds the GM
+/// world role, so the GM-only rule of `chat::handle_revise_audience` also holds at
+/// the data layer for any caller that reaches `apply_intent` with that origin.
+const SMR_READERSHIP_PATHS: [&str; 3] = [
+    "/permissions/default",
+    "/permissions/gm_role",
+    "/permissions/users",
+];
+
+/// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
-/// (`declared_caps_for_path`), and the carried-light GM gate
-/// (`carried_light_touched`) for one `FieldChange`. Pure: every input was resolved
-/// by `authorize_update_access` (or Phase 1's own load), so the in-transaction
+/// (`declared_caps_for_path`), and the GM-only engine field gate (`gm_only_field_touched`:
+/// carried light, secret identity, rotation lock, facing vision) for one `FieldChange`. Pure: every input was resolved
+/// by `authorize_update_access` (or the validation pass's own load), so the in-transaction
 /// arm and the pre-transaction validator screen apply the identical decision.
 fn authorize_update_change(
     op: &UpdateAuthzContext<'_>,
@@ -738,13 +868,18 @@ fn authorize_update_change(
     if let Some(need) = need {
         if !origin.skips_capability_gates() && !access.has(need) {
             // A `ServerMessageRevision` write to a message doc may ALSO write
-            // exactly `/permissions/property_overrides` (never any other
-            // `/permissions` subpath) without holding `cap::EDIT_PERMISSIONS` —
-            // `handle_recalc_roll` needs this to register a freshly-appended
-            // recalc entry's gm_only override pointer. This exact-path admission
-            // widens nothing for any other doc_type/origin/path.
-            let is_recalc_override_write =
-                is_server_message_revision && ch.path == "/permissions/property_overrides";
+            // exactly the `SMR_PERMISSION_PATHS` (never any other `/permissions`
+            // subpath) without holding `cap::EDIT_PERMISSIONS` —
+            // `handle_recalc_roll` needs `/permissions/property_overrides` to register
+            // a freshly-appended recalc entry's gm_only override pointer, and
+            // `handle_revise_audience` needs the other three to move a message's
+            // readership; those three (`SMR_READERSHIP_PATHS`) are admitted only for
+            // a GM author. This exact-path admission widens nothing for any other
+            // doc_type/origin/path.
+            let path = ch.path.as_str();
+            let is_recalc_override_write = is_server_message_revision
+                && SMR_PERMISSION_PATHS.contains(&path)
+                && (!SMR_READERSHIP_PATHS.contains(&path) || ctx.world_role == WorldRole::Gm);
             if !is_recalc_override_write {
                 tracing::debug!(
                     user = %ctx.user_id, path = %ch.path, capability = need,
@@ -756,17 +891,17 @@ fn authorize_update_change(
     }
     // Declarative requirements are additive: a module/world may demand extra
     // capabilities for a sub-path on top of the structural base above. SKIPPED
-    // only for a `ServerMessageRevision` write to exactly `/engine` or
-    // `/permissions/property_overrides` — a world's `CapabilityRequirement`
-    // carries no `doc_type`, so an ancestor write to `/engine` would otherwise
-    // inherit a requirement declared for a wholly unrelated doc_type's field,
-    // blocking a GM's already-vetted moderation write. Any OTHER path under this
-    // origin still goes through this check.
+    // only for a `ServerMessageRevision` write to exactly `/engine`, `/system` (the
+    // delete tombstone's payload clear) or one of `SMR_PERMISSION_PATHS` — a
+    // world's `CapabilityRequirement` carries no `doc_type`, so an ancestor write
+    // to `/engine` would otherwise inherit a requirement declared for a wholly
+    // unrelated doc_type's field, blocking a GM's already-vetted moderation write.
+    // Any OTHER path under this origin still goes through this check. This skip
+    // and the capability admission above read the SAME `SMR_PERMISSION_PATHS`, so
+    // widening one without the other is structurally impossible.
     let is_scoped_smr_write = is_server_message_revision
-        && matches!(
-            ch.path.as_str(),
-            "/engine" | "/permissions/property_overrides"
-        );
+        && (matches!(ch.path.as_str(), "/engine" | "/system")
+            || SMR_PERMISSION_PATHS.contains(&ch.path.as_str()));
     if !origin.skips_capability_gates() && !is_scoped_smr_write {
         for extra in declared_caps_for_path(&ch.path, world_reqs) {
             if !access.has(extra) {
@@ -778,20 +913,17 @@ fn authorize_update_change(
             }
         }
     }
-    // Carried-light authoring is GM-only, value-aware
-    // (`permission::carried_light_touched`): an emission joins the SHARED
-    // illumination field every viewer's lit mask and movement gate read, so unlike
-    // an owner's other writable fields, writing one edits other players' secrecy
-    // masks. An ancestor write is refused only when the emission subtree actually
-    // changes, so a whole-`/engine/overrides` write that leaves `light` untouched
-    // stays legal.
+    // The GM-only engine fields (`permission::gm_only_field_touched`: carried light, secret
+    // identity, rotation lock) are value-aware: an owner's `WRITE_FIELDS` floor does not reach
+    // them. An ancestor write is refused only when the protected value actually changes, so a
+    // whole-`/engine` write that leaves them alone stays legal.
     if !origin.skips_capability_gates()
         && ctx.world_role != WorldRole::Gm
-        && carried_light_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
+        && gm_only_field_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
     {
         tracing::debug!(
             user = %ctx.user_id, path = %ch.path,
-            "intent denied: carried-light authoring is GM-only"
+            "intent denied: GM-only field authoring"
         );
         return Err(DataError::Forbidden);
     }
@@ -799,7 +931,7 @@ fn authorize_update_change(
 }
 
 /// Reconstructs the MERGED post-image document a `changes` Update would produce against
-/// `doc_id`'s CURRENT stored row, read through `executor` — shared by Phase 2's authoritative
+/// `doc_id`'s CURRENT stored row, read through `executor` — shared by the apply pass's authoritative
 /// merge (`&mut *tx`, inside the write transaction) and the pre-transaction validator
 /// pre-image build (a read-only pool connection, before the transaction opens): both merges
 /// must reach the IDENTICAL document, or the validated post-image and the committed one could
@@ -876,7 +1008,7 @@ impl Repository for SqliteRepository {
         let mut tx = self.pool.begin().await?;
 
         // Allocate the next per-world seq from the single durable source.
-        // Unlike `apply_intent` (seq allocated AFTER Phase-1 validation, so a
+        // Unlike `apply_intent` (seq allocated AFTER the validation pass, so a
         // rejected intent never consumes one), this bump happens BEFORE any
         // op is validated -- safe only because the whole transaction rolls
         // back on any early `?` return below, so a rejected write never
@@ -898,10 +1030,17 @@ impl Repository for SqliteRepository {
         // (undo/replay), so unlike apply_intent the descendants are not
         // capability-checked.
         let mut ops = Vec::with_capacity(cmd.ops.len());
+        let doomed = Self::deleted_ids(&cmd.ops);
         for op in cmd.ops {
             match op {
                 Operation::Delete { doc } => {
-                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
+                    // Tables filed under a deleted table folder move out first,
+                    // so the descendant walk below finds only nested folders.
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
+                    let kept = Self::moved_ids(&lifted);
+                    ops.extend(lifted);
+                    for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
@@ -1209,7 +1348,7 @@ impl Repository for SqliteRepository {
         let world_reqs = self.world_cap_requirements(world_id).await?;
         // Loaded before the transaction (like `world_cap_requirements` above):
         // the single-writer pool would deadlock on a mid-tx settings query.
-        // This is the GM-controlled tier-2 structural schema registry; the
+        // This is the GM-controlled structural schema registry; the
         // writer never supplies its own judging schema.
         let world_schemas = self.world_schema_declarations(world_id).await?;
         // Sandboxed validators run HERE, entirely before the write transaction opens: the
@@ -1257,7 +1396,7 @@ impl Repository for SqliteRepository {
                             match merge_update_document(&read_pool, *doc_id, changes).await {
                                 Ok((pre, post)) => (post, Some(pre)),
                                 // A missing/malformed pre-image here is not this pass's problem
-                                // to report — the real, authoritative Phase 1 load inside the
+                                // to report — the real, authoritative load inside the
                                 // transaction below surfaces the SAME failure properly.
                                 Err(_) => continue,
                             }
@@ -1266,21 +1405,21 @@ impl Repository for SqliteRepository {
                         Operation::Delete { .. } => continue,
                     };
                     // Authorization screen, consulted BEFORE any validator: the SAME shared
-                    // functions Phase 1's own arms call inside the transaction below
+                    // functions the validation pass's own arms call inside the transaction below
                     // (`authorize_create_intent`/`authorize_update_access`/
-                    // `authorize_update_change`), never a re-spelled copy — an op Phase 1
+                    // `authorize_update_change`), never a re-spelled copy — an op the validation pass
                     // would refuse with `Forbidden` must not reach a validator's error text
                     // (which can disclose the validator's rules), must not burn a faulting
                     // module's streak toward auto-disable, and must not burn fuel CPU.
                     // Capability-skipping origins are exempt inside the shared functions
-                    // exactly as they are in Phase 1. The screen's `Forbidden` also short-
+                    // exactly as they are in the validation pass. The screen's `Forbidden` also short-
                     // circuits the structural pre-pass below — a deliberately stricter
-                    // precedence than Phase 1's (less disclosure), never a weaker one:
-                    // anything the screen admits still faces Phase 1 unchanged.
+                    // precedence than the validation pass's (less disclosure), never a weaker one:
+                    // anything the screen admits still faces the validation pass unchanged.
                     let prior_permitted = match op {
                         Operation::Create { doc: create_doc } => {
                             // Scope before anything else: a foreign-scope intent must
-                            // never reach a validator (same check Phase 1 runs).
+                            // never reach a validator (same check the validation pass runs).
                             check_command_scope(create_doc, world_id)?;
                             authorize_create_intent(
                                 &read_pool,
@@ -1345,7 +1484,7 @@ impl Repository for SqliteRepository {
                     .await
                     {
                         // `validate_document`'s own structural pre-pass rejected `doc` before
-                        // any validator ran — Phase 1 below would reject it identically, so
+                        // any validator ran — the validation pass below would reject it identically, so
                         // its error is returned untouched here.
                         Err(structural_err) => return Err(structural_err),
                         Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
@@ -1358,7 +1497,7 @@ impl Repository for SqliteRepository {
                             return Err(DataError::Validator(fault));
                         }
                     }
-                    // Captured for the in-transaction re-validation below: Phase 1's OCC
+                    // Captured for the in-transaction re-validation below: the validation pass's OCC
                     // covers only each change's own pointer, so a concurrent write to any
                     // OTHER path of the same document would pass OCC and commit a post-image
                     // no validator ever saw. The Update arm compares its in-transaction
@@ -1372,16 +1511,16 @@ impl Repository for SqliteRepository {
         }
         let mut tx = self.pool.begin().await?;
 
-        // Phase 1 — authorize, structurally validate, and check pre-images.
+        // The validation pass — authorize, structurally validate, and check pre-images.
         // No row is mutated; any failure here drops the transaction, so the
         // per-world seq is never consumed by a rejected intent. `Create`'s
         // `doc` is mutated in place (`&mut ops`) so `validate_engine_tree`
         // can normalize the engine band here and have that normalization
-        // survive into Phase 2 storage AND the returned `Command` (broadcast).
+        // survive into the apply pass's storage AND the returned `Command` (broadcast).
         //
         // `claimed_singletons` tracks singleton doc_types already passed by an
-        // EARLIER Create in this SAME batch. Phase 2 (the actual inserts)
-        // only runs after every op in the batch clears Phase 1, so a batch
+        // EARLIER Create in this SAME batch. The apply pass (the actual inserts)
+        // only runs after every op in the batch clears the validation pass, so a batch
         // containing two Creates of the same singleton doc_type would have
         // both ops' `singleton_doc_exists` reads see nothing (neither has
         // been inserted yet) and both pass the DB check alone — this set
@@ -1394,18 +1533,18 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-        // `batch_folders` plays the same role for `asset_folder` AND `note`
-        // documents (a mixed-doc_type map keyed by id, since ids are unique
-        // regardless of type): a folder/note Created earlier in this batch is
-        // a valid parent for a later one, and `check_asset_folder_parent`/
-        // `check_note_parent` — plus `check_move_acyclic`'s cycle walk, shared
+        // `batch_folders` plays the same role for `asset_folder`, `note` AND
+        // `table_folder` documents (a mixed-doc_type map keyed by id, since ids
+        // are unique regardless of type): a folder/note Created earlier in this
+        // batch is a valid parent for a later one, and `check_asset_folder_parent`/
+        // `check_note_parent`/`check_table_folder_parent` — plus `check_move_acyclic`'s cycle walk, shared
         // across every doc_type that supports a parent tree — resolve through
         // it before falling back to the database.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
         // `batch_moves` records the PROSPECTIVE parent of each Move already
-        // validated in this batch. Phase 2 applies nothing until every op
-        // clears Phase 1, so a cycle walk that read only the stored tree
+        // validated in this batch. The apply pass applies nothing until every op
+        // clears the validation pass, so a cycle walk that read only the stored tree
         // would validate each Move against a tree no op has rewritten yet —
         // two Moves that swap a pair of subtrees into a cycle would each
         // pass alone. `check_move_acyclic` consults this map first, so it
@@ -1416,7 +1555,7 @@ impl Repository for SqliteRepository {
         // that holds its active slot, AS OF THIS POINT in a single simulated
         // walk of `ops` in their actual batch order. The one-active-combat-
         // per-scene decision -- for both the Create arm and the Update
-        // arm -- is made exactly ONCE, entirely inside Phase 1 (Phase 2
+        // arm -- is made exactly ONCE, entirely inside the validation pass (the apply pass
         // performs no independent recomputation of it), consulting and
         // mutating this ONE map: a claim (a Create or Update that would make
         // some combat `active: true` on scene `S`) succeeds when
@@ -1438,7 +1577,7 @@ impl Repository for SqliteRepository {
         let mut seeded_scenes: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         // The set of scenes a genuine same-batch active-true-to-false
         // transition will free, computed by a pre-scan over the WHOLE batch
-        // before the Phase-1 per-op loop runs (and before `scene_owner` is
+        // before the validation pass's per-op loop runs (and before `scene_owner` is
         // seeded at all) -- not derived incrementally in op order. A single
         // forward walk of `ops` cannot see a LATER op's deactivation when
         // validating an EARLIER op that claims the same scene (e.g.
@@ -1469,7 +1608,7 @@ impl Repository for SqliteRepository {
         //   PRE-merge scene in both cases -- the scene the combat is LEAVING,
         //   never the one it is moving to), so neither double-frees nor
         //   conflicts with the other.
-        // An op this cannot merge or parse is left alone here -- Phase 1's
+        // An op this cannot merge or parse is left alone here -- the validation pass's
         // real validation below surfaces the failure through the ordinary
         // path.
         let mut deactivations_this_batch: std::collections::HashSet<Uuid> =
@@ -1513,7 +1652,7 @@ impl Repository for SqliteRepository {
             }
         }
         // Batch-start permissions for each Update target, captured the FIRST time its
-        // pre-image is loaded in Phase 1 — before any op applies — so a second same-batch
+        // pre-image is loaded in the validation pass — before any op applies — so a second same-batch
         // Update to the same doc still snapshots the true batch-start permissions, not an
         // intermediate value written by an earlier op in this same command.
         let mut pre_permissions: std::collections::HashMap<
@@ -1526,14 +1665,14 @@ impl Repository for SqliteRepository {
         // captured", its `None` value means "captured, no owner".
         let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
             std::collections::HashMap::new();
-        // Phase 1's resolved `Access` for each `Operation::Update`, ONE entry
+        // The validation pass's resolved `Access` for each `Operation::Update`, ONE entry
         // per Update op, pushed in the same relative order those ops appear
         // in `ops` (an id may recur across several Update ops; each gets its
-        // own entry). Phase 2 threads this through to gate a normalize-time
+        // own entry). The apply pass threads this through to gate a normalize-time
         // derived engine change (`derive_engine_side_effects`) against the
         // world's declared capability requirements — reusing the capability
-        // set Phase 1 already resolved for this exact actor/document/origin,
-        // never re-resolving access in Phase 2.
+        // set the validation pass already resolved for this exact actor/document/origin,
+        // never re-resolving access in the apply pass.
         let mut update_access: Vec<Access> = Vec::new();
         // A stamp whose template is CREATED in this same batch cannot load it
         // from the store yet (nothing is written before the loop below), so
@@ -1635,6 +1774,10 @@ impl Repository for SqliteRepository {
                 }
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
+                    // Random-variant token art resolves to a concrete visual first, so the
+                    // derived `base` snapshot, validation, storage and broadcast all see the
+                    // drawn value and no token document ever stores a pool.
+                    Self::resolve_token_random_variants(&mut tx, world_id, doc, true).await?;
                     // `base` is server-owned: derive it from the document's
                     // OWN bands BEFORE any validation runs, so the derived
                     // value is what gets validated, normalized, stored,
@@ -1724,6 +1867,7 @@ impl Repository for SqliteRepository {
                     .await?;
                     if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE
                         || doc.doc_type == crate::data::engine::NOTE_DOC_TYPE
+                        || doc.doc_type == crate::data::engine::TABLE_FOLDER_DOC_TYPE
                     {
                         batch_folders.insert(doc.id, doc.clone());
                     }
@@ -1812,8 +1956,8 @@ impl Repository for SqliteRepository {
                     // and this query never touches `&self.pool` (which would
                     // deadlock mid-transaction, not race). `claimed_singletons`
                     // additionally covers a second same-batch Create of the
-                    // same singleton doc_type, which the DB read alone cannot
-                    // see (see the comment above the Phase-1 loop).
+                    // same singleton doc_type, which the DB read alone cannot see
+                    // (see the comment above the validation pass's per-op loop).
                     if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str()) {
                         if claimed_singletons.contains(doc.doc_type.as_str())
                             || Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type).await?
@@ -1889,10 +2033,10 @@ impl Repository for SqliteRepository {
                     let (access, is_server_message_revision) =
                         authorize_update_access(&mut *tx, ctx, &cur, origin, &world_defaults)
                             .await?;
-                    // Recorded for Phase 2's derived-path capability check
+                    // Recorded for the apply pass's derived-path capability check
                     // before any per-change validation below can reject this
-                    // op -- an error return here never reaches Phase 2, so
-                    // pushing early does not desync the two phases' op order.
+                    // op -- an error return here never reaches the apply pass, so
+                    // pushing early does not desync the validation and apply passes' op order.
                     update_access.push(access.clone());
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
@@ -1958,12 +2102,12 @@ impl Repository for SqliteRepository {
                         }
                     }
                     // One-active-combat-per-scene enforcement for an Update,
-                    // run entirely HERE in Phase 1 -- never re-derived by
-                    // Phase 2, which performs no independent recomputation of
+                    // run entirely HERE in the validation pass -- never re-derived by
+                    // the apply pass, which performs no independent recomputation of
                     // this invariant (see `scene_owner`'s doc comment above).
                     // Uses the same tolerant merge-simulation the pre-scan
                     // above uses; a merge/parse failure here is left to the
-                    // authoritative `validate_engine_tree` pass in Phase 2 to
+                    // authoritative `validate_engine_tree` pass in the apply pass to
                     // surface.
                     if let Some(pre_engine) = combat_engine_of(&cur) {
                         if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
@@ -2030,6 +2174,7 @@ impl Repository for SqliteRepository {
         // (whose forged permissions would otherwise drive per-recipient
         // redaction and persist into the authoritative event log).
         let mut authoritative_ops = Vec::with_capacity(ops.len());
+        let doomed = Self::deleted_ids(&ops);
         for op in ops {
             match op {
                 Operation::Delete { doc } => {
@@ -2037,10 +2182,19 @@ impl Repository for SqliteRepository {
                     // every descendant (children before parents) so each removal
                     // is an individually reversible op (#8) and broadcasts to
                     // clients (#2) — never a silent FK cascade. Descendants are
-                    // discovered here in Phase 2, so each is authorized against
-                    // its stored doc with the same DELETE gate Phase 1 applies to
+                    // discovered here in the apply pass, so each is authorized against
+                    // its stored doc with the same DELETE gate the validation pass applies to
                     // the submitted op.
-                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
+                    //
+                    // Tables filed under a deleted table folder are lifted out
+                    // first by explicit `Move` ops (the stored folder's parent
+                    // is the target, never the client body's), and the walk
+                    // skips them.
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
+                    let kept = Self::moved_ids(&lifted);
+                    authoritative_ops.extend(lifted);
+                    for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
@@ -2074,13 +2228,13 @@ impl Repository for SqliteRepository {
             }
         }
 
-        // Phase 2 — allocate seq, apply, log. Identical machinery to
+        // The apply pass — allocate seq, apply, log. Identical machinery to
         // apply_command; authorization above has already cleared every op.
         // Consumes `update_access` in order: `authoritative_ops` preserves
         // the relative order of every `Operation::Update` from `ops`
         // (Delete expansion is the only reordering, and it never touches
         // Update), so the Nth Update encountered here is always the Nth
-        // entry Phase 1 pushed.
+        // entry the validation pass pushed.
         let mut update_access_iter = update_access.into_iter();
         let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
             .bind(world_id.to_string())
@@ -2192,6 +2346,20 @@ impl Repository for SqliteRepository {
                     // checked before, so the id-tree walk is re-run over the full merged
                     // post-image here, in lockstep with `validate_engine_tree` below.
                     validation::validate_document_id_tree(&doc)?;
+                    // A pool a token write sets on its own art slots draws here, so no
+                    // token document ever stores one past the save that set it.
+                    // A write to the token's override visual (a Clear included) draws a
+                    // linked token's pick; any other edit leaves its art alone.
+                    let wrote_override_visual = changes.iter().any(|ch| {
+                        crate::data::permission::paths_overlap(&ch.path, "/engine/overrides/visual")
+                    });
+                    let drew_art = Self::resolve_token_random_variants(
+                        &mut tx,
+                        world_id,
+                        &mut doc,
+                        wrote_override_visual,
+                    )
+                    .await?;
                     // Engine band re-validated + normalized post-merge (mutates
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
@@ -2221,20 +2389,20 @@ impl Repository for SqliteRepository {
                             doc.engine.as_ref(),
                             &requested_paths_for_derived,
                         );
-                    // Phase 1's resolved `Access` for this exact Update op —
+                    // The validation pass's resolved `Access` for this exact Update op —
                     // never re-resolved here (see `update_access`'s doc
                     // comment). Absent only for a capability-skipping origin
                     // (`CombatTransition`/`TemplateMerge`/`ConfigSeed`), which
                     // this check exempts the same way `declared_caps_for_path`
-                    // is exempted for every other write path in Phase 1 above
+                    // is exempted for every other write path in the validation pass above
                     // — a capability-skipping origin's authorization is
-                    // vetted entirely elsewhere (see the Phase-1 doc comments
+                    // vetted entirely elsewhere (see the validation pass's doc comments
                     // beside `origin.skips_capability_gates()`), and a
                     // derived engine path is no exception to that trust.
                     if !origin.skips_capability_gates() {
                         let access_for_derived = update_access_iter
                             .next()
-                            .expect("one Access recorded per Update op in Phase 1");
+                            .expect("one Access recorded per Update op in the validation pass");
                         for extra in &derived_changes_preview {
                             for cap_needed in declared_caps_for_path(&extra.path, &world_reqs) {
                                 if !access_for_derived.has(cap_needed) {
@@ -2247,24 +2415,21 @@ impl Repository for SqliteRepository {
                             }
                         }
                     } else {
-                        // Keep the iterator in lockstep with Phase 1's push
-                        // order even when this op's check is skipped — Phase
-                        // 1 still pushed an entry for it.
+                        // Keep the iterator in lockstep with the validation pass's push
+                        // order even when this op's check is skipped — the
+                        // validation pass still pushed an entry for it.
                         update_access_iter.next();
                     }
-                    // One-active-combat-per-scene is validated ONLY in Phase
-                    // 1 (see `apply_intent`'s Update arm there, and the
-                    // `scene_owner` doc comment) -- this phase trusts that
-                    // decision and performs no recomputation of it, the same
-                    // way it trusts Phase 1's OCC/capability/containment/
-                    // singleton decisions for every other check.
-                    // Tier-2 structural schema gate on the MERGED post-image
+                    // The one-active-combat-per-scene decision is made in the validation
+                    // pass (see `apply_intent`'s Update arm there, and the
+                    // `scene_owner` doc comment); the apply pass does not recompute it.
+                    // Structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.
                     validation::validate_system_schema_tree(&doc, &world_schemas)?;
                     // In-transaction validator re-validation (the TOCTOU half of
                     // the pre-transaction pass): the pass validated a post-image
-                    // merged from a pre-transaction read, and Phase 1's OCC covers
+                    // merged from a pre-transaction read, and the validation pass's OCC covers
                     // only each change's own pointer — a concurrent write to any
                     // OTHER path of this document would pass OCC and commit a
                     // post-image no validator ever saw. When the in-transaction
@@ -2338,7 +2503,12 @@ impl Repository for SqliteRepository {
                     let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
-                            if ch.path == "/engine" || ch.path.starts_with("/engine/") {
+                            let drawn_embedded = drew_art
+                                && (ch.path == "/embedded" || ch.path.starts_with("/embedded/"));
+                            if ch.path == "/engine"
+                                || ch.path.starts_with("/engine/")
+                                || drawn_embedded
+                            {
                                 if let Some(v) = normalized_doc_json.pointer(&ch.path) {
                                     return FieldChange {
                                         remove: false,
@@ -2361,6 +2531,19 @@ impl Repository for SqliteRepository {
                         doc_id: *doc_id,
                         changes: normalized_changes,
                     });
+                    // Saving an actor's pool picks again for every token already linked
+                    // to it; each rewrite is an explicit Update op so it is logged,
+                    // broadcast per recipient and invertible.
+                    if changes.iter().any(|ch| {
+                        crate::data::permission::paths_overlap(&ch.path, "/engine/visual")
+                    }) {
+                        for (token_op, token) in
+                            Self::redraw_linked_token_art(&mut tx, world_id, &doc, seq, ts).await?
+                        {
+                            post_images.insert(token.id, token);
+                            normalized_ops.push(token_op);
+                        }
+                    }
                 }
             }
         }
@@ -2618,6 +2801,12 @@ impl Repository for SqliteRepository {
         SqliteRepository::member_id_by_username(self, world, username).await
     }
 
+    async fn last_whisper_to(&self, world: Uuid, user: Uuid) -> Result<Option<Uuid>, DataError> {
+        // Delegates to the inherent method of the same name (see `member_role`
+        // above for why this is not infinite recursion).
+        SqliteRepository::last_whisper_to(self, world, user).await
+    }
+
     async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
         // Delegates to the inherent method of the same name (see `member_role`
         // above for why this is not infinite recursion).
@@ -2686,7 +2875,7 @@ impl Repository for SqliteRepository {
         self.validator_registry_cache.reset_faults(world, module);
     }
 
-    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    async fn list_members(&self, world: Uuid) -> Result<Vec<WorldMemberRow>, DataError> {
         SqliteRepository::list_members(self, world).await
     }
 
@@ -2859,28 +3048,57 @@ impl Repository for SqliteRepository {
 
     async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
-        SqliteRepository::get_link_preview_cache(self, url).await
+        SqliteRepository::get_link_preview_cache(self, world_id, url).await
     }
 
     async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
-        SqliteRepository::upsert_link_preview_cache(self, url, title, description, fetched_at_ms)
-            .await
+        SqliteRepository::upsert_link_preview_cache(
+            self,
+            world_id,
+            url,
+            title,
+            description,
+            fetched_at_ms,
+        )
+        .await
+    }
+
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        SqliteRepository::insert_link_preview_cache_if_absent(
+            self,
+            world_id,
+            url,
+            title,
+            description,
+            fetched_at_ms,
+        )
+        .await
     }
 
     async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
-        SqliteRepository::set_link_preview_cache_image(self, url, image_asset_id).await
+        SqliteRepository::set_link_preview_cache_image(self, world_id, url, image_asset_id).await
     }
 
     async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
@@ -2932,8 +3150,12 @@ mod documents;
 mod export_import;
 mod membership;
 mod notes;
+mod tables;
+mod token_art;
 mod ui_state;
 mod worlds;
+
+pub(crate) use ui_state::PER_ID_NAMESPACES;
 
 #[cfg(test)]
 mod tests;

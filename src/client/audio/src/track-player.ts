@@ -8,16 +8,110 @@ import type {
   MediaElementSourceNodeLike,
 } from "./context";
 import type { OneShotPlayer } from "./one-shot-player";
+import type { PlaybackGate } from "./playback-gate";
 
 /** Position drift beyond which `TrackPlayer.sync` performs a hard seek rather than a rate
  * nudge, seconds. */
 export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
 /** Playback-rate nudge applied inside the seek threshold to close small drift inaudibly. */
 export const SYNC_RATE_NUDGE = 0.02;
+/** Drift magnitude above which an idle (rate 1) player engages the `SYNC_RATE_NUDGE`
+ * correction, seconds. A once-per-second tick at a 2 percent nudge moves the position 20 ms
+ * per tick, so the engage bound sits above ordinary measurement jitter and the release bound
+ * below it. */
+export const SYNC_RATE_ENGAGE_SECS = 0.025;
+/** Drift magnitude below which an engaged player returns to rate 1, seconds. Strictly below
+ * `SYNC_RATE_ENGAGE_SECS`: the gap is the hysteresis band inside which a player keeps its
+ * current rate instead of toggling it every tick. */
+export const SYNC_RATE_RELEASE_SECS = 0.01;
 /** `AudioParam.setTargetAtTime`'s time constant for a `sync`-driven gain update outside an
  * active crossfade, seconds — a gain change (transport SetGain) arrives step-free without a
  * direct `.value` write that would click (or cancel an in-flight fade's automation). */
 export const GAIN_RAMP_TAU_SECS = 0.05;
+
+/** Largest difference between the offset read before a hard seek and the offset read after it
+ * for which `syncElementPosition` treats the seek as having changed nothing, seconds. Below
+ * `SYNC_SEEK_THRESHOLD_SECS`, so a seek that does land (reading near zero after a drift just
+ * beyond the threshold) never counts as ineffective. */
+export const SYNC_STEADY_OFFSET_TOLERANCE_SECS = 0.1;
+
+/** Per-element offset bookkeeping for `syncElementPosition`. */
+interface ElementOffsetState {
+  /** The constant target-minus-`currentTime` reading the element holds after a seek, seconds
+   * (`0` for an element that reports its position faithfully). Drift is measured against it. */
+  baseline: number;
+  /** The reading taken just before the last hard seek, awaiting the post-seek reading that
+   * says whether the seek changed it; `null` when no seek is pending evaluation. */
+  seekReading: number | null;
+}
+
+/** Offset bookkeeping per element; keyed weakly so a disposed element releases its entry. */
+const elementOffsets = new WeakMap<MediaElementLike, ElementOffsetState>();
+
+/** The one rate-hysteresis decision for every playback arm (buffered source, graph-routed
+ * element, bare element): engage the `SYNC_RATE_NUDGE` correction above
+ * `SYNC_RATE_ENGAGE_SECS` of drift, hold it until the drift falls below
+ * `SYNC_RATE_RELEASE_SECS`, then return to rate 1. A drift beyond `SYNC_SEEK_THRESHOLD_SECS`
+ * is the caller's hard seek, not a rate. A rate returned equal to `rate` means "no write".
+ * @param drift Target position minus audible position, seconds (positive = behind).
+ * @param rate The playback rate currently applied.
+ * @returns The rate to apply.
+ * @example
+ * ```ts
+ * rateForDrift(0.005, 1); // 1: inside the deadband, no write
+ * ```
+ */
+export function rateForDrift(drift: number, rate: number): number {
+  const magnitude = Math.abs(drift);
+  const engaged = rate !== 1;
+  if (engaged ? magnitude < SYNC_RATE_RELEASE_SECS : magnitude <= SYNC_RATE_ENGAGE_SECS) return 1;
+  return drift > 0 ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
+}
+
+/** Reconcile one element's position and rate against the server target: a hard seek beyond
+ * `SYNC_SEEK_THRESHOLD_SECS`, otherwise `rateForDrift`'s hysteresis. Writes `playbackRate`
+ * only when the rate changes. Some engines (WebKit-GStreamer) report `currentTime` a constant
+ * offset ahead of the audible position and keep reporting it after a seek; when the reading
+ * right after a hard seek equals the one before it, that offset is adopted as the element's
+ * baseline and drift is measured from it, so a steady offset costs one seek rather than one per
+ * call. A reading that moves away from the baseline by more than the seek threshold is still a
+ * real drift or jump and is seeked. Shared by `TrackPlayer`'s streaming arm and
+ * `FallbackTrackPlayer` so the two cannot disagree on the decision.
+ * @param el The element to reconcile.
+ * @param targetSecs The server-derived target position, seconds.
+ * @example
+ * ```ts
+ * // package-internal seam — exercised through both element arms' `sync`
+ * ```
+ */
+export function syncElementPosition(el: MediaElementLike, targetSecs: number): void {
+  const reading = targetSecs - el.currentTime;
+  let state = elementOffsets.get(el);
+  if (!state) {
+    state = { baseline: 0, seekReading: null };
+    elementOffsets.set(el, state);
+  }
+  if (state.seekReading !== null) {
+    // The first reading after a hard seek. A seek sets `currentTime` to the target, so a
+    // healthy element reads near zero. An element that reads the same offset it read before
+    // the seek reports its position with a constant bias, which the seek cannot remove.
+    if (Math.abs(reading - state.seekReading) <= SYNC_STEADY_OFFSET_TOLERANCE_SECS) {
+      state.baseline = reading;
+    } else if (Math.abs(reading - state.baseline) > SYNC_SEEK_THRESHOLD_SECS) {
+      state.baseline = 0;
+    }
+    state.seekReading = null;
+  }
+  const drift = reading - state.baseline;
+  if (Math.abs(drift) > SYNC_SEEK_THRESHOLD_SECS) {
+    state.seekReading = reading;
+    el.currentTime = targetSecs;
+    if (el.playbackRate !== 1) el.playbackRate = 1;
+    return;
+  }
+  const rate = rateForDrift(drift, el.playbackRate);
+  if (rate !== el.playbackRate) el.playbackRate = rate;
+}
 
 /** Pick the `<audio>`-element source for a streaming track: the first candidate the element
  * reports playable (Ogg derivative, then WebM, then the native original). Shared by
@@ -36,14 +130,17 @@ export function pickStreamSrc(el: MediaElementLike, urls: AudioUrls): string {
   return urls.fallback;
 }
 
-/** Position anchor for the buffered mode: the unwrapped buffer position at `serverNow`, plus
- * the rate it is advancing at. `positionAt` is pure arithmetic over the anchor — no reads of
- * the live source node, so a rate nudge mid-flight stays tracked exactly. */
+/** Position anchor for the buffered mode: the unwrapped buffer position at the moment the
+ * context clock read `ctxTime`, plus the rate it is advancing at. `#positionAt` is arithmetic
+ * over the anchor and the CONTEXT's own clock (`AudioContextLike.currentTime`) — a suspended
+ * or interrupted context stops that clock, so the source's audible position stalls and the
+ * stall surfaces as drift against the server position instead of being masked by wall-clock
+ * arithmetic. A rate nudge mid-flight stays tracked exactly because each nudge re-anchors. */
 interface PositionAnchor {
-  /** Unwrapped position, seconds, at `serverNow`. */
+  /** Unwrapped position, seconds, at `ctxTime`. */
   offset: number;
-  /** The calibrated server-clock ms the anchor was taken at. */
-  serverNow: number;
+  /** The context's `currentTime`, seconds, the anchor was taken at. */
+  ctxTime: number;
   /** Advance rate (the source's `playbackRate`). */
   rate: number;
 }
@@ -54,7 +151,10 @@ interface PositionAnchor {
  * preferring the Ogg derivative). The streaming path routes an `<audio>` element through a
  * `MediaElementAudioSourceNode` (never decoded to RAM — appropriate for long music). Both
  * modes keep in sync with the server-authoritative `PlayingTrack.startedAt`/`pausedAt` via
- * `sync`, called on every `audio-state` change and on a periodic drift-correction tick. */
+ * `sync`, which `AudioEngine.applyState` calls on every `audio-state` change and on every
+ * `SYNC_TICK_MS` tick over the latest state. A buffered source's position is measured on the
+ * audio context clock (`PositionAnchor`); a streaming element's on its own `currentTime`; both
+ * decide seek versus rate nudge through `SYNC_SEEK_THRESHOLD_SECS` and `rateForDrift`. */
 export class TrackPlayer {
   /** The mixer graph's `AudioContextLike`. */
   #context: AudioContextLike;
@@ -83,6 +183,8 @@ export class TrackPlayer {
   #playlist: string | null;
   /** The client-observed track-end reporter (`AudioEngineOpts.onTrackEnded`). */
   #onTrackEnded: (id: string) => void;
+  /** The one place the streaming element is started (`play()` only while paused). */
+  #gate: PlaybackGate;
   /** Set on `dispose()`; async continuations (decode) check it before touching the graph. */
   #disposed = false;
   /** The buffered decode is started at most once, however many syncs arrive meanwhile. */
@@ -112,6 +214,8 @@ export class TrackPlayer {
    * @param dest The channel gain node to route through.
    * @param onTrackEnded The client-observed track-end reporter (streaming mode's natural
    * element end; the server decides the advance).
+   * @param gate The engine's playback gate: starts the streaming element and reports an
+   * autoplay refusal.
    * @example
    * ```
    * // constructed by `AudioEngine.applyState` — exercised through this package's tests
@@ -124,7 +228,9 @@ export class TrackPlayer {
     entry: PlayingTrack,
     dest: GainNodeLike,
     onTrackEnded: (id: string) => void,
+    gate: PlaybackGate,
   ) {
+    this.#gate = gate;
     this.#context = context;
     this.#oneShot = oneShot;
     this.#asset = entry.asset;
@@ -153,30 +259,29 @@ export class TrackPlayer {
     }
   }
 
-  /** The buffered loop's current unwrapped position at `serverNow`, seconds.
-   * @param serverNow The calibrated server-clock ms to evaluate at.
+  /** The buffered loop's current unwrapped audible position, seconds, measured on the
+   * context's audio clock.
    * @returns The unwrapped position, seconds.
    * @example
    * ```
    * // private helper; exercised through the buffered-loop sync tests
    * ```
    */
-  #positionAt(serverNow: number): number {
+  #positionAt(): number {
     const anchor = this.#anchor;
     if (!anchor) return 0;
-    return anchor.offset + ((serverNow - anchor.serverNow) / 1000) * anchor.rate;
+    return anchor.offset + (this.#context.currentTime - anchor.ctxTime) * anchor.rate;
   }
 
   /** (Re)start the buffered source at unwrapped position `target`, rate `rate`.
    * @param target The unwrapped position to start from, seconds (mod the buffer duration).
    * @param rate The source's playback rate (`1` = unity).
-   * @param serverNow The calibrated server-clock ms at this (re)start.
    * @example
    * ```
    * // private helper; exercised through the buffered-loop sync tests
    * ```
    */
-  #startBufferedAt(target: number, rate: number, serverNow: number): void {
+  #startBufferedAt(target: number, rate: number): void {
     const buffer = this.#buffer;
     if (!buffer) return;
     this.#bufferSource?.stop();
@@ -189,7 +294,7 @@ export class TrackPlayer {
     source.connect(this.#gain);
     source.start(0, target % buffer.duration);
     this.#bufferSource = source;
-    this.#anchor = { offset: target, serverNow, rate };
+    this.#anchor = { offset: target, ctxTime: this.#context.currentTime, rate };
   }
 
   /** Decode the loop buffer on first use, then apply any stashed sync — latched
@@ -258,28 +363,29 @@ export class TrackPlayer {
           this.#bufferSource = null;
           this.#anchor = null;
         }
-        // Every paused sync refreshes the frozen position from the authoritative entry (a
-        // Seek while paused would otherwise be lost until the next drift tick — and the two
-        // agree when no seek happened, so refreshing is always safe).
+        // Every paused sync refreshes the frozen position from the authoritative entry: the
+        // resume path starts the source at `#frozen`, so a Seek while paused would otherwise
+        // resume at the pre-seek position. Without a seek the two agree, so refreshing is
+        // always safe.
         this.#frozen = targetSecs;
         return;
       }
       if (!playing) {
-        this.#startBufferedAt(this.#frozen ?? targetSecs, 1, serverNow);
+        this.#startBufferedAt(this.#frozen ?? targetSecs, 1);
         this.#frozen = null;
         return;
       }
-      const drift = Math.abs(this.#positionAt(serverNow) - targetSecs);
-      if (drift > SYNC_SEEK_THRESHOLD_SECS) {
-        this.#startBufferedAt(targetSecs, 1, serverNow);
-      } else if (drift > 0) {
-        const behind = this.#positionAt(serverNow) < targetSecs;
-        const rate = behind ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-        if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
-        this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate };
-      } else if (this.#anchor?.rate !== 1) {
-        if (this.#bufferSource) this.#bufferSource.playbackRate.value = 1;
-        this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate: 1 };
+      const position = this.#positionAt();
+      const drift = targetSecs - position;
+      if (Math.abs(drift) > SYNC_SEEK_THRESHOLD_SECS) {
+        this.#startBufferedAt(targetSecs, 1);
+      } else {
+        const current = this.#anchor?.rate ?? 1;
+        const rate = rateForDrift(drift, current);
+        if (rate !== current) {
+          if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
+          this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate };
+        }
       }
       return;
     }
@@ -290,18 +396,8 @@ export class TrackPlayer {
     if (entry.pausedAt != null) {
       el.pause();
     }
-    const drift = Math.abs(el.currentTime - targetSecs);
-    if (drift > SYNC_SEEK_THRESHOLD_SECS) {
-      el.currentTime = targetSecs;
-      el.playbackRate = 1;
-    } else if (drift > 0) {
-      el.playbackRate = el.currentTime < targetSecs ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-    } else {
-      el.playbackRate = 1;
-    }
-    if (entry.pausedAt == null) {
-      void el.play();
-    }
+    syncElementPosition(el, targetSecs);
+    if (entry.pausedAt == null) this.#gate.play(el);
   }
 
   /** The source playlist id this entry plays from (drives replace-pairing in

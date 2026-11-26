@@ -23,6 +23,10 @@ import type { LightEmission } from "./LightEmission";
  *         dim_radius: 10.0,
  *         falloff: None,
  *         enabled: true,
+ *         active_below_env: None,
+ *         angle: None,
+ *         rotation: 0.0,
+ *         follow_token_rotation: false,
  *     },
  * };
  * assert_eq!(light.emission.bright_radius, 5.0);

@@ -14,6 +14,22 @@ export interface AudioChannelState {
   muted: boolean;
 }
 
+/** The fields `AudioApi.setChannel` changes; an omitted field is left as is. */
+export interface AudioChannelPatch {
+  /** The new gain, `0..=1`; omitted = unchanged. */
+  gain?: number;
+  /** The new mute state; omitted = unchanged. */
+  muted?: boolean;
+}
+
+/** The per-call options of `AudioApi.playOneShot`. */
+export interface OneShotOptions {
+  /** The bus to play through; default `"sfx"`. */
+  channel?: AudioChannelId;
+  /** Per-call gain multiplier against the channel's own gain; default `1`. */
+  gain?: number;
+}
+
 /** A registered ducking demand source (`DuckController.addSource`). Any number may be active;
  * the controller's effective gain is `1 - max(every source's current demand) * depth`. */
 export interface DuckSource {
@@ -63,20 +79,22 @@ export interface AudioApi {
   readonly channels: Record<AudioChannelId, AudioChannelState>;
   /** Adjust one channel's device gain and/or mute state; omitted fields are unchanged.
    * @param id The channel to adjust.
-   * @param patch The fields to change.
-   * @param patch.gain The new gain, `0..=1`; omitted = unchanged.
-   * @param patch.muted The new mute state; omitted = unchanged. */
-  setChannel(id: AudioChannelId, patch: {
-    /** The new gain, `0..=1`; omitted = unchanged. */
-    gain?: number;
-    /** The new mute state; omitted = unchanged. */
-    muted?: boolean;
-  }): void;
+   * @param patch The fields to change. */
+  setChannel(id: AudioChannelId, patch: AudioChannelPatch): void;
   /** Unlocks this device's `AudioContext` — Web Audio requires a user gesture before any sound
    * can play; the shell's `AudioUnlock` control calls this from a click handler. Idempotent:
-   * calling it again after a successful unlock resolves immediately.
-   * @returns Resolves once the context is running. */
+   * calling it again after a successful unlock resolves immediately. Also the retry path after
+   * `needsGesture` turned `true`: it asks the context to resume and every refused element to
+   * play again.
+   * @returns Resolves once the context is running, or once the bounded resume wait elapsed
+   * with `needsGesture` set. */
   unlock(): Promise<void>;
+  /** Whether this device needs a user gesture before audio can play: the browser refused a
+   * `play()`, a `resume()` was rejected, or the context is still not running after a bounded
+   * wait (`RESUME_WAIT_MS` in `@shadowcat/audio`). The shell shows its unlock control while
+   * this is `true`; a successful `unlock()` or the context running again clears it. Reactive
+   * when read through the shell's context wrapper. */
+  readonly needsGesture: boolean;
   /** The shared engine `AudioContext`, for a consumer that needs to register its own
    * `AudioWorkletNode` against the SAME graph `AudioApi` otherwise owns entirely (the
    * ducking module's `MicVadSource`). `null` until `unlock()` resolves —
@@ -90,15 +108,8 @@ export interface AudioApi {
    * yet unlocked (the pending state is NOT queued for one-shots, unlike transport state — a
    * missed UI cue is inconsequential).
    * @param asset Asset id of the sound to play.
-   * @param opts Optional channel override (default `"sfx"`) and gain multiplier.
-   * @param opts.channel The bus to play through; default `"sfx"`.
-   * @param opts.gain Per-call gain multiplier against the channel's own gain; default `1`. */
-  playOneShot(asset: string, opts?: {
-    /** The bus to play through; default `"sfx"`. */
-    channel?: AudioChannelId;
-    /** Per-call gain multiplier against the channel's own gain; default `1`. */
-    gain?: number;
-  }): void;
+   * @param opts Optional channel override (default `"sfx"`) and gain multiplier. */
+  playOneShot(asset: string, opts?: OneShotOptions): void;
   /** The calibrated server clock, ms — a thin forwarder to `WsClient.serverNow()`. Drives live
    * playlist-position readouts (a playhead computed from `PlayingTrack.startedAt` against this
    * clock, never `Date.now()` directly).

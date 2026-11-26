@@ -1,5 +1,6 @@
 import type { Asset, CreateUploadResponse } from "@shadowcat/types";
 import { patchAsset, restErrorText, uploadAsset } from "./asset-rest";
+import { apiPath } from "./base-path";
 
 // The chunked-upload client: opens a session, PUTs fixed-size chunks at
 // explicit offsets with per-chunk retry, and completes it. Resumable across
@@ -140,7 +141,7 @@ export async function startChunkedUpload(
   }
 
   opts.signal?.throwIfAborted();
-  const createRes = await fetchImpl(`/api/worlds/${world}/assets/uploads`, {
+  const createRes = await fetchImpl(apiPath(`/api/worlds/${world}/assets/uploads`), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -165,7 +166,7 @@ export async function startChunkedUpload(
   // Abort the server session; best effort — the server sweeps an orphaned session itself.
   const abort = async (): Promise<void> => {
     try {
-      await fetchImpl(`/api/assets/uploads/${id}`, { method: "DELETE" });
+      await fetchImpl(apiPath(`/api/assets/uploads/${id}`), { method: "DELETE" });
     } catch {
       // Best effort: the server sweeps an orphaned session on its own.
     }
@@ -181,7 +182,7 @@ export async function startChunkedUpload(
       for (let attempt = 0; attempt < retries && !accepted; attempt++) {
         let status: number | undefined;
         try {
-          const res = await fetchImpl(`/api/assets/uploads/${id}/${sent}`, {
+          const res = await fetchImpl(apiPath(`/api/assets/uploads/${id}/${sent}`), {
             method: "PUT",
             body: chunk,
             signal: opts.signal,
@@ -209,7 +210,7 @@ export async function startChunkedUpload(
       sent += chunk.size;
       opts.onProgress?.(sent, total);
     }
-    const done = await fetchImpl(`/api/assets/uploads/${id}/complete`, {
+    const done = await fetchImpl(apiPath(`/api/assets/uploads/${id}/complete`), {
       method: "POST",
       signal: opts.signal,
     });

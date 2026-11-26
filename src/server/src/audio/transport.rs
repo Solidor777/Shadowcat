@@ -1,8 +1,11 @@
-//! GM-only `AudioTransport` handling: authorizes, resolves the one playlist an op could need,
-//! applies the pure `state::apply`, and commits the `audio-state` Update under
-//! `WriteOrigin::AudioTransport`. Also `on_active_scene`, the server rule that swaps a scene's
-//! ambience playlist when `world-settings.activeScene` commits (`ws::room::Room::publish`'s own
-//! hook calls it — never a client-driven path).
+//! This module handles `AudioTransport` frames and the active-scene ambience swap.
+//!
+//! Handling authorizes (every op except the `TrackEnded` report is GM-only), resolves the one
+//! playlist an op could need, applies the pure `state::apply`, and commits the `audio-state` Update
+//! under `WriteOrigin::AudioTransport`. The module also holds `on_active_scene`, the server rule
+//! that swaps a scene's ambience playlist when `world-settings.activeScene` commits, and
+//! `on_session_pause`, which pauses or resumes every playing track when the session pause flips.
+//! `ws::room::Room::publish`'s own hooks call both; neither is a client-driven path.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,8 +15,8 @@ use uuid::Uuid;
 use crate::data::command::{FieldChange, Operation, WriteOrigin};
 use crate::data::document::{Scope, WorldRole};
 use crate::data::engine::{
-    self as eng, AudioChannel, AudioStateEngine, PlaylistEngine, AUDIO_STATE_DOC_TYPE,
-    PLAYLIST_DOC_TYPE,
+    self as eng, AudioChannel, AudioStateEngine, PlaylistEngine, SessionState,
+    AUDIO_STATE_DOC_TYPE, PLAYLIST_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -275,6 +278,45 @@ pub(crate) async fn on_active_scene(
         }
     }
 
+    let _ = commit_audio_state(repo, ctx, room, &doc, &state, &next, now).await;
+}
+
+/// Server rule: when the session pause flips, pause or resume the world's playing audio. A pause
+/// (`before.paused` false, `after.paused` true) pauses every track when `after.pause_audio` is
+/// set, marking each track it paused `session_paused`; a resume (true to false) resumes only the
+/// `session_paused` tracks. The decision keys on whether audio is HELD (`paused && pause_audio`)
+/// before and after the write, so flipping the audio switch during a pause pauses or resumes the
+/// flagged tracks at once and no `session_paused` marker outlives the pause. A hand-paused track
+/// stays paused, and a world whose GM left audio alone is never touched. Called from
+/// `Room::publish` with `publish_guard` held, and best-effort like `on_active_scene`: the pause
+/// write itself has committed already, so a failed audio commit never undoes it.
+pub(crate) async fn on_session_pause(
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    room: &Room,
+    world_id: Uuid,
+    before: &SessionState,
+    after: &SessionState,
+    now: i64,
+) {
+    let held_before = before.paused && before.pause_audio;
+    let held_after = after.paused && after.pause_audio;
+    let pausing = !held_before && held_after;
+    if !pausing && !(held_before && !held_after) {
+        return;
+    }
+    let Ok(docs) = repo.query_documents(world_id, AUDIO_STATE_DOC_TYPE).await else {
+        return;
+    };
+    let Some(doc) = docs.into_iter().next() else {
+        return;
+    };
+    let state: AudioStateEngine = eng::engine_of(&doc);
+    let next = if pausing {
+        crate::audio::state::pause_all(&state, now as f64)
+    } else {
+        crate::audio::state::resume_all(&state, now as f64)
+    };
     let _ = commit_audio_state(repo, ctx, room, &doc, &state, &next, now).await;
 }
 

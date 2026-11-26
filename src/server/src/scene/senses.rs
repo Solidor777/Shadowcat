@@ -1,11 +1,12 @@
-//! Creature senses (tremorsense and kin): the `perceived` half of the vision channel.
-//! Where `token_vision_floors` projects a token's vision assignments into illumination
-//! floors for the terrain mask, this module projects the SAME assignments — resolved
-//! through the SAME `SceneEcs::token_vision_assignments` precedence walk, so the two
-//! views can never disagree on which assignments a token carries — into the grounded
-//! tokens a `Perception::Creatures` mode perceives. `sense_perceives` is THE reach
-//! decision, read for a token at rest (`player_perceived_tokens`) and in motion (the
-//! egress clip's `InstantSight::sees_token`).
+//! This module implements creature senses (tremorsense and kin), the `perceived` half of the
+//! vision channel.
+//!
+//! Where `token_vision_floors` projects a token's vision assignments into illumination floors for
+//! the terrain mask, this module projects the SAME assignments — resolved through the SAME
+//! `SceneEcs::token_vision_assignments` precedence walk, so the two views can never disagree on
+//! which assignments a token carries — into the grounded tokens a `Perception::Creatures` mode
+//! perceives. `sense_perceives` is THE reach decision, read for a token at rest
+//! (`player_perceived_tokens`) and in motion (the egress clip's `InstantSight::sees_token`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -244,6 +245,9 @@ impl SceneEcs {
                                     &self.sight_walls_for(scene, elev),
                                     settings.los_restriction,
                                     extent,
+                                    // Creature senses are all-round by definition: facing
+                                    // limits the eyes, not tremorsense and its kin.
+                                    None,
                                 )
                             });
                             vision::point_in_poly(poly, center)

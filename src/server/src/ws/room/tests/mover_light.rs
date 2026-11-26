@@ -1,6 +1,8 @@
-//! `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`): present exactly
-//! when the mover carries an enabled emission in an environment-lit scene, sampled at the
-//! position samples' own instants, and absent — with no raycast — otherwise.
+//! These tests exercise `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`).
+//!
+//! The timeline is present when the mover carries an enabled emission in an environment-lit scene,
+//! sampled at the position samples' own instants, and absent — with no raycast — when the scene is
+//! all-bright or the mover has no enabled emission.
 
 use super::*;
 use serde_json::json;
@@ -8,6 +10,16 @@ use serde_json::json;
 /// Publish a torch-carrying actor and link the harness token to it (a GM write: carried
 /// emissions edit the shared illumination field, so only a GM may author one).
 async fn link_torch(h: &MovementHandle, enabled: bool) {
+    link_emission(
+        h,
+        json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 4.0,
+                "enabled": enabled }),
+    )
+    .await;
+}
+
+/// `link_torch` with the actor's whole `light` body under the caller's control.
+async fn link_emission(h: &MovementHandle, light: serde_json::Value) {
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let actor_id = crate::test_ids::test_uuid(0x70AC);
     let mut actor = wdoc(h.world_id, actor_id, "actor");
@@ -19,8 +31,7 @@ async fn link_torch(h: &MovementHandle, enabled: bool) {
         "shape": "square",
         "conditions": [],
         "prototype": true,
-        "light": { "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 4.0,
-                   "enabled": enabled },
+        "light": light,
     }));
     h.room
         .publish(
@@ -167,4 +178,66 @@ async fn an_all_bright_scene_samples_nothing() {
         .unwrap();
     let (_, light) = light_timeline(&h, &h.player, 0x15).await;
     assert!(light.is_none());
+}
+
+#[tokio::test]
+async fn a_following_cone_is_streamed_along_the_bearing_the_move_commits() {
+    // Auto-rotate is on and the token faces 0 degrees; moving straight down commits a 90 degree
+    // bearing. `Room::execute_move` hands that committed bearing to `mover_light_inputs`, so
+    // every streamed sample's cone direction is the bearing plus the authored offset (100), not
+    // the pre-move facing plus the offset (10).
+    let h = movement_scene("unrestricted", false).await;
+    link_emission(
+        &h,
+        json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 4.0,
+                "enabled": true, "angle": 60.0, "rotation": 10.0, "followTokenRotation": true }),
+    )
+    .await;
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: crate::test_ids::test_uuid(0x5CE2),
+                changes: vec![FieldChange {
+                    path: "/engine/scene/autoRotateTokens".into(),
+                    old: json!(null),
+                    new: json!(true),
+                    remove: false,
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.lit_goal],
+                ts: now_millis(),
+                request_id: crate::test_ids::test_uuid(0x16),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.committed_pos(h.token_id).await, (50.0, 150.0));
+    let ServerMsg::MoveStream { mover_light, .. } = res.frame.as_ref() else {
+        panic!("frame must be a MoveStream");
+    };
+    let light = mover_light.as_ref().expect("a carried cone is sampled");
+    assert!(!light.is_empty());
+    for l in light {
+        assert_eq!(l.angle, Some(60.0));
+        assert_eq!(
+            l.rotation,
+            Some(100.0),
+            "the stream points along the committed bearing (90) plus the offset (10)"
+        );
+    }
 }

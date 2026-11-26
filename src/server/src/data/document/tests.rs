@@ -246,6 +246,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         "vision-modes" => Some(serde_json::json!({ "modes": {} })),
         "light-gradation" => Some(serde_json::json!({ "bands": [] })),
         "chat-settings" => Some(serde_json::json!({})),
+        "module-settings" => Some(serde_json::json!({})),
         "dice-settings" => Some(serde_json::json!({})),
         "channel-registry" => {
             Some(serde_json::to_value(crate::data::engine::ChannelRegistryEngine::seed()).unwrap())
@@ -269,6 +270,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         }
         "system-defaults" => Some(serde_json::json!({})),
         "combat-history" => Some(serde_json::json!({ "records": [], "cursor": 0 })),
+        "combatant-group" => Some(serde_json::json!({ "name": "Group", "color": null })),
         "note" => Some(serde_json::json!({ "source": "", "body": [], "sort": 0 })),
         _ => None,
     }

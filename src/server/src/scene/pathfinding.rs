@@ -1,30 +1,45 @@
-//! Server-authoritative grid A* pathfinder. Pure + headless: callers pass parsed inputs
-//! (walls, mask, cell size, grid shape, footprint); this module owns no I/O and borrows no ECS. The
-//! `GridShape` (square/hex) is the single source of the diagonal rule — it owns both the step-cost
-//! and the admissible heuristic, so `find` takes no separate rule argument.
-//! Engine-owned geometry; clean-room A* (Hart, Nilsson & Raphael 1968).
+//! This module is the server-authoritative grid A* pathfinder.
 //!
-//! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the
-//! movement gate uses — the route can never thread the unknown nor leak hidden geometry.
+//! It is pure and headless: callers pass parsed inputs (walls, mask, cell size, grid shape,
+//! footprint), and it owns no I/O and borrows no ECS. The `GridShape` (square/hex) is the single
+//! source of the diagonal rule — it owns both the step-cost and the admissible heuristic, so
+//! `find` takes no separate rule argument. It is engine-owned geometry and a clean-room A*
+//! (Hart, Nilsson & Raphael 1968).
+//!
+//! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the movement gate uses,
+//! so a route for a requester with a mask never enters a cell outside it.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). All four are the same
-/// king-move graph; they differ only in diagonal cost + the admissible heuristic. `Alternating`
-/// (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so requires a parity bit in the search node.
+/// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). Every rule except
+/// `Orthogonal` shares the same king-move graph; those differ only in diagonal cost + the
+/// admissible heuristic. `Alternating` (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so
+/// requires a parity bit in the search node. `Orthogonal` is the one ADJACENCY-changing rule:
+/// it removes the diagonal edges from the search graph rather than repricing them, and the move
+/// executor enforces the same omission on a non-GM walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagonalRule {
     /// Diagonals cost 1.0 (equal to orthogonal steps).
     Chebyshev,
     /// Diagonals cost 2.0 — priced as two orthogonal steps, NOT banned
-    /// (the king-move graph is identical across all four rules).
+    /// (the king-move graph is identical across every cost-only rule).
     Manhattan,
     /// Diagonals cost sqrt(2).
     Euclidean,
     /// Diagonals alternate 1,2,1,2… (PF1e/3.5 "5-10-5"); needs the node
     /// parity bit.
     Alternating,
+    /// Diagonals cost 1.5 — a flat multiplier standing in for the
+    /// alternating approximation. Cost-only: the king-move graph is unchanged.
+    Approximate,
+    /// Diagonal steps are ILLEGAL: absent from the search graph (`SquareGrid::neighbors_with_cost`
+    /// enumerates only the four orthogonal directions under this rule, so `step_cost` is never
+    /// called with a diagonal pair; its `unreachable!` arm is the tripwire for that invariant)
+    /// and refused by `execute_move` for a non-GM walk on a square grid, so a hand-built path
+    /// cannot take a diagonal the router would never emit. Inert on a hex scene — `HexGrid` carries no `rule` field at all (six
+    /// uniform axial neighbors; no diagonal/orthogonal split exists to remove).
+    Orthogonal,
 }
 
 use crate::scene::vision::{self, point_segment_distance};
@@ -39,30 +54,37 @@ pub type Cell = (i32, i32);
 /// `movement_tags::ignores_terrain_cost` over `SceneEcs::token_movement_tags`) and never
 /// re-derived inside the router or the executor. Room to grow: each future engine-reserved tag
 /// lands as a flag here rather than as a new parameter threaded site by site.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MoveTraits {
     /// The mover carries a terrain-exempt tag (`movement_tags::TERRAIN_EXEMPT_TAGS`):
     /// `terrain_cost` flattens every multiplier to 1.0 — and NOTHING else changes (walls,
     /// impassable, arrest, and the visibility mask all still gate).
     pub ignore_terrain: bool,
+    /// The mover's full resolved movement-type tag set (`SceneEcs::token_movement_tags`),
+    /// the SAME resolution `ignore_terrain` was derived from — never a second, independently
+    /// resolved tag set. Read by `RegionField::resolved_terrain_multiplier` (through
+    /// `terrain_cost`) to pick a per-tag `cost_by_tag` override; irrelevant when
+    /// `ignore_terrain` is set (terrain costs nothing for that mover regardless of tags).
+    pub tags: std::collections::BTreeSet<String>,
 }
 
 /// The ONE terrain-cost read every pricing site shares: an `ignore_terrain` mover is
 /// unweighted (the multiplier reads as 1.0); otherwise the field's own
-/// `RegionField::terrain_multiplier` answers. `regions: None` (no region enforcement) is
-/// unweighted either way. Both the router (`astar_leg`, `replay_step_costs`,
-/// `navmesh::los_smooth`) and the executor (`move_exec::execute_move`'s per-transition and
-/// tail pricing) read this symbol, so preview and execution cannot disagree on what an
-/// exempt mover pays.
+/// `RegionField::resolved_terrain_multiplier` answers, resolved against `traits.tags` (a
+/// per-tag `cost_by_tag` override where the field authors one, else the flat multiplier).
+/// `regions: None` (no region enforcement) is unweighted either way. Both the router
+/// (`astar_leg`, `replay_step_costs`, `navmesh::los_smooth`) and the executor
+/// (`move_exec::execute_move`'s per-transition and tail pricing) read this symbol, so preview
+/// and execution cannot disagree on what an exempt OR a tag-costed mover pays.
 pub(crate) fn terrain_cost(
     regions: Option<&crate::scene::regions::RegionField>,
     c: Cell,
-    traits: MoveTraits,
+    traits: &MoveTraits,
 ) -> f64 {
     if traits.ignore_terrain {
         1.0
     } else {
-        regions.map_or(1.0, |r| r.terrain_multiplier(c))
+        regions.map_or(1.0, |r| r.resolved_terrain_multiplier(c, &traits.tags))
     }
 }
 
@@ -76,7 +98,12 @@ pub(crate) fn terrain_cost(
 /// `regions` omit whatever tier the requester may not see. `shape` MUST be the same `GridShape`
 /// those three sets were built with; a mask indexed in one coordinate system and tested in another
 /// is not a shared mask.
-#[derive(Clone, Copy)]
+///
+/// `Clone`, not `Copy`: `traits.tags` is an owned `BTreeSet<String>`, so a caller needing a
+/// second `PathInputs` differing only in one field (e.g. `shape`, the continuous engine's
+/// Euclidean-ruled search) clones explicitly (`inputs.clone()`) rather than relying on an
+/// implicit struct-update copy.
+#[derive(Clone)]
 pub struct PathInputs<'a> {
     /// Mover footprint radius in CELLS; `find` rejects anything outside
     /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
@@ -161,11 +188,19 @@ pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: 
 }
 
 /// Whether a token may step from `from` into `to`. INVARIANT: full
-/// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
-/// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
-/// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
-/// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
-/// (arrest/terrain apply elsewhere — see this function's region-gate step).
+/// geometric footprint clearance — the footprint disc at `to` clears every `blocksMove` wall (the
+/// disc clearance), every footprint-overlapped cell AND every cell the center-to-center step's
+/// supercover crosses (including diagonal corner-flankers) is in the mask (non-GM) (the mask test),
+/// the center step `from→to` crosses no wall (the step crossing), and no footprint-overlapped cell
+/// is `impassable` in the region field (the region gate; arrest/terrain apply elsewhere — see this
+/// function's region gate).
+///
+/// One-way walls (`vision::Seg::one_way`) are filtered out of BOTH wall checks (the disc clearance
+/// and the step crossing) when the step's origin — the from-cell CENTER, the router's analog of
+/// the executor's pre-step point — sits on the wall's transparent side (`vision::Seg::transparent_from`,
+/// the SAME predicate `move_exec` applies per dense step and `vision::nearest_hit` applies
+/// per ray). This is what keeps the GridStepped route⇔gate parity bidirectional across a
+/// one-way wall rather than the router refusing a step the gate would accept.
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -183,13 +218,16 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let ctr = grid.inputs.shape.cell_center(to);
     let a = grid.inputs.shape.cell_center(from);
 
-    // (1) Footprint disc vs every blocksMove wall.
+    // Disc clearance: footprint disc vs every blocksMove wall, one-way-filtered from `a` (see the fn doc).
     for w in grid.inputs.walls {
+        if w.transparent_from(a) {
+            continue;
+        }
         if point_segment_distance(ctr, w.a, w.b) < r_scene {
             return false;
         }
     }
-    // (2) Mask: every footprint-overlapped cell, AND every cell the center-to-center step's
+    // Mask test: every footprint-overlapped cell, AND every cell the center-to-center step's
     // supercover crosses, must be visible/revealed (non-GM).
     //
     // INVARIANT: `GridShape::line_traversal` is the SAME primitive the sole move executor
@@ -219,13 +257,17 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             None => return false,
         }
     }
-    // (3) Center-to-center step clears every wall (reuses the segment-cross predicate).
+    // Step crossing: center-to-center step clears every wall (reuses the segment-cross
+    // predicate), one-way-filtered from `a` like the disc clearance.
     for w in grid.inputs.walls {
+        if w.transparent_from(a) {
+            continue;
+        }
         if crate::scene::segments_cross(a, ctr, w.a, w.b) {
             return false;
         }
     }
-    // (4) Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
+    // Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
     // rule — membership is any footprint-overlapped cell, not just the destination center, since a
     // wide-bodied token can't fit past impassable terrain any more than a wall.
     // Arrest/terrain are NOT footprint-gated here: they represent effects on the mover's own
@@ -250,7 +292,8 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
 #[cfg(test)]
 mod astar_tests;
 
-/// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
+/// Why a path request fails. The wire boundary converts it to a `PathErrorReason` through
+/// `From<PathFail>` (the `PathError` frame's typed reason and its presentable text).
 #[derive(Debug, PartialEq, Eq)]
 pub enum PathFail {
     /// Degenerate request: no destination, non-finite input, or an
@@ -295,7 +338,7 @@ fn replay_step_costs(grid: &PathGrid<'_>, cells: &[Cell]) -> Vec<f64> {
             .expect(
                 "cells adjacent along an already-found route are a valid grid_shape neighbor pair",
             );
-        out.push(terrain_cost(grid.inputs.regions, w[1], grid.inputs.traits) * sc);
+        out.push(terrain_cost(grid.inputs.regions, w[1], &grid.inputs.traits) * sc);
         p = next_p;
     }
     out
@@ -341,11 +384,12 @@ impl PartialOrd for QNode {
 /// terrain can only make the real path more expensive, never cheaper than this heuristic assumes,
 /// and an exempt mover's cost equals the unweighted assumption exactly.
 /// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
-/// holds because Δh per king-move never exceeds that move's minimum step cost: orthogonal Δh ≤ 1 =
-/// orthogonal cost; diagonal Δh ≤ √2 ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
-/// Euclidean √2, Alternating 1); for Alternating the optimistic bound (Chebyshev = dmax) gives
-/// Δh ≤ 1, which is the cheapest diagonal cost. Consistency is load-bearing: it makes the first
-/// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
+/// holds because Δh per graph edge never exceeds that edge's minimum step cost: orthogonal Δh ≤ 1 =
+/// orthogonal cost on every rule; diagonal Δh ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
+/// Euclidean √2, Alternating 1, Approximate 1.5 — for the two rules whose heuristic stays at the
+/// Chebyshev bound, Δh ≤ 1 ≤ the diagonal cost); `Orthogonal` has no diagonal edges at all and its
+/// Manhattan estimate changes by exactly 1 per orthogonal step. Consistency is load-bearing: it
+/// makes the first goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
 ///
 /// `pub(crate)` so `SquareGrid::heuristic` can return this byte-identical value —
 /// `astar_leg` calls it only through `grid.inputs.shape.heuristic(...)` now, never directly, so
@@ -357,9 +401,14 @@ pub(crate) fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let (dmax, dmin) = (di.max(dj) as f64, di.min(dj) as f64);
     match rule {
         // Alternating's optimistic bound assumes every diagonal is cheap (cost 1) → Chebyshev.
-        DiagonalRule::Chebyshev | DiagonalRule::Alternating => dmax,
+        // Approximate's true diagonal cost (1.5) is ≥ 1, so the same Chebyshev bound stays
+        // admissible — looser than the true cost, never over it.
+        DiagonalRule::Chebyshev | DiagonalRule::Alternating | DiagonalRule::Approximate => dmax,
         DiagonalRule::Manhattan => (di + dj) as f64,
         DiagonalRule::Euclidean => (dmax - dmin) + std::f64::consts::SQRT_2 * dmin,
+        // No diagonal edges exist under Orthogonal: Manhattan distance is the exact cost of the
+        // 4-directional unit-step graph, hence admissible AND consistent for it.
+        DiagonalRule::Orthogonal => (di + dj) as f64,
     }
 }
 
@@ -421,7 +470,7 @@ pub(crate) fn astar_leg(
             if !cell_enterable(grid, cell, next) {
                 continue;
             }
-            let mult = terrain_cost(grid.inputs.regions, next, grid.inputs.traits);
+            let mult = terrain_cost(grid.inputs.regions, next, &grid.inputs.traits);
             let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {
@@ -543,8 +592,8 @@ pub fn find(
     let mut cells: Vec<Cell> = Vec::new();
     let mut total = 0.0;
     let mut parity = 0u8;
-    // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
-    // window: both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
+    // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window:
+    // both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
     // the axial window. A square-only `to_cell` here paired with the square window would silently
     // route a hex request to the WRONG destination cell; fixing only one side would instead make
     // the goal fall outside the other's box, reading spuriously Unreachable.

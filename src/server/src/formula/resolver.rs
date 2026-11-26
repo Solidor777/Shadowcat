@@ -1,9 +1,10 @@
-//! The engine's default reference resolver: a dotted path is read LITERALLY
-//! from a document's `system` band (`a.b.c` → `/system/a/b/c`). No vocabulary
-//! is baked in — where a system keeps its variables (e.g. `system.stats`) is
-//! the system's choice, expressed in the formulas it authors. The server
-//! reads a number because a formula named it; it knows nothing about what
-//! the leaf means.
+//! The engine's default reference resolver reads a dotted path LITERALLY from a document's
+//! `system` band.
+//!
+//! The path `a.b.c` reads `/system/a/b/c`. No vocabulary is baked in — where a system keeps its
+//! variables (e.g. `system.stats`) is the system's choice, expressed in the formulas it authors.
+//! The server reads a number because a formula named it; it knows nothing about what the leaf
+//! means.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

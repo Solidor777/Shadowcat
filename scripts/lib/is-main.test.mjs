@@ -1,10 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { readFileSync, renameSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import process from "node:process";
 import { splitLine } from "./comment-span.mjs";
+import { repoFiles } from "./gate-corpus.mjs";
 import { isDirectEntry } from "./is-main.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const SCRIPTS_DIR = resolve(fileURLToPath(import.meta.url), "..", "..");
 
@@ -18,19 +20,19 @@ const RUNNER_ARGV1 = process.argv[1];
  * Test modules are excluded: a test file is never the process entry point — the runner is — and
  * these cases assign `argv[1]` themselves, which would make the pin below match its own source.
  *
- * @param {string} dir - Directory to walk.
+ * The set is the repository corpus (`repoFiles`: tracked plus untracked, non-ignored files), so a
+ * new script that reads `argv[1]` is caught before it is added to git. This is a BAN pin.
+ *
+ * @param {string} repoRoot - The repository root whose `scripts/` directory is listed.
  * @returns {string[]} Absolute paths, sorted so the pin's expectation is order-independent.
  * @example
- * const files = executableScripts(SCRIPTS_DIR);
+ * const files = executableScripts(dirname(SCRIPTS_DIR));
  */
-function executableScripts(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...executableScripts(path));
-    else if (entry.name.endsWith(".mjs") && !entry.name.endsWith(".test.mjs")) out.push(path);
-  }
-  return out.sort();
+function executableScripts(repoRoot) {
+  return repoFiles({ cwd: repoRoot, roots: ["scripts"], exts: [".mjs"], log: () => {} })
+    .filter((p) => !p.endsWith(".test.mjs"))
+    .map((p) => join(repoRoot, ...p.split("/")))
+    .sort();
 }
 
 /**
@@ -98,9 +100,35 @@ describe("isDirectEntry", () => {
   });
 });
 
+describe("executableScripts lists the shared corpus", () => {
+  const scratch = () =>
+    makeRepo(
+      {
+        ".gitignore": "scripts/ignored.mjs\n",
+        "scripts/tracked.mjs": "export const a = 1;\n",
+        "scripts/tracked.test.mjs": "export const t = 1;\n",
+        "scripts/stray.mjs": "export const s = 1;\n",
+        "scripts/ignored.mjs": "export const i = 1;\n",
+        "scripts/gone.mjs": "export const g = 1;\n",
+      },
+      [".gitignore", "scripts/tracked.mjs", "scripts/tracked.test.mjs", "scripts/gone.mjs"],
+    );
+  const names = (dir) => executableScripts(dir).map((p) => relative(join(dir, "scripts"), p));
+
+  it("includes an untracked script, omits an ignored one and every test module", () => {
+    expect(names(scratch())).toEqual(["gone.mjs", "stray.mjs", "tracked.mjs"]);
+  });
+
+  it("omits a tracked script deleted in the working tree", () => {
+    const dir = scratch();
+    renameSync(join(dir, "scripts", "gone.mjs"), join(dir, "gone-aside.txt"));
+    expect(names(dir)).toEqual(["stray.mjs", "tracked.mjs"]);
+  });
+});
+
 describe("the entry-point decision", () => {
   it("is read from argv[1] in exactly one module across the scripts tree", () => {
-    const readers = executableScripts(SCRIPTS_DIR)
+    const readers = executableScripts(dirname(SCRIPTS_DIR))
       .filter((file) => codeOf(readFileSync(file, "utf8")).includes("argv[1]"))
       .map((file) => relative(SCRIPTS_DIR, file).split(sep).join("/"));
     expect(readers).toEqual(["lib/is-main.mjs"]);

@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
-  import { type TokenVisual, type RenderVisual, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
+  import { untrack } from "svelte";
+  import { createSubscriber } from "svelte/reactivity";
+  import { getAppContext, TagChips } from "@shadowcat/ui-kit";
+  import { queryAssets, type TokenVisual, type RenderVisual, type VisualTransform, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
+  // The random-variant kind nests this same editor for its fallback visual (self-import).
+  import VisualKindEditor from "./VisualKindEditor.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -9,7 +13,11 @@
     conditionOptions,
     onBuild,
     initial,
+    allowRandomVariant = true,
   }: {
+    /** Whether the "Random variant" kind is offered. The nested fallback editor turns it off:
+     * a pool's fallback can never itself be a pool (`TokenVisual::validate` refuses it). */
+    allowRandomVariant?: boolean;
     /** `[id, Condition]` pairs from the world's condition registry, populating the face-map
      * editor's condition dropdown. */
     conditionOptions: [string, Condition][];
@@ -23,10 +31,10 @@
     initial?: TokenVisual;
   } = $props();
 
-  // Seeds from `initial` once at mount — see the block comment above the other initial-seeded
-  // states below; capturing the initial prop value is the intended semantics.
-  // svelte-ignore state_referenced_locally
-  let assetId = $state<string | null>(initial?.kind === "image" ? initial.asset : null);
+  // `initial` is read once at mount: the editor owns its state afterward (a host switching edit
+  // targets remounts via `{#key}`), so every state below seeds from this untracked snapshot.
+  const seed = untrack(() => initial);
+  let assetId = $state<string | null>(seed?.kind === "image" ? seed.asset : null);
 
   /** Editor-local flat state for one `AnimatedSource`; `animSourceToSource` projects it into
    * the wire union, keeping only the fields for the active `sourceType`. */
@@ -104,6 +112,87 @@
     return (anim.sourceType === "frames" && anim.frames.length > 0) || (anim.sourceType === "sheet" && !!anim.sheetAsset);
   }
 
+  /** Editor-local state for one art slot's `VisualTransform`. It belongs to the SLOT (the
+   * top-level visual, a face row, or the generated art), not to the slot's image-or-animated
+   * kind, so switching kind keeps the framing. */
+  type TransformState = {
+    /** Horizontal anchor fraction; `0.5` is centered. Not clamped, matching the server. */
+    anchorX: number;
+    /** Vertical anchor fraction; `0.5` is centered. Not clamped, matching the server. */
+    anchorY: number;
+    /** Art size multiplier against the token's box; must be finite and positive to build. */
+    scale: number;
+    /** Multiply tint as a css `#rrggbb` string, or `null` for none. */
+    tint: string | null;
+    /** Degrees the art faces as drawn, in the token rotation convention (0 right, 90 down, 180 left,
+     * 270 up); any finite number, normalised into `[0, 360)` when built. `0` is the default. */
+    facing: number;
+  };
+  /**
+   * Fresh `TransformState` at the default framing (centered, unscaled, untinted). Every call
+   * returns a distinct object — the same no-aliasing rule as `newAnimSourceState`.
+   * @returns A new default `TransformState`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * newTransformState(); // { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null, facing: 0 }
+   * ```
+   */
+  function newTransformState(): TransformState {
+    return { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null, facing: 0 };
+  }
+  /**
+   * The inverse projection of `buildTransform`: unfolds a wire `VisualTransform` into editor
+   * state, for `initial`-driven initialization. An absent transform unfolds as the default.
+   * @param t The wire transform to unfold, or absent.
+   * @returns A fresh `TransformState` projecting back onto `t` via `buildTransform`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * transformStateFrom({ anchor: { x: 0.5, y: 0.75 }, scale: 1.5, tint: "#ff8800", facing: 270 });
+   * ```
+   */
+  function transformStateFrom(t: VisualTransform | null | undefined): TransformState {
+    return t ? { anchorX: t.anchor.x, anchorY: t.anchor.y, scale: t.scale, tint: t.tint ?? null, facing: t.facing ?? 0 } : newTransformState();
+  }
+  /**
+   * Whether a transform state builds into a `VisualTransform` the server and `resolveTokenVisual`
+   * accept: finite anchors, a finite facing and a finite positive scale (a cleared number input reads as `0`/`NaN`
+   * and blocks the build rather than emitting a visual the renderer would reject).
+   * @param s The transform editor state to check.
+   * @returns `true` iff `s` is acceptable.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * transformComplete({ anchorX: 0.5, anchorY: 0.5, scale: 0, tint: null, facing: 0 }); // false
+   * ```
+   */
+  function transformComplete(s: TransformState): boolean {
+    return Number.isFinite(s.anchorX) && Number.isFinite(s.anchorY) && Number.isFinite(s.scale) && s.scale > 0 && Number.isFinite(s.facing);
+  }
+  /**
+   * Projects a transform state into the object spread into an image/animated visual literal:
+   * `{ transform }` when the framing differs from the default, otherwise `{}` — so a default
+   * framing emits NO `transform` key and builds a visual identical to one authored without the
+   * disclosure.
+   * @param s The transform editor state to project.
+   * @returns `{ transform: VisualTransform }` or an empty object.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * buildTransform({ anchorX: 0.5, anchorY: 0.5, scale: 2, tint: null, facing: 0 }); // { transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } }
+   * ```
+   */
+  function buildTransform(s: TransformState): {
+    /** The authored framing; absent for the default. */
+    transform?: VisualTransform;
+  } {
+    if (s.anchorX === 0.5 && s.anchorY === 0.5 && s.scale === 1 && s.tint === null && s.facing === 0) return {};
+    // Normalised into [0, 360), the range the server accepts; a facing of 0 (or any multiple of 360) emits no key.
+    const facing = ((s.facing % 360) + 360) % 360;
+    return { transform: { anchor: { x: s.anchorX, y: s.anchorY }, scale: s.scale, ...(s.tint === null ? {} : { tint: s.tint }), ...(facing === 0 ? {} : { facing }) } };
+  }
+
   /** Editor-local state for one row of a `"faces"`-kind visual's face map. */
   type FaceRowState = {
     /** The face name this row is keyed under in the built `faces` map. */
@@ -114,6 +203,8 @@
     asset: string | null;
     /** The row's own animated-source editor state (`kind: "animated"` only). */
     anim: AnimSourceState;
+    /** The row's art framing, applied to whichever kind the row builds. */
+    transform: TransformState;
   };
   /**
    * Projects one face-row's editor state into the `FaceVisual` stored under its name in the
@@ -128,11 +219,13 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * faceRowToVisual({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState() });
+   * faceRowToVisual({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState(), transform: newTransformState() });
    * ```
    */
   function faceRowToVisual(f: FaceRowState): FaceVisual {
-    return f.kind === "image" ? { kind: "image", asset: f.asset ?? "" } : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop };
+    return f.kind === "image"
+      ? { kind: "image", asset: f.asset ?? "", ...buildTransform(f.transform) }
+      : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop, ...buildTransform(f.transform) };
   }
   /**
    * Whether a face row has enough data to be included in a save — an `"image"` row needs a
@@ -144,11 +237,11 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * faceRowComplete({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState() }); // true
+   * faceRowComplete({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState(), transform: newTransformState() }); // true
    * ```
    */
   function faceRowComplete(f: FaceRowState): boolean {
-    return f.kind === "image" ? !!f.asset : animSourceComplete(f.anim);
+    return transformComplete(f.transform) && (f.kind === "image" ? !!f.asset : animSourceComplete(f.anim));
   }
 
   /**
@@ -189,9 +282,9 @@
    */
   function faceRowStatesFrom(faces: Record<string, FaceVisual>): FaceRowState[] {
     return Object.entries(faces).map(([name, v]): FaceRowState => {
-      if (v.kind === "image") return { name, kind: "image", asset: v.asset, anim: newAnimSourceState() };
-      if (v.kind === "animated") return { name, kind: "animated", asset: null, anim: animSourceStateFrom(v.source, v.fps, v.loop) };
-      return { name, kind: "image", asset: null, anim: newAnimSourceState() };
+      if (v.kind === "image") return { name, kind: "image", asset: v.asset, anim: newAnimSourceState(), transform: transformStateFrom(v.transform) };
+      if (v.kind === "animated") return { name, kind: "animated", asset: null, anim: animSourceStateFrom(v.source, v.fps, v.loop), transform: transformStateFrom(v.transform) };
+      return { name, kind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState() };
     });
   }
 
@@ -204,6 +297,8 @@
     asset: string | null;
     /** The art's own animated-source editor state (`artKind: "animated"` only). */
     anim: AnimSourceState;
+    /** The art's own framing (anchor/scale/tint), applied before the crop. */
+    transform: TransformState;
     /** The shape the art is cropped to. */
     crop: GeneratedCrop;
     /** Whether a decorative border ring is emitted (`buildVisual` reads the color/width only
@@ -230,7 +325,7 @@
    * ```
    */
   function newGeneratedState(): GeneratedState {
-    return { artKind: "image", asset: null, anim: newAnimSourceState(), crop: "circle", borderOn: false, borderColor: "#ff8800", borderWidth: 0.06, backgroundOn: false, backgroundColor: "#102030" };
+    return { artKind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState(), crop: "circle", borderOn: false, borderColor: "#ff8800", borderWidth: 0.06, backgroundOn: false, backgroundColor: "#102030" };
   }
   /**
    * Unfolds a `"generated"`-kind `initial` visual into its `GeneratedState`, for `initial`-driven
@@ -251,6 +346,7 @@
       artKind: v.art.kind === "animated" ? "animated" : "image",
       asset: v.art.kind === "image" ? v.art.asset : null,
       anim: v.art.kind === "animated" ? animSourceStateFrom(v.art.source, v.art.fps, v.art.loop) : newAnimSourceState(),
+      transform: v.art.kind === "generated" ? newTransformState() : transformStateFrom(v.art.transform),
       crop: v.crop,
       borderOn: v.border !== null,
       borderColor: v.border?.color ?? "#ff8800",
@@ -273,22 +369,57 @@
    * ```
    */
   function generatedArtComplete(g: GeneratedState): boolean {
+    if (!transformComplete(g.transform)) return false;
     if (g.artKind === "image") return !!g.asset;
     return animSourceComplete(g.anim) && Number.isFinite(g.anim.fps) && g.anim.fps > 0;
   }
 
-  // Every state below seeds from the `initial` prop ONCE at mount — the editor owns its state
-  // afterward (a host switching edit targets remounts via `{#key}` instead), so capturing the
-  // initial prop value is the intended semantics, per the prop's own doc.
-  // svelte-ignore state_referenced_locally
-  let visualKind = $state<"image" | "faces" | "animated" | "generated">(initial?.kind ?? "image");
-  // svelte-ignore state_referenced_locally
-  let topAnim = $state<AnimSourceState>(initial?.kind === "animated" ? animSourceStateFrom(initial.source, initial.fps, initial.loop) : newAnimSourceState());
-  // svelte-ignore state_referenced_locally
-  let faceRows = $state<FaceRowState[]>(initial?.kind === "faces" ? faceRowStatesFrom(initial.faces) : []);
-  // svelte-ignore state_referenced_locally
-  let defaultFace = $state(initial?.kind === "faces" ? initial.default : "");
-  // svelte-ignore state_referenced_locally
+  /** Editor-local state for the `"randomVariant"` kind: the pool's filter plus the nested
+   * fallback editor's latest built visual. */
+  type RandomVariantState = {
+    /** The `asset_folder` document id the pool is restricted to (its subtree), or `null` for the
+     * whole world. */
+    folder: string | null;
+    /** Tags every pool member must carry. */
+    tags: string[];
+  };
+  /**
+   * Fresh `RandomVariantState` (whole world, no tags). Every call returns a distinct object.
+   * @returns A new default `RandomVariantState`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * newRandomVariantState(); // { folder: null, tags: [] }
+   * ```
+   */
+  function newRandomVariantState(): RandomVariantState {
+    return { folder: null, tags: [] };
+  }
+
+  // Every state below seeds from `seed`, the one-time snapshot of the `initial` prop.
+  let visualKind = $state<"image" | "faces" | "animated" | "generated" | "randomVariant">(seed?.kind ?? "image");
+  let rv = $state<RandomVariantState>(seed?.kind === "randomVariant" ? { folder: seed.filter.folder ?? null, tags: [...seed.filter.tags] } : newRandomVariantState());
+  /** The nested fallback editor's latest built visual (`null` while incomplete). `$state.raw`:
+   * the value is a finished object this editor never mutates, and deep-proxying it would leak a
+   * reactive Proxy into the built document (see `animSourceToSource`). */
+  let rvFallback = $state.raw<TokenVisual | null>(null);
+  /** The fallback editor's seed, read once at mount from a `"randomVariant"` `initial`. */
+  const rvFallbackInitial = seed?.kind === "randomVariant" ? seed.fallback : undefined;
+  /** The deterministic preview of the pool: the first image the filter matches (the same asset
+   * `queryAssets` lists first, never a live random pick), `null` while none matches or loading. */
+  let rvPreviewAsset = $state<string | null>(null);
+  /** Monotonic marker: a slower earlier preview query must not overwrite a newer one. */
+  let rvPreviewGeneration = 0;
+  /** The `asset_folder` documents offered by the pool's folder select, in document order. */
+  const subscribeFolders = createSubscriber((update) => ctx.documents.subscribe(update));
+  const folderDocs = $derived.by(() => {
+    subscribeFolders();
+    return ctx.documents.query("asset_folder");
+  });
+  let topAnim = $state<AnimSourceState>(seed?.kind === "animated" ? animSourceStateFrom(seed.source, seed.fps, seed.loop) : newAnimSourceState());
+  let topTransform = $state<TransformState>(seed?.kind === "image" || seed?.kind === "animated" ? transformStateFrom(seed.transform) : newTransformState());
+  let faceRows = $state<FaceRowState[]>(seed?.kind === "faces" ? faceRowStatesFrom(seed.faces) : []);
+  let defaultFace = $state(seed?.kind === "faces" ? seed.default : "");
   let faceMapRows = $state<{
     /** The condition registry id this row maps from; `""` when unset. */
     conditionId: string;
@@ -296,12 +427,11 @@
      * renamed/removed (dropped by `buildVisual`, not fatal). */
     faceName: string;
   }[]>(
-    initial?.kind === "faces" && initial.faceMap
-      ? Object.entries(initial.faceMap).map(([conditionId, faceName]) => ({ conditionId, faceName }))
+    seed?.kind === "faces" && seed.faceMap
+      ? Object.entries(seed.faceMap).map(([conditionId, faceName]) => ({ conditionId, faceName }))
       : [],
   );
-  // svelte-ignore state_referenced_locally
-  let gen = $state<GeneratedState>(initial?.kind === "generated" ? generatedStateFrom(initial) : newGeneratedState());
+  let gen = $state<GeneratedState>(seed?.kind === "generated" ? generatedStateFrom(seed) : newGeneratedState());
 
   /**
    * Builds the `TokenVisual` the host should save (via `onBuild`), or `null` when the current
@@ -340,18 +470,18 @@
    * ```
    */
   function buildVisual(): TokenVisual | null {
-    if (visualKind === "image") return assetId ? { kind: "image", asset: assetId } : null;
+    if (visualKind === "image") return assetId && transformComplete(topTransform) ? { kind: "image", asset: assetId, ...buildTransform(topTransform) } : null;
     if (visualKind === "animated") {
-      if (!animSourceComplete(topAnim)) return null;
-      return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop };
+      if (!animSourceComplete(topAnim) || !transformComplete(topTransform)) return null;
+      return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop, ...buildTransform(topTransform) };
     }
     if (visualKind === "generated") {
       if (!generatedArtComplete(gen)) return null;
       if (gen.borderOn && (!Number.isFinite(gen.borderWidth) || gen.borderWidth <= 0)) return null;
       const art: RenderVisual =
         gen.artKind === "image"
-          ? { kind: "image", asset: gen.asset ?? "" }
-          : { kind: "animated", source: animSourceToSource(gen.anim), fps: gen.anim.fps, loop: gen.anim.loop };
+          ? { kind: "image", asset: gen.asset ?? "", ...buildTransform(gen.transform) }
+          : { kind: "animated", source: animSourceToSource(gen.anim), fps: gen.anim.fps, loop: gen.anim.loop, ...buildTransform(gen.transform) };
       return {
         kind: "generated",
         art,
@@ -359,6 +489,10 @@
         border: gen.borderOn ? { color: gen.borderColor, width: gen.borderWidth } : null,
         background: gen.backgroundOn ? { color: gen.backgroundColor } : null,
       };
+    }
+    if (visualKind === "randomVariant") {
+      if (!rvFallback) return null;
+      return { kind: "randomVariant", filter: { ...(rv.folder ? { folder: rv.folder } : {}), tags: [...rv.tags] }, fallback: rvFallback };
     }
     if (faceRows.length === 0 || !defaultFace || faceRows.some((f) => !f.name)) return null;
     const names = faceRows.map((f) => f.name);
@@ -390,11 +524,15 @@
   function resetVisualEditor(): void {
     visualKind = "image";
     topAnim = newAnimSourceState();
+    topTransform = newTransformState();
     faceRows = [];
     defaultFace = "";
     faceMapRows = [];
     assetId = null;
     gen = newGeneratedState();
+    rv = newRandomVariantState();
+    rvFallback = null;
+    rvPreviewAsset = null;
   }
 
   /**
@@ -418,6 +556,22 @@
   $effect(() => {
     onBuild(buildVisual());
   });
+
+  // The pool's live preview: re-queries on every filter change while the kind is selected and
+  // shows the first match. The query reads `rv` synchronously (the effect's dependencies) before
+  // awaiting; `rvPreviewGeneration` drops a stale response.
+  $effect(() => {
+    if (visualKind !== "randomVariant") return;
+    const query = { folder: rv.folder ?? undefined, recursive: rv.folder ? true : undefined, tags: rv.tags.length > 0 ? [...rv.tags] : undefined, kind: "image" as const, sort: "created" as const, limit: 1 };
+    const generation = ++rvPreviewGeneration;
+    void queryAssets(ctx.world, query)
+      .then((page) => {
+        if (generation === rvPreviewGeneration) rvPreviewAsset = page.items[0]?.id ?? null;
+      })
+      .catch(() => {
+        if (generation === rvPreviewGeneration) rvPreviewAsset = null;
+      });
+  });
 </script>
 
 <label>{t("actors.visualKind")}
@@ -426,6 +580,9 @@
     <option value="faces">{t("actors.visualKindFaces")}</option>
     <option value="animated">{t("actors.visualKindAnimated")}</option>
     <option value="generated">{t("actors.visualKindGenerated")}</option>
+    {#if allowRandomVariant}
+      <option value="randomVariant">{t("actors.visualKindRandomVariant")}</option>
+    {/if}
   </select>
 </label>
 
@@ -478,10 +635,45 @@
   <label><input type="checkbox" bind:checked={anim.loop} /> {t("actors.animLoop")}</label>
 {/snippet}
 
+{#snippet transformEditor(s: TransformState)}
+  <details class="transform-editor">
+    <summary>{t("actors.transformAdvanced")}</summary>
+    <!-- value + onchange/oninput (not bind:value): same fireEvent.change test-sync reason as the animated source's numeric inputs above. -->
+    <!-- step="any": the authored values are arbitrary fractions, and a step mismatch would make the host form refuse to submit. -->
+    <label>{t("actors.transformAnchorX")}
+      <input type="number" step="any" aria-label={t("actors.transformAnchorX")} value={s.anchorX} onchange={(e) => (s.anchorX = Number(e.currentTarget.value))} oninput={(e) => (s.anchorX = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformAnchorY")}
+      <input type="number" step="any" aria-label={t("actors.transformAnchorY")} value={s.anchorY} onchange={(e) => (s.anchorY = Number(e.currentTarget.value))} oninput={(e) => (s.anchorY = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformScale")}
+      <input type="number" min="0.01" step="any" aria-label={t("actors.transformScale")} value={s.scale} onchange={(e) => (s.scale = Number(e.currentTarget.value))} oninput={(e) => (s.scale = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformTint")}
+      <input type="color" aria-label={t("actors.transformTint")} value={s.tint ?? "#ffffff"} onchange={(e) => (s.tint = e.currentTarget.value)} oninput={(e) => (s.tint = e.currentTarget.value)} />
+    </label>
+    <button type="button" disabled={s.tint === null} onclick={() => (s.tint = null)}>{t("actors.transformClearTint")}</button>
+    <label>{t("actors.transformFacing")}
+      <select aria-label={t("actors.transformFacing")} value={[0, 90, 180, 270].includes(s.facing) ? String(s.facing) : ""} onchange={(e) => { if (e.currentTarget.value !== "") s.facing = Number(e.currentTarget.value); }}>
+        <option value="0">{t("actors.transformFacingRight")}</option>
+        <option value="90">{t("actors.transformFacingDown")}</option>
+        <option value="180">{t("actors.transformFacingLeft")}</option>
+        <option value="270">{t("actors.transformFacingUp")}</option>
+        <option value="">{t("actors.transformFacingOther")}</option>
+      </select>
+    </label>
+    <label>{t("actors.transformFacingDegrees")}
+      <input type="number" step="any" aria-label={t("actors.transformFacingDegrees")} value={s.facing} onchange={(e) => (s.facing = Number(e.currentTarget.value))} oninput={(e) => (s.facing = Number(e.currentTarget.value))} />
+    </label>
+  </details>
+{/snippet}
+
 {#if visualKind === "image"}
   {@render assetPicker(assetId, (id: string) => (assetId = id))}
+  {@render transformEditor(topTransform)}
 {:else if visualKind === "animated"}
   {@render animatedEditor(topAnim)}
+  {@render transformEditor(topTransform)}
 {:else if visualKind === "generated"}
   <div class="generated-editor">
     <!-- The art sub-editor is the face-row pattern one level down: an image-or-animated kind
@@ -497,6 +689,7 @@
     {:else}
       {@render animatedEditor(gen.anim)}
     {/if}
+    {@render transformEditor(gen.transform)}
     <label>{t("actors.genCrop")}
       <select bind:value={gen.crop} aria-label={t("actors.genCrop")}>
         <option value="circle">{t("actors.shapeCircle")}</option>
@@ -520,6 +713,43 @@
       </label>
     {/if}
   </div>
+{:else if visualKind === "randomVariant"}
+  <div class="random-variant-editor">
+    <p class="hint">{t("actors.randomVariantHint")}</p>
+    <label>{t("actors.randomVariantFolder")}
+      <select
+        data-testid="random-variant-folder"
+        aria-label={t("actors.randomVariantFolder")}
+        value={rv.folder ?? ""}
+        onchange={(e) => (rv.folder = e.currentTarget.value === "" ? null : e.currentTarget.value)}
+      >
+        <option value="">{t("actors.randomVariantAnyFolder")}</option>
+        {#each folderDocs as f (f.id)}<option value={f.id}>{f.name ?? f.id}</option>{/each}
+      </select>
+    </label>
+    <div class="pool-tags">
+      <span>{t("actors.randomVariantTags")}</span>
+      <TagChips
+        tags={rv.tags}
+        onChange={(next) => (rv.tags = next)}
+        placeholder={t("actors.randomVariantTagPlaceholder")}
+        removeLabel={(tag) => t("actors.randomVariantRemoveTag", { tag })}
+        testIdPrefix="random-variant-tag"
+      />
+    </div>
+    <div class="preview">
+      <span>{t("actors.randomVariantPreview")}</span>
+      {#if rvPreviewAsset}
+        <img data-testid="random-variant-preview" class="current" src={ctx.assets.url(rvPreviewAsset)} alt="" />
+      {:else if rvFallback?.kind === "image"}
+        <img data-testid="random-variant-preview-fallback" class="current" src={ctx.assets.url(rvFallback.asset)} alt="" />
+      {/if}
+    </div>
+    <fieldset class="fallback">
+      <legend>{t("actors.randomVariantFallback")}</legend>
+      <VisualKindEditor {conditionOptions} initial={rvFallbackInitial} allowRandomVariant={false} onBuild={(v) => (rvFallback = v)} />
+    </fieldset>
+  </div>
 {:else}
   <div class="faces-editor">
     {#each faceRows as f, i (i)}
@@ -534,10 +764,11 @@
         {:else}
           {@render animatedEditor(f.anim)}
         {/if}
+        {@render transformEditor(f.transform)}
         <button type="button" onclick={() => (faceRows = faceRows.filter((_, j) => j !== i))}>{t("actors.faceRemove")}</button>
       </div>
     {/each}
-    <button type="button" onclick={() => (faceRows = [...faceRows, { name: "", kind: "image", asset: null, anim: newAnimSourceState() }])}>{t("actors.faceAdd")}</button>
+    <button type="button" onclick={() => (faceRows = [...faceRows, { name: "", kind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState() }])}>{t("actors.faceAdd")}</button>
     <label>{t("actors.faceDefault")}
       <select bind:value={defaultFace} aria-label={t("actors.faceDefault")}>
         <option value="">—</option>

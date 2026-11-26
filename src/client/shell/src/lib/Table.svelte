@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, StageView, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, PortalChooser, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
+  import type { TlsStatus } from "@shadowcat/types";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
+  import { untrack } from "svelte";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, resetSessionState } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, getChatHistory, pushChatHistory, resetSessionState } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
+  import { createPresentedNoteHandler } from "./presentedNote";
 
   // `PanelHost` binds the real implementation into this bridge at its own
   // mount (later than `Table`'s own init); calls made before that bind are
@@ -14,9 +17,10 @@
   const panels = new PanelsBridge(consoleLogger());
 
   let {
-    session,
+    session: sessionProp,
     leaveWorld,
     serverRole,
+    tls,
   }: {
     /** The entered world's session, non-null by the time `App` mounts `Table` (it
      * renders `Table` only once role+world are set from Welcome). */
@@ -26,7 +30,24 @@
     /** The caller's server tier — see `AppContext.serverRole` for the fail-closed
      * derivation and its cosmetic-only status. */
     serverRole: "admin" | "user";
+    /** The server's published TLS status, `null` when it could not be read; see
+     * `AppContext.tls`. */
+    tls: TlsStatus | null;
   } = $props();
+
+  // One `session` for this Table's whole life: every controller and context entry below is built
+  // from it once, at init. `App` renders `Table` inside `{#key session}`, so a different session
+  // mounts a fresh Table instead of reaching this one as a changed prop; the untracked read states
+  // that once-only capture. `serverRole`, `tls` and `leaveWorld` can change while mounted, so the
+  // context reads them live (getters and a closure).
+  const session = untrack(() => sessionProp);
+  // Fails loudly if a caller swaps the session on a mounted Table instead of remounting it: the
+  // controllers above were built from the first one and would keep serving it.
+  $effect(() => {
+    if (sessionProp !== session) {
+      throw new Error("Table received a different session than it was mounted with; render it inside {#key session}");
+    }
+  });
 
   // Sheet panels: the controller registers `sheet:<docId>` contributions on demand; the
   // panel host mounts + floats them. Constructed before setAppContext so `openDocument` is
@@ -55,10 +76,17 @@
   // buttons) resolves the same session-level selection. Stable per Table, like `speakAsToken`.
   const speakAs = new SpeakAs();
 
+  // Snap-mode preference (center vs vertex): the ToolRail toggle writes it, Stage pushes it
+  // to the engine's snap chokepoint. Client-local session state — never a document write.
+  // Stable per Table, like `speakAs`.
+  const snapModePreference = new SnapModePreference();
+
+  // Stage camera mirror: Stage writes the applied transform, stage overlays project scene
+  // points through it. Stable per Table, like `snapModePreference`.
+  const stageView = new StageView();
+
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
-  // `session` is fixed per Table, so capturing it once here is intended (see the identical
-  // rationale on the `setAppContext` call below).
-  // svelte-ignore state_referenced_locally
+  // `session` is fixed per Table (see its capture above).
   const templates = new TemplatesController({
     store: session.store,
     documents: session.documents,
@@ -81,10 +109,20 @@
     sheets.restoreFromPersisted(getPanelLayout(session.world!));
   });
 
+  // The GM's "present this note" signal opens the note's sheet for every other client. The
+  // returned unsubscribe is the effect's cleanup.
+  const onPresentNote = createPresentedNoteHandler({
+    documents: session.documents,
+    selfId: session.selfId,
+    openDocument: (ref) => sheets.openDocument(ref),
+    notify: (message, level) => notifications.push(level ?? "warning", message),
+    t,
+  });
+  $effect(() => session.onPresentNote(onPresentNote));
+
   // App renders <Table> only once role+world are set (Welcome received), so these
   // are non-null at init. setContext must run during init, not in markup; the
-  // session/leaveWorld are fixed per Table, so capturing them once is intended.
-  // svelte-ignore state_referenced_locally
+  // session is fixed per Table, so capturing it once is intended.
   setAppContext({
     contributions: session.contributions,
     store: session.store,
@@ -92,14 +130,32 @@
     combat: session.combat,
     world: session.world!,
     role: session.role!,
-    serverRole,
+    // A getter, not a captured value: the caller's tier is a prop that follows the loaded account.
+    get serverRole() {
+      return serverRole;
+    },
+    // A getter, not a captured value: `tls` is a prop the shell refreshes after a failed first
+    // read, and consumers must see the current one.
+    get tls() {
+      return tls;
+    },
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
     canCreate: (docType) => session.canCreate(docType),
     canDelete: (doc) => session.canDelete(doc),
     openDocument: (ref) => sheets.openDocument(ref),
     notify: (message, level) => notifications.push(level ?? "warning", message),
+    notifyProgress: (message, progress) => {
+      const id = notifications.push("info", message, undefined, progress);
+      return {
+        id,
+        update: (patch) => notifications.update(id, patch),
+        dismiss: () => notifications.dismiss(id),
+      };
+    },
     members: session.members,
+    memberProfiles: session.memberProfiles,
+    presence: session.presence,
     t,
     plural,
     compare,
@@ -121,6 +177,9 @@
     get footprints() {
       return session.footprints;
     },
+    get bars() {
+      return session.bars;
+    },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
     get viewedLevel() {
       return session.viewedLevel;
@@ -130,18 +189,29 @@
     sceneSelection,
     speakAsToken,
     speakAs,
+    snapModePreference,
+    stageView,
+    shareRuler: session.shareRuler,
+    sendRulerUpdate: (scene, points, active) => session.sendRulerUpdate(scene, points, active),
+    onRuler: (cb) => session.onRuler(cb),
     sendPing: (x, y) => session.sendPing(x, y),
     sendEmote: (token, emote) => session.sendEmote(token, emote),
+    resetExploredFog: (scene, opts) => session.resetExploredFog(scene, opts),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
-    moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
+    moveRequest: (s, tid, p, g) => session.moveRequest(s, tid, p, g),
+    toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),
+    placeEffect: (module, placement, sceneId, shape, caster) =>
+      session.placeEffect(module, placement, sceneId, shape, caster),
     onPing: (cb) => session.onPing(cb),
     onEmote: (cb) => session.onEmote(cb),
+    onScrollingText: (cb) => session.onScrollingText(cb),
     onMoveOutcome: (cb) => session.onMoveOutcome(cb),
     chat: {
       send: (o) => session.sendChatMessage(o),
       edit: (id, c) => session.editChatMessage(id, c),
       delete: (id) => session.deleteChatMessage(id),
       recalc: (id, rollId, ops) => session.recalcRoll(id, rollId, ops),
+      reviseAudience: (id, audience) => session.reviseAudience(id, audience),
       drawTable: (opts) => session.drawTable(opts),
     },
     uiState: {
@@ -149,15 +219,26 @@
       setPanelLayout: (blob) => setPanelLayout(session.world!, blob),
       getChatRead: () => getChatRead(session.world!),
       setChatRead: (blob) => setChatRead(session.world!, blob),
+      getChatHistory: () => getChatHistory(session.world!),
+      pushChatHistory: (text) => pushChatHistory(session.world!, text),
     },
     panels,
     dice3d: session.dice3d,
     audio: session.audio,
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
+    notes: { present: (noteId) => session.presentNote(noteId) },
+    portal: {
+      onOffer: (cb) => session.onPortalOffer(cb),
+      choose: (offerId, choice) => session.choosePortal(offerId, choice),
+      decline: (offerId) => session.choosePortal(offerId, null),
+      open: (token) => session.openPortal(token),
+    },
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
-    leaveWorld,
+    moduleStatus: session.moduleStatus,
+    activeModuleManifests: () => session.activeModuleManifests(),
+    leaveWorld: () => leaveWorld(),
     logout: async () => {
       await logout();
       resetSessionState();
@@ -179,3 +260,5 @@
 <Surface contract="shadowcat.surface:root" />
 <TemplateModalHost controller={templates} />
 <NotificationHost />
+<DialogHost />
+<PortalChooser />

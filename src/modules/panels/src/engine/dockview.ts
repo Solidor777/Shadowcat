@@ -16,8 +16,8 @@ import type {
   TabPartInitParameters,
 } from "dockview-core";
 import { mount, unmount } from "svelte";
-import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
-import { i18n, theme } from "@shadowcat/ui-kit";
+import { consoleLogger, randomUuid, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
+import { i18n, theme, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
 import type { ExpandedLayout, LayoutOp, PopoutWindowLayout, Rect, ScreenRect } from "../layout/tree";
 import { classifyDrop, opForMenuCommand, MENU_FLOAT_RECT, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
@@ -976,7 +976,7 @@ export class DockviewEngine implements EngineAdapter {
     // interprets it; ops address the window by it. A menu gesture always
     // mints fresh: a dormant record the panel belonged to stays intact for
     // the remaining panels until a restore gesture revives it.
-    const key = crypto.randomUUID();
+    const key = randomUuid();
     void this.#popOutPanel(id, key, rect);
   }
 
@@ -1050,7 +1050,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // #requestPopOut and restorePopouts
-   * await this.#popOutPanel("chat", crypto.randomUUID(), null);
+   * await this.#popOutPanel("chat", randomUuid(), null);
    * ```
    */
   #popOutPanel(id: string, key: string, rect: ScreenRect | null): Promise<boolean> {
@@ -1346,15 +1346,22 @@ export class DockviewEngine implements EngineAdapter {
     dialogEl.tabIndex = -1;
     if (meta) dialogEl.setAttribute("aria-label", i18n.t("panels.floatingDialog", { panel: i18n.t(meta.labelKey) }));
     const onKeydown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        for (const cb of this.#opListeners) cb({ op: "close", id });
-        return;
-      }
       this.#handleFloatingKeydown(id, dialogEl, event);
     };
+    // Escape closes the panel only when the keystroke originates inside this dialog, so an
+    // Escape pressed elsewhere neither closes a floating panel nor is consumed on its behalf.
+    const disposeEscape = escapeCoordinator.register(
+      ESCAPE_PRIORITY.FLOATING_PANEL,
+      () => {
+        for (const cb of this.#opListeners) cb({ op: "close", id });
+      },
+      (event) => event.target instanceof Node && dialogEl.contains(event.target),
+    );
     dialogEl.addEventListener("keydown", onKeydown);
-    this.#floatingEscapeSubs.set(id, () => dialogEl.removeEventListener("keydown", onKeydown));
+    this.#floatingEscapeSubs.set(id, () => {
+      dialogEl.removeEventListener("keydown", onKeydown);
+      disposeEscape();
+    });
     dialogEl.focus();
   }
 

@@ -1,7 +1,7 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS, levelOf } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, tokenBoxContains, resolveTokenVisual, resolveTokenFacingVision, resolveSceneSettings, resolveTokenBarAttribute, barRevealed, EMPTY_FOOTPRINTS, EMPTY_BARS, levelOf } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, VisualTransform, FootprintLookup, BarsLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, TokenTransform } from "./types";
+import type { Point, TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, ResolvedArtTransform, TokenTransform } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
@@ -16,6 +16,10 @@ const NO_PERCEIVED: ReadonlySet<string> = new Set();
  * module-level so the default getter shares one frozen instance. */
 const EMPTY_TOKEN_SELECTION: ReadonlySet<string> = new Set();
 
+/** How far the facing wedge reaches from the token's center, in grid cells — a display length
+ * only; the server's sight range, not this, decides what the token sees. */
+const WEDGE_LENGTH_CELLS = 3;
+
 /** Blend strength a condition registry's `tint`/`highlight` fx applies at: the registry authors
  * a color, not a strength (`ConditionFx` carries no strength field), and full strength would
  * replace the art outright, so condition fx land at an even half. */
@@ -27,9 +31,28 @@ const SELECTION_HIGHLIGHT_COLOR = 0xffd400;
 /** See `SELECTION_HIGHLIGHT_COLOR`. */
 const SELECTION_HIGHLIGHT_STRENGTH = 0.4;
 
+/** The marker tint of a token revealed only through a creature sense: a cool cyan, distinct from
+ * the selection highlight's gold, so a player reads the token as sensed rather than seen. */
+const PERCEIVED_FX_COLOR = 0x4fc3ff;
+/** See `PERCEIVED_FX_COLOR`; partial so the art stays readable under the tint. */
+const PERCEIVED_FX_STRENGTH = 0.35;
+
 /** The GM's ghost-other-levels rendering: desaturated + faded, so a token on another floor
  * reads as context rather than as an actionable piece on the currently-viewed one. */
 const GHOST_FX: TokenFx[] = [{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }];
+
+/** The built-in silhouette a token draws when it carries no visual at all: a neutral grey disc
+ * with a darker ring, frame-only (no art, so no asset is fetched). A token whose identity the
+ * server withholds from this recipient (secret-identity mode strips `visual` and the actor link)
+ * arrives with no visual; drawing nothing would make its absence from the canvas, beside a
+ * still-delivered position, an identity tell of its own. The art is a client constant, so it
+ * discloses nothing server-side. */
+const GENERIC_HIDDEN_TOKEN_VISUAL: TokenNodeSpec["visual"] = {
+  kind: "generated",
+  crop: "circle",
+  background: { color: 0x6b6b6b },
+  border: { color: 0x2b2b2b, width: 0.06 },
+};
 
 /** Parse a condition-fx css color to packed `0xRRGGBB`, failing closed to `null` on anything
  * that isn't exactly `#rrggbb` — ingress (`Condition::validate`) enforces that shape, and a
@@ -68,6 +91,36 @@ function conditionFxEntries(cf: ConditionFx): TokenFx[] {
   return out;
 }
 
+/** Where a `TokenView` reads token nameplates and bars from. Everything here is host state: the
+ * server's resolved `"bars"` channel, the per-device budget flag, and the localized fallback
+ * label. The view decides nothing about who may see a value. */
+export interface TokenBarsHost {
+  /** The server's current resolved nameplates and bars, read fresh per `toSpec`. */
+  lookup: () => BarsLookup;
+  /** Live `PerformanceSettings.nameplatesAndBars`; `false` drops every nameplate and bar. */
+  enabled: () => boolean;
+  /** The label drawn for a delivered nameplate that names nothing (a secret identity). */
+  fallbackLabel: () => string;
+}
+
+/** The host a `TokenView` constructed without one reads: nothing delivered, nothing drawn. */
+const NO_BARS_HOST: TokenBarsHost = { lookup: () => EMPTY_BARS, enabled: () => true, fallbackLabel: () => "" };
+
+/** A bar's fill fraction: `current / max` clamped to `[0,1]`; a non-positive `max` has nothing
+ * to fill against and reads as empty.
+ * @param current The server-evaluated filled amount.
+ * @param max The server-evaluated full amount.
+ * @returns The fill fraction in `[0,1]`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * barFraction(5, 10); // 0.5
+ * ```
+ */
+function barFraction(current: number, max: number): number {
+  return max > 0 ? Math.min(1, Math.max(0, current / max)) : 0;
+}
+
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
@@ -84,6 +137,9 @@ export class TokenView {
   /** A locally-dragged token id snaps to its target each reconcile (no tween lag);
    * remote tokens still tween. Set by the move tool via the engine. */
   private dragging: string | null = null;
+  /** The token id under the pointer, or `null` — reveals `"hover"`-mode nameplates and bars.
+   * Set only through `setHovered`. */
+  private hovered: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
   /** Active grid's per-step world distance (`Grid.worldUnitsPerCell`) — see `setWorldUnitsPerCell`. */
@@ -127,6 +183,11 @@ export class TokenView {
    * always-`true`.
    * @param reducedMotion Resolves the live `PerformanceSettings.reducedMotion` flag, forwarded
    * to the internal `TokenAnimator`. Defaults to always-`false`.
+   * @param facingWedgeVisible Decides, per token doc, whether THIS viewer may see the token's
+   * facing wedge (the host passes owner-or-GM). Defaults to always-`false`, so a view built
+   * without one never draws a wedge and never reveals another creature's facing.
+   * @param barsHost Where nameplates and bars are read from (see `TokenBarsHost`). Defaults to a
+   * host that delivers nothing, under which no token draws a nameplate or bar.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -148,6 +209,8 @@ export class TokenView {
     private readonly ghostOtherLevels: () => boolean = () => false,
     private readonly tokenFx: () => boolean = () => true,
     reducedMotion: () => boolean = () => false,
+    private readonly facingWedgeVisible: (doc: WireDocument) => boolean = () => false,
+    private readonly barsHost: TokenBarsHost = NO_BARS_HOST,
   ) {
     this.animator = new TokenAnimator(reducedMotion);
   }
@@ -168,6 +231,71 @@ export class TokenView {
    */
   setDragging(id: string | null): void {
     this.dragging = id;
+  }
+
+  /** Set the token under the pointer and re-project the token the pointer left and the one it
+   * entered, so a `"hover"`-mode nameplate or bar appears and disappears with the pointer. No
+   * store commit carries a hover change, so this is the whole update path.
+   * @param id The hovered token id, or `null` when no token is under the pointer.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.setHovered("token-1");
+   * view.setHovered(null);
+   * ```
+   */
+  setHovered(id: string | null): void {
+    if (id === this.hovered) return;
+    const left = this.hovered;
+    this.hovered = id;
+    this.reproject([left, id]);
+  }
+
+  /** The id of the topmost tracked token whose drawn footprint contains `p`, or `null`. "Topmost"
+   * is the last match in spec insertion order, the order the backend appends token nodes in. The
+   * containment test is `tokenBoxContains`, the predicate the select tool picks with.
+   * @param p The scene-coordinate point to test.
+   * @returns The topmost token id under `p`, or `null`.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.tokenAt({ x: 10, y: 10 }); // null until reconcile() projects a token there
+   * ```
+   */
+  tokenAt(p: Point): string | null {
+    let hit: string | null = null;
+    for (const [id, spec] of this.specs) {
+      if (tokenBoxContains(spec, p)) hit = id;
+    }
+    return hit;
+  }
+
+  /** Re-project the named tracked tokens from the store and push them, the update path for state
+   * that changes without a store commit (the hovered token).
+   * @param ids The token ids to re-project; `null` entries and untracked ids are skipped.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.reproject(["token-1", null]);
+   * ```
+   */
+  private reproject(ids: ReadonlyArray<string | null>): void {
+    for (const id of ids) {
+      if (id === null || !this.specs.has(id)) continue;
+      const doc = this.store.get(id);
+      const spec = doc ? this.toSpec(doc) : null;
+      if (!spec) continue;
+      this.specs.set(id, spec);
+      this.push(id);
+    }
   }
 
   /** The badge chips the last `toSpec` projection produced for `id` (condition glyphs, then the
@@ -250,7 +378,7 @@ export class TokenView {
   hasAnimatedVisual(): boolean {
     for (const spec of this.specs.values()) {
       if (spec.visual.kind === "animated") return true;
-      if (spec.visual.kind === "generated" && spec.visual.art.kind === "animated") return true;
+      if (spec.visual.kind === "generated" && spec.visual.art?.kind === "animated") return true;
     }
     return false;
   }
@@ -494,6 +622,29 @@ export class TokenView {
     return levelOf(levels, elevation)?.id ?? null;
   }
 
+  /** Resolve the facing wedge for `doc`: present only when the host says this viewer may see
+   * the token's facing (`facingWedgeVisible`), the token's scene has the resolved `facingVision`
+   * switch on, and the token's effective `FacingVision` (`resolveTokenFacingVision`, the one
+   * precedence decision) is set and narrower than a full circle. Lengths convert from cells
+   * through `worldUnitsPerCell`, the view's one cell-size source.
+   * @param doc The `token` document.
+   * @returns The wedge spec, or `undefined` for none.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const doc: WireDocument;
+   * this.facingWedge(doc);
+   * ```
+   */
+  private facingWedge(doc: WireDocument): TokenNodeSpec["facing"] {
+    if (!this.facingWedgeVisible(doc)) return undefined;
+    const sceneDoc = this.store.query("scene").find((s) => s.id === doc.parent_id);
+    if (!resolveSceneSettings(sceneDoc, this.store).facingVision) return undefined;
+    const fv = resolveTokenFacingVision(doc, this.store);
+    if (!fv || fv.arc >= 360) return undefined;
+    return { arc: fv.arc, near: fv.near * this.worldUnitsPerCell, radius: WEDGE_LENGTH_CELLS * this.worldUnitsPerCell };
+  }
+
   /** Resolve an actor/token-declared `AnimatedSource` (raw asset ids) into a `ResolvedAnimatedSource`
    * (already-URL'd) via `this.assets`, mirroring the `visual.kind === "image"` branch's
    * `assets.url(...)` call in `toSpec` — the backend never resolves asset ids itself.
@@ -527,9 +678,33 @@ export class TokenView {
    * ```
    */
   private resolveArtVisual(art: Extract<RenderVisual, { /** Narrows `RenderVisual` to its drawable (non-`"generated"`) union members. */ kind: "image" | "animated" }>): ResolvedArtVisual {
+    // The key is omitted (not set to `undefined`) for an untransformed visual, so its spec has
+    // no `transform` key and equals a spec built from an art visual that carries none.
+    const transform = art.transform ? { transform: this.resolveTransform(art.transform) } : {};
     return art.kind === "image"
-      ? { kind: "image", url: this.assets.url(art.asset) }
-      : { kind: "animated", source: this.resolveSource(art.source), fps: art.fps, loop: art.loop };
+      ? { kind: "image", url: this.assets.url(art.asset), ...transform }
+      : { kind: "animated", source: this.resolveSource(art.source), fps: art.fps, loop: art.loop, ...transform };
+  }
+
+  /** Resolve an authored `VisualTransform` into the backend's `ResolvedArtTransform`: the tint is
+   * packed to `0xRRGGBB` via `parseColor` like every other color this module resolves, so the
+   * backend never parses colors.
+   * @param transform The authored anchor/scale/tint, already validated by `resolveTokenVisual`.
+   * @returns The same framing with the tint packed (absent when the author set none).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.resolveTransform({ anchor: { x: 0.5, y: 0.5 }, scale: 1, tint: "#ff8800" });
+   * ```
+   */
+  private resolveTransform(transform: VisualTransform): ResolvedArtTransform {
+    return {
+      anchorX: transform.anchor.x,
+      anchorY: transform.anchor.y,
+      scale: transform.scale,
+      ...(transform.tint ? { tint: parseColor(transform.tint) } : {}),
+      ...(transform.facing != null ? { facing: transform.facing } : {}),
+    };
   }
 
   /** Project a `token` doc into a renderable `TokenNodeSpec`: resolves the effective actor
@@ -558,9 +733,14 @@ export class TokenView {
     if (!s) return null;
     const eff = resolveTokenActor(doc, this.store);
     const visual = resolveTokenVisual(doc, this.store, eff);
-    if (!visual) return null;
+    // A token with no visual at all (none authored, or withheld from this recipient) draws the
+    // generic silhouette; a MALFORMED visual still fails closed to no node.
+    const noVisualAtAll = !(eff?.visual ?? s.visual);
+    if (!visual && !noVisualAtAll) return null;
     let resolvedVisual: TokenNodeSpec["visual"];
-    if (visual.kind === "generated") {
+    if (!visual) {
+      resolvedVisual = GENERIC_HIDDEN_TOKEN_VISUAL;
+    } else if (visual.kind === "generated") {
       // `resolveTokenVisual` already fails closed on a nested `generated`; the re-check here
       // narrows `art` for the type system (a garbled doc casting past the guard can still
       // carry one, and the backend must never resolve asset ids for a shape it cannot draw).
@@ -593,8 +773,13 @@ export class TokenView {
     const fx: TokenFx[] = this.tokenFx()
       ? conditions.flatMap((c) => (c.fx ? conditionFxEntries(c.fx) : []))
       : [];
-    // The selection signifier appends after every condition fx, so the highlight reads on top of
-    // condition tints (a selected poisoned token reads as selected first).
+    // A creature-sense-revealed token carries the reserved marker tint. It sits outside the
+    // `tokenFx` gate like the selection highlight: it is the only cue that a token drawn through
+    // fog is sensed, so the performance budget must not shed it.
+    const perceived = this.perceived().has(doc.id);
+    if (perceived) fx.push({ kind: "tint", color: PERCEIVED_FX_COLOR, strength: PERCEIVED_FX_STRENGTH });
+    // The selection signifier appends after every non-selection fx, so the highlight reads on top
+    // of condition and sense tints (a selected poisoned token reads as selected first).
     if (this.selectedTokens().has(doc.id)) fx.push({ kind: "highlight", color: SELECTION_HIGHLIGHT_COLOR, strength: SELECTION_HIGHLIGHT_STRENGTH });
     // Ghost-other-levels: only meaningful when a level is actually being viewed AND this
     // token resolves to a DIFFERENT one — a level-less scene (`resolvedLevelOf` returns
@@ -628,10 +813,47 @@ export class TokenView {
       borderColor,
       badges,
       shape: box.shape,
-      perceived: this.perceived().has(doc.id),
+      perceived,
     };
+    // The first overlay condition in effective order also draws large; its badge stays.
+    const overlayCondition = conditions.find((c) => c.overlay);
+    if (overlayCondition) spec.overlayIcon = overlayCondition.icon;
     if (aura) spec.aura = aura;
     if (fx.length > 0) spec.fx = fx;
+    const facing = this.facingWedge(doc);
+    if (facing) spec.facing = facing;
+    this.applyBars(doc, spec);
     return spec;
+  }
+
+  /** Fold the delivered nameplate and bars for `doc` into `spec`. Only values the server delivered
+   * to this viewer exist here (`resolveTokenBarAttribute` is a read-through; no formula is
+   * evaluated and no visibility is decided). Each draws when its delivered mode reveals it:
+   * `"hover"` while the token is hovered or selected, every other mode continuously. A delivered
+   * nameplate that names nothing draws the host's fallback label. `nameplatesAndBars` off drops
+   * both.
+   * @param doc The `token` document being projected.
+   * @param spec The node description under construction; `nameplate` and `bars` are set when
+   * they draw.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const doc: WireDocument;
+   * declare const node: TokenNodeSpec;
+   * this.applyBars(doc, node);
+   * ```
+   */
+  private applyBars(doc: WireDocument, spec: TokenNodeSpec): void {
+    if (!this.barsHost.enabled()) return;
+    const entry = resolveTokenBarAttribute(doc, this.barsHost.lookup());
+    if (!entry) return;
+    const emphasized = this.hovered === doc.id || this.selectedTokens().has(doc.id);
+    if (entry.nameplateMode !== null && barRevealed(entry.nameplateMode, emphasized)) {
+      spec.nameplate = entry.nameplate ?? this.barsHost.fallbackLabel();
+    }
+    const bars = entry.bars
+      .filter((b) => barRevealed(b.mode, emphasized))
+      .map((b) => ({ label: b.label, fraction: barFraction(b.current, b.max), color: parseColor(b.color) }));
+    if (bars.length > 0) spec.bars = bars;
   }
 }

@@ -13,6 +13,7 @@
  *     asset: "a-wind".into(),
  *     gain: 0.5,
  *     pan: -0.25,
+ *     muffled: false,
  *     loop_: true,
  * };
  * assert!(emitter.loop_);
@@ -29,15 +30,23 @@ token: string,
  */
 asset: string, 
 /**
- * Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* throughWallGain` if
- * occluded under `Occlusion::Walls` (never reduced to exactly `0` by occlusion alone — a
- * player still learns something is behind the door).
+ * Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* soundGain` of every crossed
+ * wall open to the listener by proximity (`WallProximity::sound_gain`), then `* throughWallGain` if
+ * occluded under `Occlusion::Walls` (a wall never reduces it to exactly `0` — a player
+ * still learns something is behind the door — but a crossed sound-blocking region does).
  */
 gain: number, 
 /**
  * Stereo pan, `-1..=1`.
  */
 pan: number, 
+/**
+ * Whether `gain` was reduced by wall occlusion this frame (`Occlusion::Walls` plus
+ * `segment_occluded`). The client runs a lowpass filter while `true`. Set by the same
+ * branch that applies `throughWallGain`, so the two never disagree; `false` under flat
+ * mixing, without a listener, and under `Occlusion::None`.
+ */
+muffled: boolean, 
 /**
  * Loop the asset per the emission's own `loop` flag.
  */

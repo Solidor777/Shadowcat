@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, EffectsList } from "@shadowcat/ui-kit";
   import { resolveConditions, firstChannel, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
   import { formatResource, type Row } from "./model";
 
@@ -30,8 +30,11 @@
     index: number;
     /** Whether the panel is in the compact (narrow-viewport) layout. */
     compact?: boolean;
+    /** Whether the whole-session pause freezes this user's combat controls. `busy` already
+     * covers the buttons that gate on it; this disables the controls that do not. */
+    frozen?: boolean;
   }
-  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false }: Props = $props();
+  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false, frozen = false }: Props = $props();
 
   const ctx = getAppContext();
   // Reactive bridge: `ctx.documents` is a plain-callback store, not a Svelte rune (mirrors
@@ -42,6 +45,14 @@
   const engine = $derived(row.doc.engine as CombatantEngine);
   const mayRoll = $derived(can.roll(row.doc.id));
   const mayEditResource = $derived(can.resource(row.doc.id));
+
+  // The document whose embedded effects this row lists: the token (its embedded actor copy)
+  // when the combatant names one, else the linked actor.
+  const effectHost = $derived.by(() => {
+    subscribeDocs();
+    const id = row.art.tokenId ?? row.art.actorId;
+    return id ? ctx.documents.get(id) : undefined;
+  });
 
   const conditions = $derived.by(() => {
     subscribeDocs();
@@ -110,6 +121,18 @@
   }
 
   /**
+   * Toggles this row's defeated state; the turn walk skips a defeated combatant.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's defeated button
+   * toggleDefeated();
+   * ```
+   */
+  function toggleDefeated(): void {
+    ctx.combat.setDefeated(row.doc.id, !engine.defeated);
+  }
+
+  /**
    * Removes this row's combatant from the combat.
    * @example
    * ```
@@ -152,9 +175,9 @@
   }
 </script>
 
-<div class="row" class:turn={isTurn} class:compact aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
+<div class="row" class:turn={isTurn} class:defeated={engine.defeated} class:compact class:grouped={row.group !== null} style:--group-color={row.group?.color ?? undefined} title={row.group?.name} aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
   {#if can.edit}
-    <button type="button" class="drag-handle" aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
+    <button type="button" class="drag-handle" disabled={frozen} aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
   {/if}
 
   {#if row.kind === "event"}
@@ -171,8 +194,10 @@
       <span class="glyph" title={c.name}>{c.icon}</span>
     {/each}
 
+    <EffectsList host={effectHost} anchor={row.doc.id} compact />
+
     {#if can.edit || mayEditResource}
-      <input type="number" aria-label={ctx.t("combatTracker.initiative")} value={engine.initiative ?? ""}
+      <input type="number" aria-label={ctx.t("combatTracker.initiative")} disabled={frozen} value={engine.initiative ?? ""}
         onchange={(e) => setInitiative((e.currentTarget as HTMLInputElement).value)} />
     {:else}
       <span>{engine.initiative ?? ""}</span>
@@ -183,6 +208,10 @@
 
     {#if mayRoll}
       <button type="button" data-testid={"combat-tracker:roll-" + row.doc.id} disabled={busy} onclick={rollOne}>{ctx.t("combatTracker.roll")}</button>
+    {/if}
+
+    {#if can.edit || mayEditResource}
+      <button type="button" data-testid={"combat-tracker:defeated-" + row.doc.id} aria-pressed={engine.defeated} disabled={busy} onclick={toggleDefeated}>{engine.defeated ? ctx.t("combatTracker.revive") : ctx.t("combatTracker.defeated")}</button>
     {/if}
 
     {#if row.view === null}
@@ -197,7 +226,7 @@
             ⚠
           {:else if resource.binding.kind === "tracked" && mayEditResource}
             <button type="button" disabled={busy} onclick={() => resourceDelta(key, -1)}>−</button>
-            <input type="number" value={view?.current ?? ""} onchange={(e) => resourceSet(key, Number((e.currentTarget as HTMLInputElement).value))} />
+            <input type="number" disabled={frozen} value={view?.current ?? ""} onchange={(e) => resourceSet(key, Number((e.currentTarget as HTMLInputElement).value))} />
             <button type="button" disabled={busy} onclick={() => resourceDelta(key, 1)}>+</button>
           {:else}
             {formatResource(view)}
@@ -208,8 +237,8 @@
   {/if}
 
   {#if can.edit}
-    <button type="button" data-testid={"combat-tracker:hide-" + row.doc.id} onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
-    <button type="button" disabled={isTurn} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
+    <button type="button" data-testid={"combat-tracker:hide-" + row.doc.id} disabled={frozen} onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
+    <button type="button" disabled={isTurn || frozen} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
   {/if}
 </div>
 
@@ -229,8 +258,17 @@
       min-width: 44px;
     }
 
+    &.grouped {
+      border-inline-end: 4px solid var(--group-color, var(--text));
+    }
+
     &.turn {
       border-inline-start: 2px solid var(--accent);
+    }
+
+    &.defeated .name {
+      opacity: 0.5;
+      text-decoration: line-through;
     }
 
     &.compact {

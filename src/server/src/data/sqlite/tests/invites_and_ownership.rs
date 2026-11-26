@@ -1,7 +1,4 @@
-//! World-invite seating/expiry/revocation, effective-token-ownership
-//! resolution (linked-actor vs. per-token override, degenerate-link
-//! fail-closed cases), the owner capability floor, `created_seq` generation
-//! tracking, and world member-role enumeration.
+//! These tests cover world invites and token ownership in the SQLite repository.
 
 use super::*;
 
@@ -94,7 +91,7 @@ async fn revoke_invite_is_scoped_to_its_world() {
 #[tokio::test]
 async fn consume_invite_never_changes_a_role_already_held() {
     let (r, world, invite, _, _) = invite_fixture(WorldRole::Spectator).await;
-    let gm = r.list_members(world).await.unwrap()[0].0;
+    let gm = r.list_members(world).await.unwrap()[0].user;
     assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));
 
     let seated = r.consume_invite(invite, gm, 20).await.unwrap().unwrap();
@@ -512,6 +509,83 @@ async fn the_owner_capability_floor_is_scoped_to_tokens() {
         matches!(denied, Err(DataError::Forbidden)),
         "the owner floor must not leak to non-token doc_types, got {denied:?}"
     );
+}
+
+/// A player-context `Delete` of `doc` through `apply_intent`.
+async fn try_delete(
+    r: &SqliteRepository,
+    world: Uuid,
+    user: Uuid,
+    doc: Document,
+    ts: i64,
+) -> Result<crate::data::snapshot::StoredCommand, DataError> {
+    use crate::data::membership::PermissionContext;
+    r.apply_intent(
+        &PermissionContext {
+            user_id: user,
+            world_role: WorldRole::Player,
+        },
+        world,
+        vec![Operation::Delete { doc }],
+        ts,
+        WriteOrigin::Client,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_tokens_effective_owner_may_delete_it_and_nothing_else() {
+    let (r, gm, w, p1, p2) = ownership_fixture().await;
+    // Owner through the linked actor.
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let linked = owned_token_doc(w, Some(actor.id));
+    // Owner through the per-token `owner` override, no actor link.
+    let mut direct = owned_token_doc(w, None);
+    direct.id = crate::test_ids::test_uuid(7001);
+    direct.owner = Some(p1);
+    // A wall whose `owner` is p1: provenance only, no capability.
+    let mut wall = world_doc(7002, w, serde_json::json!({}));
+    wall.doc_type = "wall".into();
+    wall.engine = crate::data::document::tests::default_test_engine("wall");
+    wall.owner = Some(p1);
+    wall.permissions.default = crate::data::document::DocRole::Observer;
+    gm_create(
+        &r,
+        gm,
+        w,
+        vec![actor.clone(), linked.clone(), direct.clone(), wall.clone()],
+        1,
+    )
+    .await;
+
+    // A non-owner player is refused, and the token survives.
+    let denied = try_delete(&r, w, p2, linked.clone(), 2).await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a non-owner must not delete a token, got {denied:?}"
+    );
+    assert!(r.get_document(linked.id).await.unwrap().is_some());
+
+    // The owner still cannot delete their actor or a wall they own.
+    for (doc, what) in [(actor.clone(), "actor"), (wall.clone(), "wall")] {
+        let denied = try_delete(&r, w, p1, doc.clone(), 3).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "an owner must not delete their {what}, got {denied:?}"
+        );
+        assert!(r.get_document(doc.id).await.unwrap().is_some());
+    }
+
+    // The owner deletes the token they own through the actor link, and the
+    // one they own by override.
+    try_delete(&r, w, p1, linked.clone(), 4)
+        .await
+        .expect("the actor's owner may delete the linked token");
+    assert!(r.get_document(linked.id).await.unwrap().is_none());
+    try_delete(&r, w, p1, direct.clone(), 5)
+        .await
+        .expect("the per-token owner may delete that token");
+    assert!(r.get_document(direct.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -978,4 +1052,688 @@ async fn carried_light_authoring_is_gm_only() {
         matches!(denied_actor, Err(DataError::Forbidden)),
         "a granted player's actor light write must still be refused, got {denied_actor:?}"
     );
+}
+
+#[tokio::test]
+async fn identity_hidden_authoring_is_gm_only() {
+    use crate::data::command::FieldChange;
+    use crate::data::document::{DocRole, WorldCapDefaults};
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let player = PermissionContext {
+        user_id: p1,
+        world_role: WorldRole::Player,
+    };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let write = |ctx: PermissionContext,
+                 path: &'static str,
+                 old: serde_json::Value,
+                 new: serde_json::Value,
+                 ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+
+    // The owner holds WRITE_FIELDS on the token, yet the flag decides what every other viewer
+    // perceives, so the direct write is refused.
+    let denied = write(
+        player,
+        "/engine/identity_hidden",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's identity_hidden write must be refused, got {denied:?}"
+    );
+
+    // Non-vacuity: the same owner may write the sibling disposition override.
+    write(
+        player,
+        "/engine/overrides/disposition",
+        serde_json::json!(null),
+        serde_json::json!("friendly"),
+        3,
+    )
+    .await
+    .expect("a player's disposition override stays legal");
+
+    // An ancestor write is value-aware: echoing the stored `/engine` is legal, flipping the
+    // flag through it is not.
+    let engine = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap();
+    write(player, "/engine", engine.clone(), engine.clone(), 4)
+        .await
+        .expect("an ancestor write that leaves the flag alone stays legal");
+    let engine = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap();
+    let mut flipped = engine.clone();
+    flipped["identity_hidden"] = serde_json::json!(true);
+    let denied_ancestor = write(player, "/engine", engine, flipped, 5).await;
+    assert!(
+        matches!(denied_ancestor, Err(DataError::Forbidden)),
+        "an ancestor write flipping the flag must be refused, got {denied_ancestor:?}"
+    );
+
+    // A player who may create tokens can create an ordinary one but not one already hidden.
+    let mut wd = WorldCapDefaults::default();
+    wd.role_caps
+        .by_type
+        .entry("token".into())
+        .or_default()
+        .entry(WorldRole::Player)
+        .or_default()
+        .insert("core:create".into());
+    r.set_world_cap_defaults(w, &wd).await.unwrap();
+    let mut plain = owned_token_doc(w, None);
+    plain.id = crate::test_ids::test_uuid(7001);
+    plain.permissions.users.insert(p1, DocRole::Owner);
+    r.apply_intent(
+        &player,
+        w,
+        vec![Operation::Create { doc: plain }],
+        6,
+        WriteOrigin::Client,
+    )
+    .await
+    .expect("a player may create an ordinary token");
+    let mut hidden = owned_token_doc(w, None);
+    hidden.id = crate::test_ids::test_uuid(7002);
+    hidden.permissions.users.insert(p1, DocRole::Owner);
+    hidden.engine.as_mut().unwrap()["identity_hidden"] = serde_json::json!(true);
+    let denied_create = r
+        .apply_intent(
+            &player,
+            w,
+            vec![Operation::Create {
+                doc: hidden.clone(),
+            }],
+            7,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied_create, Err(DataError::Forbidden)),
+        "a player may not create a secret-identity token, got {denied_create:?}"
+    );
+
+    // The GM may set the flag on an existing token and create a hidden one.
+    write(
+        gm_ctx,
+        "/engine/identity_hidden",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        8,
+    )
+    .await
+    .expect("the GM may enable secret identity");
+    let stored = r.get_document(token.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.engine.unwrap()["identity_hidden"],
+        serde_json::json!(true)
+    );
+    gm_create(&r, gm, w, vec![hidden], 9).await;
+}
+
+/// The rotation lock is the GM's to set and clear: an owner who could clear it would not be bound
+/// by it. Covers a direct write, a wholesale `/engine` write, a Create, a restated value and the GM.
+#[tokio::test]
+async fn rotation_lock_authoring_is_gm_only() {
+    use crate::data::command::FieldChange;
+    use crate::data::document::{DocRole, WorldCapDefaults};
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let player = PermissionContext {
+        user_id: p1,
+        world_role: WorldRole::Player,
+    };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let write = |ctx: PermissionContext,
+                 path: &'static str,
+                 old: serde_json::Value,
+                 new: serde_json::Value,
+                 ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+    let stored_engine = || async {
+        r.get_document(token.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap()
+    };
+
+    // A player may not lock their own token, and the GM may.
+    let denied_lock = write(
+        player,
+        "/engine/lock_rotation",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied_lock, Err(DataError::Forbidden)),
+        "a player's lock write must be refused, got {denied_lock:?}"
+    );
+    write(
+        gm_ctx,
+        "/engine/lock_rotation",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        3,
+    )
+    .await
+    .expect("the GM may lock a token's rotation");
+    assert_eq!(
+        stored_engine().await["lock_rotation"],
+        serde_json::json!(true)
+    );
+
+    // A player cannot clear the lock, directly or through a wholesale `/engine` write.
+    let denied_unlock = write(
+        player,
+        "/engine/lock_rotation",
+        serde_json::json!(true),
+        serde_json::json!(false),
+        4,
+    )
+    .await;
+    assert!(
+        matches!(denied_unlock, Err(DataError::Forbidden)),
+        "a player may not unlock their own token, got {denied_unlock:?}"
+    );
+    let engine = stored_engine().await;
+    let mut unlocked = engine.clone();
+    unlocked["lock_rotation"] = serde_json::json!(false);
+    let denied_ancestor = write(player, "/engine", engine.clone(), unlocked, 5).await;
+    assert!(
+        matches!(denied_ancestor, Err(DataError::Forbidden)),
+        "a wholesale /engine write that clears the lock must be refused, got {denied_ancestor:?}"
+    );
+    let mut omitted = engine.clone();
+    omitted.as_object_mut().unwrap().remove("lock_rotation");
+    let denied_omitted = write(player, "/engine", engine.clone(), omitted, 6).await;
+    assert!(
+        matches!(denied_omitted, Err(DataError::Forbidden)),
+        "a wholesale /engine write that drops the lock must be refused, got {denied_omitted:?}"
+    );
+
+    // Restating the lock is not a change: directly and through `/engine`.
+    write(
+        player,
+        "/engine/lock_rotation",
+        serde_json::json!(true),
+        serde_json::json!(true),
+        7,
+    )
+    .await
+    .expect("restating the lock directly stays legal");
+    let engine = stored_engine().await;
+    write(player, "/engine", engine.clone(), engine, 8)
+        .await
+        .expect("a wholesale write that leaves the lock alone stays legal");
+
+    // A player who may create tokens can create an unlocked one but not one already locked.
+    let mut wd = WorldCapDefaults::default();
+    wd.role_caps
+        .by_type
+        .entry("token".into())
+        .or_default()
+        .entry(WorldRole::Player)
+        .or_default()
+        .insert("core:create".into());
+    r.set_world_cap_defaults(w, &wd).await.unwrap();
+    let mut plain = owned_token_doc(w, None);
+    plain.id = crate::test_ids::test_uuid(7101);
+    plain.permissions.users.insert(p1, DocRole::Owner);
+    r.apply_intent(
+        &player,
+        w,
+        vec![Operation::Create { doc: plain }],
+        9,
+        WriteOrigin::Client,
+    )
+    .await
+    .expect("a player may create an unlocked token");
+    let mut locked = owned_token_doc(w, None);
+    locked.id = crate::test_ids::test_uuid(7102);
+    locked.permissions.users.insert(p1, DocRole::Owner);
+    locked.engine.as_mut().unwrap()["lock_rotation"] = serde_json::json!(true);
+    let denied_create = r
+        .apply_intent(
+            &player,
+            w,
+            vec![Operation::Create {
+                doc: locked.clone(),
+            }],
+            10,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied_create, Err(DataError::Forbidden)),
+        "a player may not create an already-locked token, got {denied_create:?}"
+    );
+
+    // The GM clears the lock and creates a locked token.
+    write(
+        gm_ctx,
+        "/engine/lock_rotation",
+        serde_json::json!(true),
+        serde_json::json!(false),
+        11,
+    )
+    .await
+    .expect("the GM may unlock a token's rotation");
+    assert_eq!(
+        stored_engine().await["lock_rotation"],
+        serde_json::json!(false)
+    );
+    gm_create(&r, gm, w, vec![locked], 12).await;
+}
+
+/// A facing arc bounds what a token sees, so it is the GM's to set: an owner who could widen it
+/// to 360 degrees would defeat the restriction. Covers the token's own field, its `overrides`
+/// field, a wholesale `/engine` or `/engine/overrides` write, the owned actor's field and Create.
+#[tokio::test]
+async fn facing_vision_authoring_is_gm_only() {
+    use crate::data::command::FieldChange;
+    use crate::data::document::{DocRole, WorldCapDefaults};
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let mut actor = actor_doc_owned_by(w, Some(p1));
+    actor.permissions.users.insert(p1, DocRole::Owner);
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor.clone(), token.clone()], 1).await;
+    let player = PermissionContext {
+        user_id: p1,
+        world_role: WorldRole::Player,
+    };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let write = |ctx: PermissionContext,
+                 id: Uuid,
+                 path: &'static str,
+                 old: serde_json::Value,
+                 new: serde_json::Value,
+                 ts: i64| {
+        let r = &r;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+    let engine_of = |id: Uuid| {
+        let r = &r;
+        async move { r.get_document(id).await.unwrap().unwrap().engine.unwrap() }
+    };
+    let narrow = serde_json::json!({ "arc": 90.0, "near": 0.0 });
+    let wide = serde_json::json!({ "arc": 360.0, "near": 0.0 });
+    let null = serde_json::Value::Null;
+    let mut ts = 1;
+    let mut tick = || {
+        ts += 1;
+        ts
+    };
+
+    // The token's own field: refused for the owner, allowed for the GM.
+    let denied = write(
+        player,
+        token.id,
+        "/engine/facing_vision",
+        null.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's token facing write must be refused, got {denied:?}"
+    );
+    write(
+        gm_ctx,
+        token.id,
+        "/engine/facing_vision",
+        null.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("the GM may set a token's facing arc");
+
+    // Widening is refused directly and through a wholesale `/engine` write; restating is legal.
+    let denied = write(
+        player,
+        token.id,
+        "/engine/facing_vision",
+        narrow.clone(),
+        wide.clone(),
+        tick(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "widening the arc directly must be refused, got {denied:?}"
+    );
+    let engine = engine_of(token.id).await;
+    let mut widened = engine.clone();
+    widened["facing_vision"] = wide.clone();
+    let denied = write(player, token.id, "/engine", engine.clone(), widened, tick()).await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "widening the arc through /engine must be refused, got {denied:?}"
+    );
+    let mut dropped = engine.clone();
+    dropped.as_object_mut().unwrap().remove("facing_vision");
+    let denied = write(player, token.id, "/engine", engine.clone(), dropped, tick()).await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "dropping the arc through /engine must be refused, got {denied:?}"
+    );
+    write(
+        player,
+        token.id,
+        "/engine/facing_vision",
+        narrow.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("restating the arc directly stays legal");
+    let engine = engine_of(token.id).await;
+    write(player, token.id, "/engine", engine.clone(), engine, tick())
+        .await
+        .expect("a wholesale write that leaves the arc alone stays legal");
+
+    // The override field inside `/engine/overrides`, directly and through the whole object.
+    let denied = write(
+        player,
+        token.id,
+        "/engine/overrides/facing_vision",
+        null.clone(),
+        wide.clone(),
+        tick(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's override facing write must be refused, got {denied:?}"
+    );
+    let denied = write(
+        player,
+        token.id,
+        "/engine/overrides",
+        null.clone(),
+        serde_json::json!({ "facing_vision": wide }),
+        tick(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "an /engine/overrides write carrying an arc must be refused, got {denied:?}"
+    );
+    write(
+        gm_ctx,
+        token.id,
+        "/engine/overrides/facing_vision",
+        null.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("the GM may set a token's override arc");
+    write(
+        player,
+        token.id,
+        "/engine/overrides/facing_vision",
+        narrow.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("restating the override arc stays legal");
+    // Non-vacuity: a sibling override field stays writable by the owner.
+    write(
+        player,
+        token.id,
+        "/engine/overrides/disposition",
+        null.clone(),
+        serde_json::json!("friendly"),
+        tick(),
+    )
+    .await
+    .expect("a sibling override write stays legal");
+
+    // The owned actor's field. Non-vacuity: the owner may write the actor's engine at all.
+    write(
+        player,
+        actor.id,
+        "/engine/vision",
+        null.clone(),
+        serde_json::json!([]),
+        tick(),
+    )
+    .await
+    .expect("an actor's owner may write its other engine fields");
+    let denied = write(
+        player,
+        actor.id,
+        "/engine/facing_vision",
+        null.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's actor facing write must be refused, got {denied:?}"
+    );
+    write(
+        gm_ctx,
+        actor.id,
+        "/engine/facing_vision",
+        null.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("the GM may set an actor's facing arc");
+    write(
+        player,
+        actor.id,
+        "/engine/facing_vision",
+        narrow.clone(),
+        narrow.clone(),
+        tick(),
+    )
+    .await
+    .expect("restating the actor's arc stays legal");
+
+    // Create: a player may create an ordinary token but not one already carrying an arc.
+    let mut wd = WorldCapDefaults::default();
+    wd.role_caps
+        .by_type
+        .entry("token".into())
+        .or_default()
+        .entry(WorldRole::Player)
+        .or_default()
+        .insert("core:create".into());
+    r.set_world_cap_defaults(w, &wd).await.unwrap();
+    let mut plain = owned_token_doc(w, None);
+    plain.id = crate::test_ids::test_uuid(7201);
+    plain.permissions.users.insert(p1, DocRole::Owner);
+    r.apply_intent(
+        &player,
+        w,
+        vec![Operation::Create { doc: plain }],
+        tick(),
+        WriteOrigin::Client,
+    )
+    .await
+    .expect("a player may create a token with no arc");
+    for (id, band) in [(7202_u128, "own"), (7203, "override")] {
+        let mut with_arc = owned_token_doc(w, None);
+        with_arc.id = crate::test_ids::test_uuid(id);
+        with_arc.permissions.users.insert(p1, DocRole::Owner);
+        let engine = with_arc.engine.as_mut().unwrap();
+        if band == "own" {
+            engine["facing_vision"] = narrow.clone();
+        } else {
+            engine["overrides"] = serde_json::json!({ "facing_vision": narrow });
+        }
+        let denied = r
+            .apply_intent(
+                &player,
+                w,
+                vec![Operation::Create {
+                    doc: with_arc.clone(),
+                }],
+                tick(),
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "a player may not create a token with a {band} arc, got {denied:?}"
+        );
+        gm_create(&r, gm, w, vec![with_arc], tick()).await;
+    }
+}
+
+#[tokio::test]
+async fn a_player_cannot_store_an_embedded_pointer_override_that_only_a_gm_can() {
+    use crate::data::command::FieldChange;
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let write = |ctx: PermissionContext, ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/embedded/actor/0/name": "gm_only" }),
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+    // The token's owner holds WRITE_FIELDS but not EDIT_PERMISSIONS, so the pointer the widened
+    // classifier now accepts is still not theirs to store.
+    let denied = write(
+        PermissionContext {
+            user_id: p1,
+            world_role: WorldRole::Player,
+        },
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's embedded-pointer override write must be refused, got {denied:?}"
+    );
+    write(
+        PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        },
+        3,
+    )
+    .await
+    .expect("the GM may store an embedded-pointer override");
 }

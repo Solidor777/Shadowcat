@@ -1,3 +1,7 @@
+//! This module scores a roll in `Mode::SuccessCount`.
+//!
+//! `evaluate_success` is the entry point.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -12,8 +16,9 @@ use crate::dice::spec::{RollSpec, SuccessConfig};
 /// Pool aggregation: count kept dice satisfying `cfg.success`, then fold each kept
 /// die's crit event (`cfg.crit_success`/`cfg.crit_fail`) into net successes and the
 /// positive/negative counters. Pools ALL kept records across every group —
-/// SuccessCount mode ignores the AST arithmetic. Net successes clamp at 0 unless
-/// `cfg.crit_fail.allow_negative` opts out of the clamp.
+/// SuccessCount mode ignores the AST arithmetic. Net successes and the counters sum exactly in
+/// `i64` and clamp to the `i32` range once; net successes also clamp at 0 unless
+/// `cfg.crit_fail.allow_negative` opts out of that clamp.
 ///
 /// `required_successes`/`tiers` classify over `net - req` via the shared
 /// `eval::classify`. Unlike Total mode, this margin is NOT run through
@@ -44,8 +49,10 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
     if cfg.expertise > 0 {
         expertise::allocate(spec.direction, cfg, raws, &mut records);
     }
-    let mut raw_net = 0i32;
-    let (mut pos, mut neg) = (0i32, 0i32);
+    // Pool sums accumulate in i64 and clamp to i32 once at the end, so the result does not depend
+    // on die order.
+    let mut raw_net = 0i64;
+    let (mut pos, mut neg) = (0i64, 0i64);
     let (mut crit_s, mut crit_f) = (0i32, 0i32);
     let mut symbol_counts: BTreeMap<crate::dice::spec::Symbol, i32> = BTreeMap::new();
     for r in records.iter_mut().filter(|r| r.kept) {
@@ -63,15 +70,15 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         if dc.is_fail {
             crit_f += 1;
         }
-        pos += dc.positive_counter;
-        neg += dc.negative_counter;
+        pos += i64::from(dc.positive_counter);
+        neg += i64::from(dc.negative_counter);
     }
     let allow_neg = cfg
         .crit_fail
         .as_ref()
         .map(|c| c.allow_negative)
         .unwrap_or(false);
-    let net = if allow_neg { raw_net } else { raw_net.max(0) };
+    let net = clamp_i32(if allow_neg { raw_net } else { raw_net.max(0) });
     let total: i64 = records
         .iter()
         .filter(|r| r.kept)
@@ -81,7 +88,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         None => (None, None, None, None),
         Some(req) => {
             // Direction is NOT applied here: more successes is always better.
-            let m = (net - req) as i64;
+            let m = i64::from(net) - i64::from(req);
             let c = classify::classify(m, &cfg.tiers);
             (c.pass, Some(m), c.tier_label, c.tier_value)
         }
@@ -96,8 +103,8 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         tier_value,
         crit_successes: crit_s,
         crit_fails: crit_f,
-        positive_counter: pos,
-        negative_counter: neg,
+        positive_counter: clamp_i32(pos),
+        negative_counter: clamp_i32(neg),
         symbol_counts,
         // SuccessCount ignores the AST arithmetic entirely (pools dice by
         // group membership, not by expression structure), so there is no
@@ -105,6 +112,11 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         // how this mode never threads a Const's label into by_label either.
         labeled_consts: Vec::new(),
     }
+}
+
+/// Clamps an exact pool sum to the `i32` range of `RollOutcome`'s counters and successes.
+fn clamp_i32(v: i64) -> i32 {
+    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[cfg(test)]

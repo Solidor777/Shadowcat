@@ -1,9 +1,9 @@
 import { describe, test, expect, vi } from "vitest";
-import { AnimatedSprite, Assets, Container, Texture } from "pixi.js";
+import { AnimatedSprite, Assets, Container, Graphics, Text, Texture } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
-import type { TokenNodeSpec, VisibilityInput } from "./types";
+import type { ResolvedArtVisual, TokenNodeSpec, VisibilityInput } from "./types";
 import type { TextureCacheManager } from "./texture-cache";
 
 vi.mock("pixi.js", async (importActual) => {
@@ -162,7 +162,7 @@ interface TokenNodeLike {
   /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order + fx slot. */
   visualContainer: Container;
   /** Mirror of `TokenNode.visual` — read to assert mask assignment. */
-  visual: { mask: unknown };
+  visual: { mask: unknown; anchor: { x: number; y: number }; width: number; height: number; tint: number; angle: number };
   /** Mirror of `TokenNode.generated` — read to assert frame lifetime. */
   generated: { background: GraphicsInstructionLog; mask: GraphicsInstructionLog; ring: GraphicsInstructionLog } | null;
   /** Mirror of `TokenNode.aura` — read to assert the disc's draw + lifetime. */
@@ -174,13 +174,21 @@ interface TokenNodeLike {
   fx: { matrix: number[]; _destroyed: boolean } | null;
   /** Mirror of `TokenNode.fxKey` — read to assert the rebuild memo. */
   fxKey: string;
+  /** Mirror of `TokenNode.sourceKey` — read to assert the visual-change memo. */
+  sourceKey: string | null;
+  /** Mirror of `TokenNode.anim` — read to assert no animation state survives. */
+  anim: unknown;
 }
 
 interface PixiBackendTokenInternals {
   /** Mirror of the private `PixiBackend.createTokenNode`. */
   createTokenNode(id: string): TokenNodeLike;
+  /** Mirror of the private `PixiBackend.frameTokenArt`. */
+  frameTokenArt(node: TokenNodeLike, art: ResolvedArtVisual, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenGeneratedFrame`. */
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
+  /** Mirror of the private `PixiBackend.updateTokenVisual`. */
+  updateTokenVisual(id: string, node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenAura`. */
   updateTokenAura(node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenFx`. */
@@ -205,6 +213,25 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
   const instr = g.context.instructions.find((i) => (i as unknown as { action?: string }).action === action);
   return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
+
+describe("PixiBackend shape stroke dash", () => {
+  /** Draws one open two-point shape through `drawOverlay` and returns its overlay Graphics log. */
+  function overlayLog(dash: { on: number; off: number } | undefined): GraphicsInstructionLog {
+    const backend = headlessBackend();
+    backend.drawOverlay([{ points: [0, 0, 10, 0], closed: false, stroke: { color: 0xff0000, width: 2, ...(dash ? { dash } : {}) }, fill: null }]);
+    return (backend as unknown as { toolOverlay: GraphicsInstructionLog }).toolOverlay;
+  }
+
+  test("a dashed stroke paints one subpath per dash and strokes once", () => {
+    const log = overlayLog({ on: 2, off: 2 });
+    expect(pathActions(log).filter((a) => a === "moveTo")).toHaveLength(3);
+    expect(styleOf(log, "stroke")?.width).toBeCloseTo(2);
+  });
+
+  test("a solid stroke paints a single subpath", () => {
+    expect(pathActions(overlayLog(undefined)).filter((a) => a === "moveTo")).toHaveLength(1);
+  });
+});
 
 describe("PixiBackend.setVisibilityBlend", () => {
   test("reuses both captured RenderTextures across many ticks holding the same (from, to) sample pair — only the blend factor moves", () => {
@@ -241,6 +268,62 @@ describe("PixiBackend.setVisibilityBlend", () => {
     // content-blind cache would report far fewer than 2*pairCount; a never-caching one would
     // report 2*pairCount*ticksPerPair (60).
     expect(renderCalls.count).toBe(2 * pairCount);
+  });
+});
+
+describe("PixiBackend.frameTokenArt", () => {
+  const spec: TokenNodeSpec = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false, visual: { kind: "image", url: "u" } };
+
+  test("an art without a transform is centered, sized to the token extent and untinted", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.5, 0.5]);
+    expect([node.visual.width, node.visual.height]).toEqual([100, 50]);
+    expect(node.visual.tint).toBe(0xffffff);
+  });
+
+  test("a transform sets the anchor, multiplies the extent by its scale and tints the sprite", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.25, anchorY: 1, scale: 2, tint: 0xff8800 } }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.25, 1]);
+    expect([node.visual.width, node.visual.height]).toEqual([200, 100]);
+    expect(node.visual.tint).toBe(0xff8800);
+  });
+
+  test("art facing up on a token rotated 90 degrees is drawn turned by rotation minus facing", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    // `setToken` assigns the token rotation to `visualContainer.angle` before framing the art.
+    node.visualContainer.angle = 90;
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 270 } }, spec);
+    // Up is 270 in the bearing convention; the art ends 90 - 270 = -180 from as-drawn (upside down,
+    // pointing down). Dropping the facing term leaves 90; flipping its sign gives 360.
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(-180);
+    // Art facing down (90) on a token rotated 90 is already aligned: net 0.
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 90 } }, spec);
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(0);
+  });
+
+  test("an art with no facing is drawn at the token rotation alone", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    node.visualContainer.angle = 90;
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 270 } }, spec);
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect(node.visual.angle).toBeCloseTo(0);
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(90);
+  });
+
+  test("re-framing an untransformed art restores the defaults", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0, anchorY: 0, scale: 3, tint: 0x00ff00 } }, spec);
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.5, 0.5]);
+    expect([node.visual.width, node.visual.height]).toEqual([100, 50]);
+    expect(node.visual.tint).toBe(0xffffff);
   });
 });
 
@@ -312,6 +395,33 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
   });
 });
 
+describe("PixiBackend.updateTokenVisual with a frame-only generated visual", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+  const frameOnly: TokenNodeSpec["visual"] = { kind: "generated", crop: "circle", background: { color: 0x6b6b6b } };
+
+  test("loads no texture: the sprite is emptied, the memo set, and the frame still draws", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec: TokenNodeSpec = { ...base, visual: frameOnly };
+    backend.updateTokenVisual("t1", node, spec);
+    backend.updateTokenGeneratedFrame(node, spec);
+    expect(node.sourceKey).toContain("frame-only");
+    expect(node.anim).toBeNull();
+    expect((node.visual as unknown as { texture: unknown }).texture).toBe(Texture.EMPTY);
+    expect(styleOf(node.generated!.background, "fill")?.color).toBe(0x6b6b6b);
+  });
+
+  test("swapping an animated visual for the frame-only one drops the animation sprite", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenVisual("t1", node, { ...base, visual: { kind: "animated", source: { type: "frames", urls: [] }, fps: 4, loop: true } });
+    expect(node.visual).toBeInstanceOf(AnimatedSprite);
+    backend.updateTokenVisual("t1", node, { ...base, visual: frameOnly });
+    expect(node.visual).not.toBeInstanceOf(AnimatedSprite);
+    expect(node.anim).toBeNull();
+  });
+});
+
 describe("PixiBackend.updateTokenAura", () => {
   const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
@@ -359,6 +469,58 @@ describe("PixiBackend.updateTokenAura", () => {
     backend.updateTokenAura(node2, { ...base, visual: imageVisual });
     expect(node2.aura).toBeNull();
     expect(node2.container.children.length).toBe(1); // visualContainer only
+  });
+});
+
+describe("PixiBackend.updateTokenOverlay", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+  const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
+  interface OverlayNode extends TokenNodeLike {
+    /** Mirror of `TokenNode.overlay` — read to assert the glyph's text, size, order and lifetime. */
+    overlay: { text: string; style: { fontSize: number }; destroyed: boolean } | null;
+  }
+  const run = (backend: PixiBackendTokenInternals, node: TokenNodeLike, spec: TokenNodeSpec): void =>
+    (backend as unknown as { updateTokenOverlay(n: TokenNodeLike, s: TokenNodeSpec): void }).updateTokenOverlay(node, spec);
+
+  test("draws the glyph directly above the art, sized to 60% of the smaller side", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const overlay = node.overlay!;
+    expect(overlay.text).toBe("💫");
+    expect(overlay.style.fontSize).toBe(30);
+    expect(node.container.children.indexOf(overlay as never)).toBe(node.container.children.indexOf(node.visualContainer) + 1);
+  });
+
+  test("a later aura insert keeps the glyph directly above the art", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    expect(node.container.children.indexOf(node.overlay as never)).toBe(node.container.children.indexOf(node.visualContainer) + 1);
+  });
+
+  test("an absent overlayIcon destroys the glyph and drops the reference", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const overlay = node.overlay!;
+    run(backend, node, { ...base, visual: imageVisual });
+    expect(node.overlay).toBeNull();
+    expect(overlay.destroyed).toBe(true);
+    expect(node.container.children.length).toBe(1); // visualContainer only
+  });
+
+  test("an unchanged glyph and size keeps the same Text; a changed glyph rebuilds it", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const first = node.overlay;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    expect(node.overlay).toBe(first);
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💀" });
+    expect(node.overlay).not.toBe(first);
+    expect(node.overlay!.text).toBe("💀");
   });
 });
 
@@ -1016,5 +1178,136 @@ describe("PixiBackend texture budget", () => {
     expect(unloadSpy).toHaveBeenCalledWith("/tex/in-flight");
     loadSpy.mockRestore();
     unloadSpy.mockRestore();
+  });
+});
+
+describe("PixiBackend.drawRulers", () => {
+  /** The backend's remote-ruler overlay `Graphics`. */
+  function rulerLayer(backend: PixiBackend): Graphics {
+    return (backend as unknown as { rulerGraphics: Graphics }).rulerGraphics;
+  }
+
+  test("a polyline ruler paints its extent, a lone vertex paints a dot, and an empty list clears the overlay", () => {
+    const backend = headlessBackend();
+    const layer = rulerLayer(backend);
+
+    backend.drawRulers([{ user: "a", origin: "o1", points: [[0, 0], [100, 0]], color: 0x4fc3f7 }]);
+    // `getLocalBounds` returns a shared object, so each reading is copied out at once.
+    const lineWidth = layer.getLocalBounds().width;
+    expect(lineWidth).toBeGreaterThanOrEqual(100);
+
+    backend.drawRulers([{ user: "a", origin: "o1", points: [[40, 40]], color: 0x4fc3f7 }]);
+    const dotWidth = layer.getLocalBounds().width;
+    expect(dotWidth).toBeGreaterThan(0);
+    expect(dotWidth).toBeLessThan(lineWidth);
+
+    backend.drawRulers([]);
+    expect(layer.getLocalBounds().width).toBe(0);
+  });
+
+  test("every sender's ruler is painted in the same pass, not only the last", () => {
+    const backend = headlessBackend();
+    backend.drawRulers([
+      { user: "a", origin: "o1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 },
+      { user: "b", origin: "o2", points: [[500, 500], [510, 500]], color: 0xba68c8 },
+    ]);
+    const { width, height } = rulerLayer(backend).getLocalBounds();
+    expect(width).toBeGreaterThanOrEqual(510);
+    expect(height).toBeGreaterThanOrEqual(500);
+  });
+});
+
+describe("PixiBackend.drawEmotes", () => {
+  test("a \"caption\"-kind overlay's Text node is configured to word-wrap, centered, at the shared wrap width", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([{ x: 0, y: 0, emote: "A very long region-triggered scrolling-text overlay line that must wrap.", kind: "caption", alpha: 1 }]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    expect(layer.children).toHaveLength(1);
+    const text = layer.children[0] as Text;
+    // Pins the exact style configuration, not just visual output — a mutation removing
+    // `wordWrap: true` (or `wordWrapWidth`) leaves this failing since PixiJS's default style
+    // has `wordWrap: false`, which this assertion would then catch immediately.
+    expect(text.style.wordWrap).toBe(true);
+    expect(text.style.wordWrapWidth).toBeGreaterThan(0);
+    expect(text.style.align).toBe("center");
+    // Pinned exactly, not merely "smaller than the glyph size": the height budget in
+    // `MAX_OVERLAY_DISPLAY_CHARS`'s doc is derived from this exact value together with
+    // `EMOTE_WRAP_WIDTH`, so any other value silently invalidates that derivation.
+    expect(text.style.fontSize).toBe(20);
+    // A run with no whitespace must still wrap rather than extend past the wrap width.
+    expect(text.style.breakWords).toBe(true);
+  });
+
+  test("a \"glyph\"-kind overlay's Text node is NEVER word-wrapped and keeps the original 48-unit font size", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 1 }]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    const text = layer.children[0] as Text;
+    // A player's short emoji cluster must render exactly as it always has — no wrapping.
+    // Mutation: applying the caption's wrap style unconditionally (regardless of `kind`) would
+    // flip `wordWrap` to `true` here and fail this assertion.
+    expect(text.style.wordWrap).toBe(false);
+    expect(text.style.fontSize).toBe(48);
+  });
+
+  test("every overlay kind anchors bottom-center so a multi-line block grows upward from the token's top edge", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([
+      { x: 10, y: 20, emote: "😀", kind: "glyph", alpha: 1 },
+      { x: 30, y: 40, emote: "A caption.", kind: "caption", alpha: 1 },
+    ]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    for (const child of layer.children as Text[]) {
+      // Mutation: setting the anchor to `(0.5, 0.5)` here fails this assertion — the block's
+      // BOTTOM, not its center, sits at the token's recorded top-edge y, so a block whose
+      // height varies grows upward instead of spreading down over the token.
+      expect(child.anchor.x).toBeCloseTo(0.5);
+      expect(child.anchor.y).toBeCloseTo(1);
+    }
+  });
+});
+
+describe("PixiBackend.updateTokenPlate", () => {
+  const base: TokenNodeSpec = { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: "https://example.test/t.png" } as never, borderColor: null, badges: [], shape: "square", perceived: false };
+  const plateOf = (node: TokenNodeLike): Container | null => (node as unknown as { plate: Container | null }).plate;
+  const callPlate = (backend: unknown, node: TokenNodeLike, spec: TokenNodeSpec): void =>
+    (backend as { updateTokenPlate(n: TokenNodeLike, s: TokenNodeSpec): void }).updateTokenPlate(node, spec);
+
+  test("a spec with a nameplate and two bars draws one text, and a track plus label per bar, upright on the container", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    callPlate(backend, node, { ...base, nameplate: "Goblin", bars: [{ label: "HP", fraction: 0.5, color: 0xff0000 }, { label: "MP", fraction: 0, color: 0x0000ff }] });
+    const plate = plateOf(node)!;
+    expect(plate.parent).toBe(node.container);
+    expect(plate.children).toHaveLength(5);
+    expect((plate.children[0] as Text).text).toBe("Goblin");
+    expect((plate.children[0] as Text).anchor.y).toBeCloseTo(1);
+    // The first bar's fill is the track plus one fill rect; the empty bar draws the track only.
+    expect(pathActions(plate.children[1] as unknown as GraphicsInstructionLog).filter((a) => a === "rect")).toHaveLength(2);
+    expect(pathActions(plate.children[3] as unknown as GraphicsInstructionLog).filter((a) => a === "rect")).toHaveLength(1);
+  });
+
+  test("an unchanged spec keeps the same container; a changed one rebuilds it; absent plates destroy it", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec = { ...base, nameplate: "Goblin" };
+    callPlate(backend, node, spec);
+    const first = plateOf(node)!;
+    callPlate(backend, node, { ...spec });
+    expect(plateOf(node)).toBe(first);
+    callPlate(backend, node, { ...spec, nameplate: "Orc" });
+    expect(plateOf(node)).not.toBe(first);
+    expect(first.destroyed).toBe(true);
+    const second = plateOf(node)!;
+    callPlate(backend, node, base);
+    expect(plateOf(node)).toBeNull();
+    expect(second.destroyed).toBe(true);
+  });
+
+  test("a token that never had a plate leaves nothing behind", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    callPlate(backend, node, base);
+    expect(plateOf(node)).toBeNull();
   });
 });

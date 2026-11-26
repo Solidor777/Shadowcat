@@ -1,20 +1,21 @@
-//! Pure sample-clipping arithmetic for the per-recipient `MoveStream` egress clip.
+//! This module holds the pure sample-clipping arithmetic of the per-recipient `MoveStream` egress
+//! clip.
 //!
-//! No locks, no I/O. `clip_move_stream` (in `conn`) resolves the clip target's authoritative
-//! sight (`SceneEcs::recipient_sight`) and the scene's in-flight moves, then delegates the
-//! per-sample decisions here through `clip_frame`: the position clip and the carried-light
-//! admission. Both read the recipient's sight AT A SAMPLE'S INSTANT through the ONE
-//! `ClipInputs::at` — the recipient's own in-flight tokens re-raycast at their instant
-//! viewpoints and every in-flight torch composed in at its instant position — resolved ONCE
-//! per distinct instant of the frame and shared by both gates, so the two can never disagree
-//! about what the recipient sees at a given moment and no instant is paid for twice.
+//! It takes no locks and does no I/O. `clip_move_stream` (in `conn`) resolves the clip target's
+//! authoritative sight (`SceneEcs::recipient_sight`) and the scene's in-flight moves, then
+//! delegates the per-sample decisions here through `clip_frame`: the position clip and the
+//! carried-light admission. Both read the recipient's sight AT A SAMPLE'S INSTANT through the ONE
+//! `ClipInputs::at` — the recipient's own in-flight tokens re-raycast at their instant viewpoints
+//! and every in-flight torch composed in at its instant position — resolved ONCE per distinct
+//! instant of the frame and shared by both gates, so the two can never disagree about what the
+//! recipient sees at a given moment and no instant is paid for twice.
 //!
 //! INVARIANT (client parity): `chosen_vision_sample` implements the same rule as the client's
-//! `chooseVisionSample` — greatest `t_ms <= elapsed`, first sample before
-//! that — so the viewpoint and glow this module composes at an instant are exactly the ones the
-//! recipient's sweeping fog and lighting show. It is ONE rule for every timed timeline (position,
-//! vision and carried light alike); the shared fixture
-//! `src/client/render/src/__fixtures__/chosen-vision-sample.json` is asserted by both sides.
+//! `chooseVisionSample`: the sample with the greatest `t_ms <= elapsed`, or the first sample when
+//! `elapsed` precedes every sample. The viewpoint and glow this module composes at an instant
+//! therefore follow the selection the recipient's sweeping fog and lighting use. It is ONE rule for
+//! every timed timeline (position, vision and carried light alike); both sides assert the shared
+//! `chosen-vision-sample` fixture that the client render package carries.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

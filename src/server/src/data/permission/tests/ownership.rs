@@ -163,24 +163,59 @@ fn effective_ownership_grants_the_owner_floor_and_the_owner_or_gm_tier() {
         "an effective owner holds the DocRole::Owner floor"
     );
     assert!(
-        !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::DELETE),
-        "the BUILT-IN floor stops at WRITE_FIELDS — no re-assigning or deleting. \
+        a_player.has(cap::DELETE),
+        "an effective owner may delete the token"
+    );
+    assert!(
+        !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::MANAGE_EMBEDDED),
+        "the BUILT-IN floor stops at WRITE_FIELDS + DELETE — no re-assigning. \
          Additive `by_role[Owner]` grants can widen past it; see \
          `world_by_role_owner_grants_reach_an_inheriting_owner`"
     );
     assert!(
-        a_player.is_owner && a_player.can_see(Visibility::OwnerOrGm),
+        a_player.is_owner && a_player.can_see(&Visibility::OwnerOrGm),
         "redaction's OwnerOrGm tier admits the same effective owner"
     );
     assert!(
-        !a_player.can_see(Visibility::GmOnly),
+        !a_player.can_see(&Visibility::GmOnly),
         "an owner is not a GM"
     );
 
     // Non-vacuity: same token, same call, different user.
     let a_stranger = resolve_access(stranger, WorldRole::Player, &token, owner);
     assert!(a_stranger.has(cap::READ) && !a_stranger.has(cap::WRITE_FIELDS));
+    assert!(!a_stranger.has(cap::DELETE));
     assert!(!a_stranger.is_owner);
+}
+
+#[test]
+fn the_token_delete_grant_follows_effective_ownership_only() {
+    use crate::data::document::CapabilityGrants;
+    let player = crate::test_ids::test_uuid(1);
+    // A stamped Owner on a token who is not its effective owner gains no DELETE.
+    let mut stamped = token_linked_to(None);
+    stamped.permissions.users.insert(player, DocRole::Owner);
+    assert!(!resolve_access(player, WorldRole::Player, &stamped, None).has(cap::DELETE));
+
+    // The same user as the per-token owner does.
+    let mut owned = token_linked_to(None);
+    owned.owner = Some(player);
+    let owner = effective_owner(&owned, None);
+    assert!(resolve_access(player, WorldRole::Player, &owned, owner).has(cap::DELETE));
+    assert!(resolve_access_world(
+        player,
+        WorldRole::Player,
+        &owned,
+        &CapabilityGrants::default(),
+        owner
+    )
+    .has(cap::DELETE));
+
+    // A non-token doc_type never grants DELETE to its owner, even as Owner role.
+    let mut actor = actor_owned_by(crate::test_ids::test_uuid(42), Some(player));
+    actor.permissions.users.insert(player, DocRole::Owner);
+    let actor_owner = effective_owner(&actor, None);
+    assert!(!resolve_access(player, WorldRole::Player, &actor, actor_owner).has(cap::DELETE));
 }
 
 #[test]
@@ -927,6 +962,96 @@ fn redaction_target_admits_base_content_at_any_embedded_depth() {
             "{pointer}"
         );
     }
+}
+
+#[test]
+fn redaction_target_classifies_a_pointer_inside_an_embedded_child_by_its_residual() {
+    for (pointer, expected) in [
+        ("/embedded/actor/0/name", RedactionTarget::Band),
+        ("/embedded/actor/0/engine", RedactionTarget::Band),
+        ("/embedded/actor/2/engine/faction", RedactionTarget::Within),
+        ("/embedded/actor/0/system/hp", RedactionTarget::Within),
+        ("/embedded/a/0/embedded/b/1/name", RedactionTarget::Band),
+        ("/embedded/a/0/base/system/hp", RedactionTarget::Within),
+    ] {
+        assert_eq!(redaction_target(pointer), Some(expected), "{pointer}");
+    }
+}
+
+#[test]
+fn redaction_target_refuses_an_embedded_pointer_that_is_not_a_content_path_in_a_child() {
+    for pointer in [
+        // The whole map, a whole collection, a whole child.
+        "/embedded",
+        "/embedded/actor",
+        "/embedded/actor/0",
+        "/embedded/actor/0/",
+        // A hop missing its collection or with a non-numeric index.
+        "/embedded//0/name",
+        "/embedded/actor/x/name",
+        "/embedded/actor/-1/name",
+        // A structural envelope field of the child, or a leaf band with an interior.
+        "/embedded/actor/0/id",
+        "/embedded/actor/0/permissions/default",
+        "/embedded/actor/0/embedded",
+        "/embedded/actor/0/embedded/b",
+        "/embedded/actor/0/embedded/b/1",
+        "/embedded/actor/0/name/first",
+        "/embedded/actor/0/base/embedded",
+    ] {
+        assert_eq!(redaction_target(pointer), None, "{pointer:?}");
+    }
+}
+
+#[test]
+fn redact_pointers_nulls_an_embedded_band_and_strips_an_embedded_key() {
+    let mut whole = serde_json::json!({
+        "name": "T",
+        "embedded": { "actor": [ { "name": "N", "engine": { "faction": "F", "shape": "square" } } ] }
+    });
+    redact_pointers(
+        &mut whole,
+        &[
+            "/embedded/actor/0/name".to_string(),
+            "/embedded/actor/0/engine/faction".to_string(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(whole["name"], "T");
+    assert!(whole["embedded"]["actor"][0]["name"].is_null());
+    assert!(whole["embedded"]["actor"][0]["engine"]
+        .get("faction")
+        .is_none());
+    assert_eq!(whole["embedded"]["actor"][0]["engine"]["shape"], "square");
+    // A pointer into a child that does not exist removes nothing and creates nothing.
+    let before = whole.clone();
+    redact_pointers(&mut whole, &["/embedded/actor/5/name".to_string()]).unwrap();
+    assert_eq!(whole, before);
+    // An unclassifiable embedded pointer still fails closed.
+    assert!(redact_pointers(&mut whole, &["/embedded/actor/0".to_string()]).is_err());
+}
+
+#[test]
+fn validate_property_overrides_refuses_a_malformed_embedded_pointer() {
+    for bad in [
+        "/embedded/actor/0",
+        "/embedded/actor",
+        "/embedded/actor/0/id",
+    ] {
+        let d = doc(
+            perms_with(&[(bad, Visibility::GmOnly)]),
+            serde_json::json!({}),
+        );
+        assert!(
+            crate::data::validation::validate_property_overrides(&d).is_err(),
+            "{bad}"
+        );
+    }
+    let ok = doc(
+        perms_with(&[("/embedded/actor/0/name", Visibility::GmOnly)]),
+        serde_json::json!({}),
+    );
+    assert!(crate::data::validation::validate_property_overrides(&ok).is_ok());
 }
 
 #[test]

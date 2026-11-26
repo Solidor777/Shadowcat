@@ -1,3 +1,5 @@
+//! This module hashes and verifies passwords with Argon2id.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

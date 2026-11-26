@@ -1,3 +1,8 @@
+//! This module defines the serializable roll result types.
+//!
+//! They are `RawDie` and `RawRoll` (the natural faces and the records derived from them),
+//! `DieRecord` (one die's pipeline result), `RollOutcome` (the scored outcome) and `RollResult`.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -7,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dice::spec::{ConstTerm, DieId, DieKind, RollSpec, Symbol};
 
-/// A single die's natural (RNG) result — the only nondeterministic artifact.
+/// A single die's natural (RNG) result.
 ///
 /// # Examples
 ///
@@ -165,6 +170,13 @@ pub struct DieRecord {
     /// and dice-3d renders no 3D dice for it, fail closed.
     #[serde(default)]
     pub kind: Option<DieKind>,
+    /// Index of the losing branch, within its `Expr::BestOf` node, that discarded this die
+    /// (`kept` is `false`); `None` for every die that no `best(...)` branch discarded. Set by
+    /// `eval::sum::evaluate_total` only, never by `roll`; with nested `best(...)` calls the
+    /// outermost losing branch's index wins. Display-only: selection is fully decided
+    /// server-side, so a reader uses this to say why a die is struck, never to re-select.
+    #[serde(default)]
+    pub best_of_branch: Option<u32>,
 }
 
 /// `serde(default)` fallback for `ordered`: a record deserialized without this
@@ -197,7 +209,7 @@ fn default_ordered() -> bool {
 /// assert_eq!(outcome.pass, None);
 /// assert_eq!(outcome.successes, None); // Total mode never reports successes
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     /// Total-mode fold result; in SuccessCount mode, the reference sum of
     /// kept-die values (see the struct doc), never a fold.

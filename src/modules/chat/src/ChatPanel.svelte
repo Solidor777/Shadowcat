@@ -4,6 +4,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
+    randomUuid,
     buildUpdate,
     type ChannelRegistryEngine,
     type WireAudience,
@@ -142,7 +143,7 @@
    */
   function addChannel(): void {
     if (!registry) return;
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const name = newChannelName.trim() || t("chat.channels.newName");
     ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/channels/${id}`, old: null, value: { name } }])]);
     newChannelName = "";
@@ -415,8 +416,8 @@
   });
 </script>
 
-<section class="chat">
-  <div class="strip" role="tablist" aria-label={t("chat.channels")}>
+<section class="chat" data-tour="chat.panel">
+  <div class="strip" role="tablist" aria-label={t("chat.channels")} data-tour="chat.channels">
     <button type="button" class:active={view.kind === "all"} onclick={() => (view = { kind: "all" })}>{t("chat.all")}</button>
     {#each channelEntries as [id, c] (id)}
       <button type="button" class:active={view.kind === "channel" && view.id === id} onclick={() => (view = { kind: "channel", id })}>{c.name}</button>
@@ -442,7 +443,7 @@
     </div>
   {/if}
 
-  <div class="messages" bind:this={container} onscroll={checkAtBottom}>
+  <div class="messages" data-tour="chat.messages" bind:this={container} onscroll={checkAtBottom}>
     {#if windowed.start > 0}
       <div class="row-spacer" style="height: {windowed.start * avgRowHeight}px" aria-hidden="true"></div>
     {/if}

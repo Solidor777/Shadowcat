@@ -7,6 +7,7 @@ import {
   VisibilitySchema,
   WorldRoleSchema,
   RejectReasonSchema,
+  PathErrorReasonSchema,
   ResyncSourceSchema,
   WsErrorCodeSchema,
   SendMessageSchema,
@@ -77,6 +78,14 @@ describe("wire drift guard — enums", () => {
       z.infer<typeof VisibilitySchema>
     >().toEqualTypeOf<Ts.Visibility>();
   });
+  it("Visibility parses a recipient list and still rejects unknown tiers", () => {
+    expect(VisibilitySchema.parse({ recipients: ["u1", "u2"] })).toEqual({
+      recipients: ["u1", "u2"],
+    });
+    expect(VisibilitySchema.parse("gm_only")).toBe("gm_only");
+    expect(VisibilitySchema.safeParse("recipients").success).toBe(false);
+    expect(VisibilitySchema.safeParse({ recipients: [1] }).success).toBe(false);
+  });
   it("WorldRole", () => {
     expectTypeOf<
       z.infer<typeof WorldRoleSchema>
@@ -86,6 +95,11 @@ describe("wire drift guard — enums", () => {
     expectTypeOf<
       z.infer<typeof RejectReasonSchema>
     >().toEqualTypeOf<Ts.RejectReason>();
+  });
+  it("PathErrorReason", () => {
+    expectTypeOf<
+      z.infer<typeof PathErrorReasonSchema>
+    >().toEqualTypeOf<Ts.PathErrorReason>();
   });
   it("ResyncSource", () => {
     expectTypeOf<
@@ -126,6 +140,14 @@ describe("wire drift guard — message discriminants", () => {
     type W = Extract<ServerMsg, { type: "welcome" }>;
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
+  });
+  it("Welcome online_users and the member_profile frame match ts-rs", () => {
+    type W = Extract<ServerMsg, { type: "welcome" }>;
+    type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
+    expectTypeOf<W["online_users"]>().toEqualTypeOf<T["online_users"]>();
+    type P = Extract<ServerMsg, { type: "member_profile" }>;
+    type TP = Extract<Ts.ServerMsg, { type: "member_profile" }>;
+    expectTypeOf<P>().toEqualTypeOf<TP>();
   });
   it("Welcome role_capabilities matches ts-rs", () => {
     type W = Extract<ServerMsg, { type: "welcome" }>;
@@ -266,6 +288,7 @@ describe("parseServerMsg", () => {
         capability_requirements: [],
         contract_declarations: [],
         schema_declarations: [],
+        online_users: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -288,6 +311,7 @@ describe("parseServerMsg", () => {
         capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
         contract_declarations: [],
         schema_declarations: [],
+        online_users: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -326,6 +350,27 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound explored_fog_reset frame, scoped and unscoped", () => {
+    const scoped = parseServerMsg(
+      JSON.stringify({ type: "explored_fog_reset", scene: "s1", user: "u1", level: "l1" }),
+    );
+    expect(scoped?.type).toBe("explored_fog_reset");
+    if (scoped?.type === "explored_fog_reset") {
+      expect(scoped.scene).toBe("s1");
+      expect(scoped.user).toBe("u1");
+      expect(scoped.level).toBe("l1");
+    }
+
+    const unscoped = parseServerMsg(
+      JSON.stringify({ type: "explored_fog_reset", scene: "s1", user: null, level: null }),
+    );
+    expect(unscoped?.type).toBe("explored_fog_reset");
+    if (unscoped?.type === "explored_fog_reset") {
+      expect(unscoped.user).toBeNull();
+      expect(unscoped.level).toBeNull();
+    }
+  });
+
   it("parses an inbound emote frame", () => {
     const m = parseServerMsg(
       JSON.stringify({ type: "emote", scene: "s1", token: "t1", user: "u1", emote: "😀" }),
@@ -336,6 +381,23 @@ describe("parseServerMsg", () => {
       expect(m.user).toBe("u1");
       expect(m.emote).toBe("😀");
     }
+  });
+
+  it("parses an inbound ruler frame with every field, points as coordinate pairs", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1.5, 2.5], [3, 4]], active: true, origin: "o1" }),
+    );
+    expect(m).toEqual({ type: "ruler", from: "u1", scene: "s1", points: [[1.5, 2.5], [3, 4]], active: true, origin: "o1" });
+    // A vertex that is not a pair is a malformed frame, never a partial one.
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2, 3]], active: true, origin: "o1" })),
+    ).toBeNull();
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2]], origin: "o1" })),
+    ).toBeNull();
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2]], active: true })),
+    ).toBeNull();
   });
 
   it("parses path_result and path_error server frames", () => {
@@ -356,9 +418,15 @@ describe("parseServerMsg", () => {
         type: "path_error",
         request_id: "00000000-0000-0000-0000-000000000001",
         message: "unreachable",
+        reason: "unreachable",
       }),
     );
     expect(err?.type).toBe("path_error");
+    expect(
+      parseServerMsg(
+        JSON.stringify({ type: "path_error", request_id: "00000000-0000-0000-0000-000000000001", message: "x" }),
+      ),
+    ).toBeNull();
   });
 
   it("parses a well-formed move_stream frame", () => {
@@ -376,7 +444,7 @@ describe("parseServerMsg", () => {
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
       mover_light: [
-        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
       ],
       cost: 3.5,
       truncated: true,
@@ -395,7 +463,7 @@ describe("parseServerMsg", () => {
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
       // Same rule for the carried-light timeline: every field is asserted by value.
       expect(m.mover_light).toEqual([
-        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
       ]);
     }
   });
@@ -587,6 +655,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       capability_requirements: [],
       contract_declarations: [],
       schema_declarations: [],
+      online_users: [],
     },
     event: {
       type: "event",
@@ -607,6 +676,12 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    ruler: { type: "ruler", from: "u", scene: "s", points: [[1, 2]], active: true, origin: "o" },
+    explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
+    modules_changed: { type: "modules_changed" },
+    presence: { type: "presence", user: "u", online: true },
+    member_profile: { type: "member_profile", user: "u", username: "mock_user", colour: "#336699", pronouns: null, has_avatar: true },
+    scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",
       request_id: "r",
@@ -616,11 +691,24 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       truncated: false,
       budget_cells: null,
     },
-    path_error: { type: "path_error", request_id: "r", message: "x" },
+    path_error: { type: "path_error", request_id: "r", message: "x", reason: "unreachable" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
     combat_result: { type: "combat_result", request_id: "r", seq: 1 },
+    door_toggle_error: { type: "door_toggle_error", request_id: "r", message: "x" },
+    place_effect_error: { type: "place_effect_error", request_id: "r", message: "x" },
+    portal_offer: {
+      type: "portal_offer",
+      offer_id: "o",
+      scene: "s",
+      token: "t",
+      prompt: null,
+      options: [{ index: 0, label: "x", destination_name: null, available: true }],
+      gm_only: false,
+      owner: null,
+    },
+    portal_choice_error: { type: "portal_choice_error", request_id: "r", message: "x" },
     merge_result: {
       type: "merge_result",
       request_id: "r",
@@ -658,6 +746,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       elevation: null,
       id: "i",
     },
+    present_note: { type: "present_note", note_id: "n", presented_by: "u" },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {
@@ -667,6 +756,21 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       expect(m?.type).toBe(type);
     });
   }
+});
+
+describe("parseServerMsg — paused refusals", () => {
+  it("carries the paused reason on reject, move_error and combat_error frames", () => {
+    const frames = [
+      { type: "reject", intent_id: "i", reason: "paused", detail: null },
+      { type: "move_error", request_id: "r", message: "x", reason: "paused" },
+      { type: "combat_error", request_id: "r", message: "x", reason: "paused" },
+    ];
+    for (const frame of frames) {
+      const m = parseServerMsg(JSON.stringify(frame));
+      expect(m?.type).toBe(frame.type);
+      expect(m && "reason" in m ? m.reason : undefined).toBe("paused");
+    }
+  });
 });
 
 describe("parseServerMsg — merge frames with realistic payloads", () => {
@@ -896,6 +1000,30 @@ describe("SendMessageSchema", () => {
       audience: { kind: "gm_only" },
     });
     expect(parsed.audience).toEqual({ kind: "gm_only" });
+  });
+
+  it("parses a blind audience", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
+      channel: "general",
+      content: "/blindroll 1d20",
+      actor_owner: null,
+      audience: { kind: "blind" },
+    });
+    expect(parsed.audience).toEqual({ kind: "blind" });
+  });
+
+  it("carries an opaque system payload and treats it as optional", () => {
+    const base = {
+      type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
+      channel: "all",
+      content: "hi",
+      actor_owner: null,
+    };
+    expect(SendMessageSchema.parse({ ...base, system: { a: [1] } }).system).toEqual({ a: [1] });
+    expect(SendMessageSchema.parse(base).system).toBeUndefined();
   });
 });
 

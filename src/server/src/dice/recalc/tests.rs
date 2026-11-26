@@ -477,3 +477,35 @@ fn untouched_die_natural_stability_vs_derived_instability_is_explicit() {
          shape even though die 1's base natural never moved"
     );
 }
+
+#[test]
+fn expertise_recalculates_after_replacing_a_die_with_an_extreme_natural() {
+    use crate::dice::notation::{parse, ModeKind, ParseContext};
+    for (direction, notation) in [
+        (Direction::HighWins, "1d6cs>=4e2"),
+        (Direction::LowWins, "1d6cs<=3e2"),
+    ] {
+        let ctx = ParseContext {
+            mode: ModeKind::SuccessCount,
+            direction,
+        };
+        let spec = parse(notation, ctx).unwrap();
+        let mut rng = NoiseRng::from_seed(11);
+        let raws = roll(&spec, &mut rng);
+        let id = raws.dice[0].id;
+        for natural in [i32::MIN, i32::MAX] {
+            let (_, out) = recalculate(
+                &spec,
+                &raws,
+                &[RecalcOp::ReplaceDie { id, natural }],
+                &mut rng,
+            );
+            let wins = match (direction, natural) {
+                (Direction::HighWins, i32::MAX) | (Direction::LowWins, i32::MIN) => 1,
+                _ => 0,
+            };
+            assert_eq!(out.successes, Some(wins), "{direction:?} {natural}");
+            assert_eq!(out.records[0].value, natural, "{direction:?} {natural}");
+        }
+    }
+}

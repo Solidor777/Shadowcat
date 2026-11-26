@@ -15,16 +15,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["scripts/**/*.test.mjs"],
-    // scripts/git-sequencer-state.test.mjs spawns real `git` subprocesses
-    // (ten-plus per remaining-work test) rather than mocking the process
-    // boundary, so its wall-clock cost scales with host git/process-spawn
-    // speed, not with vitest's own per-test overhead. The default 5000ms
-    // testTimeout/hookTimeout is a floor sized for in-process assertions
-    // and is not enough headroom for a loaded or slower host: measured
-    // slowest test at 2887ms on an unloaded dev machine, x4 for "slowest
-    // supported CI runner runs ~4x a dev machine" (`DUAL_SESSION_TIMEOUT_MS`'s
-    // sizing rule) rounds up to 12000ms.
-    testTimeout: 12000,
-    hookTimeout: 12000,
+    // Many tests run real `git` and parse the whole repository rather than
+    // mocking those boundaries, so their wall-clock cost scales with host load.
+    // 60 s sits well above the idle cost of the slowest case and still fails a
+    // hang.
+    testTimeout: 60000,
+    hookTimeout: 60000,
   },
 });

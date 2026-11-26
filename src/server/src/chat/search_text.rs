@@ -1,6 +1,8 @@
-//! The one reader-facing text extraction over a segment list, shared by
-//! `data::engine::search_text`'s `note` and `message` arms so the FTS
-//! projection is never duplicated across the two doc types.
+//! This module extracts the reader-facing text of a segment list.
+//!
+//! `segments_search_text` is the one extraction that both the `note` and the `message` arm of
+//! `data::engine::search_text` call, so the full-text-search projection is never duplicated across
+//! the two doc types.
 
 use crate::chat::{DrawnRow, Segment, TableDrawSegment};
 
@@ -131,11 +133,25 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
             Segment::Html { sanitized_html } => {
                 push_text(&mut out, &strip_tags_and_decode(sanitized_html));
             }
-            Segment::RollEmbed { formula, .. } => push_text(&mut out, formula),
-            Segment::RollButton { formula, label } => {
+            Segment::RollEmbed {
+                formula, flavor, ..
+            } => {
+                push_text(&mut out, formula);
+                if let Some(flavor) = flavor {
+                    push_text(&mut out, flavor);
+                }
+            }
+            Segment::RollButton {
+                formula,
+                label,
+                flavor,
+            } => {
                 push_text(&mut out, formula);
                 if let Some(label) = label {
                     push_text(&mut out, label);
+                }
+                if let Some(flavor) = flavor {
+                    push_text(&mut out, flavor);
                 }
             }
             Segment::LinkPreview {
@@ -157,9 +173,16 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
                     push_text(&mut out, author_name);
                 }
             }
-            Segment::DocLink { label, .. } => push_text(&mut out, label),
+            Segment::DocLink { label, .. } => {
+                if let Some(label) = label {
+                    push_text(&mut out, label);
+                }
+            }
             Segment::Image { alt, .. } => push_text(&mut out, alt),
             Segment::TableDraw(draw) => push_table_draw_text(&mut out, draw),
+            Segment::Secret { content, .. } => {
+                push_text(&mut out, &segments_search_text(content));
+            }
         }
     }
     out

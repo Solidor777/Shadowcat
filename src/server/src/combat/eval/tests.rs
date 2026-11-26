@@ -1,6 +1,7 @@
-//! `combat::eval`: formula-host resolution and every combat evaluation
-//! contract — host precedence, number/text evaluation, resource derivation,
-//! lifecycle-flag chains, duration amounts.
+//! These tests cover the evaluation contracts of `combat::eval`.
+//!
+//! The contracts are formula-host precedence, formula evaluation, resource derivation,
+//! lifecycle-flag chains, and duration amounts.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -38,6 +39,8 @@ fn combatant(id: u128, token_id: Option<Uuid>, actor_id: Option<Uuid>) -> Combat
         kind: CombatantKind::Actor { token_id, actor_id },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: BTreeMap::new(),
     };
     Combatant {
@@ -60,6 +63,8 @@ fn event_combatant(id: u128) -> Combatant {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: BTreeMap::new(),
     };
     Combatant {

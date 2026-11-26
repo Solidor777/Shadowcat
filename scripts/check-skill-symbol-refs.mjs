@@ -26,7 +26,7 @@
 // Pure library: no top-level side effects. `check-skill-symbol-refs-cli.mjs` is the executable
 // entry point.
 //
-// Cross-platform: node:path/node:fs only, plus one `git ls-files` invocation for corpus scoping.
+// Cross-platform: node:path/node:fs only, plus `git ls-files` invocations for corpus scoping.
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import ts from "typescript";
@@ -35,13 +35,14 @@ import { splitLine } from "./lib/comment-span.mjs";
 // in the module both documentation gates import from. Importing the sibling gate instead formed a
 // cycle: nothing evaluated an imported binding at module scope, so it worked by accident.
 import {
+  CorpusListingError,
   EXAMPLE_EXEMPT,
   GENERATED_ROOT,
   listSkillDirs,
   MD_EXTS,
   norm,
-  SKIP_DIRS,
-  sources,
+  repoFiles,
+  skillSources,
   under,
 } from "./lib/gate-corpus.mjs";
 
@@ -164,16 +165,20 @@ export function applyRenameAll(name, style) {
 }
 
 /**
- * Derives the full module-path segments a `.rs` file's OWN declarations sit under, from
- * `src/server/src` (the crate root) down: each intervening directory name is one segment, and
- * the file's own basename is the final segment — except a `mod.rs` file, which contributes no
- * segment of its own (it names its parent directory's module). `main.rs`/`lib.rs` at the crate
- * root are not real Rust path segments (the crate root has no name from outside the crate), but
- * this repo's own skill prose still writes `main::run_backup` as a doc-convention shorthand for
- * "declared in `main.rs`" — the same non-literal-Rust-syntax latitude already extended to a
- * struct field's `::`/`.` separator choice — so `main` (not `lib`, which no skill cites this way)
- * is kept as a one-segment path rather than `[]`.
- * @param {string} rustRoot - absolute path to `src/server/src`.
+ * Derives the full module-path segments a `.rs` file's OWN declarations sit under, from the root
+ * of the one indexed Rust tree the file belongs to (each of the four roots `buildSymbolIndex`
+ * walks: the server's `src`, the test-support crate's `src` and `tests`, and the server's `tests`)
+ * down: each intervening directory name is one segment, and the file's own basename is the final
+ * segment — except a `mod.rs` file, which contributes no segment of its own (it names its parent
+ * directory's module). `main.rs`/`lib.rs` directly under a root are not real Rust path segments
+ * (a crate root has no name from outside the crate), so under every root `lib.rs` maps to `[]`;
+ * `main.rs` directly under a root maps to the one-segment path `main`, because this repo's own
+ * skill prose writes `main::run_backup` as a doc-convention shorthand for "declared in `main.rs`"
+ * — the same non-literal-Rust-syntax latitude already extended to a struct field's `::`/`.`
+ * separator choice. No skill cites a `lib` path that way. A nested `foo/lib.rs` or `foo/main.rs`
+ * is an ordinary module (`foo::lib`, `foo::main`).
+ * @param {string} rustRoot - absolute path to the root of the indexed Rust tree `filePath` is
+ *   in (one of the four roots `buildSymbolIndex` walks).
  * @param {string} filePath - absolute path to a `.rs` file under `rustRoot`.
  * @returns {string[]} module path segments, root-to-leaf.
  */
@@ -182,8 +187,8 @@ export function rustModulePath(rustRoot, filePath) {
   const segs = rel.split("/");
   const file = segs.pop();
   const stem = file.replace(/\.rs$/, "");
-  if (stem === "lib") return [];
-  if (stem === "main") return ["main"];
+  if (stem === "lib" && segs.length === 0) return [];
+  if (stem === "main" && segs.length === 0) return ["main"];
   if (stem !== "mod") segs.push(stem);
   return segs;
 }
@@ -947,7 +952,8 @@ export function moduleNameOf(filePath) {
 
 /**
  * Builds the full code-symbol index this checker resolves citations against: every Rust item,
- * impl/trait method, field, variant and serde wire name under `src/server/src`; every table,
+ * impl/trait method, field, variant and serde wire name under `src/server/src`, the test-harness
+ * crate (`src/server/test-support`) and the server's integration tests (`src/server/tests`); every table,
  * index and column the SQL baseline declares; every TS/JS declaration, member, re-export, import
  * and literal-type value under `src/client`, `src/modules`, `src/types` (excluding
  * `GENERATED_ROOT`) and `scripts`; and every `.svelte` file's component name (its basename) plus
@@ -966,15 +972,25 @@ export function moduleNameOf(filePath) {
  * @param {string} [skillsRoot] - absolute path to the skill corpus root (see `defaultSkillsRoot`)
  *   whose immediate subdirectory names are indexed as sibling-skill citations; omitted (or
  *   nonexistent on disk) simply skips that indexing, since it is additive to the code index.
+ * @param {(line: string) => void} [log] - receives the corpus size line; silent by default because
+ *   this is a library function (see `repoFiles`).
  * @returns {{ symbols: Set<string>, filesIndexed: number, declared: Set<string> }}
  */
-export function buildSymbolIndex(repoRoot, skillsRoot) {
+export function buildSymbolIndex(repoRoot, skillsRoot, log = () => {}) {
   const declared = new Set();
   const referenced = new Set();
   let filesIndexed = 0;
   // Product roots carry wire values a document really holds; `scripts` carries a gate's own
   // configuration. Both are indexed for their DECLARATIONS, only the former for its value sets.
   const PRODUCT_ROOTS = ["src/client", "src/modules", "src/types"];
+  // The server crate, plus the measurement and test-harness crate and the server's integration
+  // tests: a skill documenting the connection lifecycle cites the harness that exercises it.
+  const RUST_ROOTS = [
+    "src/server/src",
+    "src/server/test-support/src",
+    "src/server/test-support/tests",
+    "src/server/tests",
+  ];
   /**
    * One JSON document's keys: a dependency name is a REFERENCE, every other key a declaration.
    *
@@ -989,29 +1005,46 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     for (const key of extractJsonKeys(text)) (isDependency(key) ? referenced : declared).add(key);
   };
 
-  const rustRoot = join(repoRoot, "src", "server", "src");
-  for (const file of sources(rustRoot, [".rs"])) {
-    filesIndexed += 1;
-    const text = readFileSync(file, "utf8");
-    const modulePath = rustModulePath(rustRoot, file);
-    for (const name of extractRustSymbols(text, modulePath)) declared.add(name);
-    // The module a file IS, under every suffix of its path: a binary target under `bin/` is never
-    // reached by a `mod` declaration, so `bin::test_server` and `test_server` are otherwise names
-    // the tree carries and the index cannot see.
-    for (let i = 0; i < modulePath.length; i += 1) declared.add(modulePath.slice(i).join("::"));
+  // A DECLARATION index: it reads TRACKED files only (`include: "tracked"`). An untracked stray
+  // file that declares a symbol would make a citation resolve on this machine and fail on CI,
+  // which sees a clean checkout; that is the permissive direction, so the index never reads one.
+  const tracked = repoFiles({
+    cwd: repoRoot,
+    include: "tracked",
+    label: "skill symbol index",
+    log,
+  });
+  /** Absolute paths of the tracked files under repo-relative `root` that end in one of `exts`. */
+  const filesUnder = (root, exts) =>
+    tracked
+      .filter((p) => under(p, root) && exts.some((e) => p.endsWith(e)))
+      .map((p) => join(repoRoot, ...p.split("/")));
+
+  for (const rustRootRel of RUST_ROOTS) {
+    const rustRoot = join(repoRoot, ...rustRootRel.split("/"));
+    for (const file of filesUnder(rustRootRel, [".rs"])) {
+      filesIndexed += 1;
+      const text = readFileSync(file, "utf8");
+      const modulePath = rustModulePath(rustRoot, file);
+      for (const name of extractRustSymbols(text, modulePath)) declared.add(name);
+      // The module a file IS, under every suffix of its path: a binary target under `bin/` or an
+      // integration-test target is never reached by a `mod` declaration, so `bin::test_server`,
+      // `test_server` and a test target's own name are otherwise names the tree carries and the
+      // index cannot see.
+      for (let i = 0; i < modulePath.length; i += 1) declared.add(modulePath.slice(i).join("::"));
+    }
   }
 
   // Cargo's manifests name every crate this repo depends on, and skill prose names those crates
   // directly when it explains which library owns a behaviour. Rust paths spell a hyphenated crate
   // name with underscores, so both forms are indexed. A manifest key names a dependency or a build
   // knob — it is a reference, never a declaration of a Rust item.
-  for (const file of sources(join(repoRoot, "src", "server"), [".toml"])) {
+  for (const file of filesUnder("src/server", [".toml"])) {
     filesIndexed += 1;
     for (const name of extractTomlKeys(readFileSync(file, "utf8"))) referenced.add(name);
   }
 
-  const sqlRoot = join(repoRoot, "src", "server", "migrations");
-  for (const file of sources(sqlRoot, [".sql"])) {
+  for (const file of filesUnder("src/server/migrations", [".sql"])) {
     filesIndexed += 1;
     for (const name of extractSqlSymbols(readFileSync(file, "utf8"))) declared.add(name);
   }
@@ -1021,11 +1054,15 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     const abs = join(repoRoot, ...root.split("/"));
     const valueSets = PRODUCT_ROOTS.includes(root);
     // Every package/module directory is a declaration too: `src/modules/topbar` is what makes
-    // "the `topbar` module" a citation of something real rather than of a word.
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) declared.add(entry.name);
+    // "the `topbar` module" a citation of something real rather than of a word. A directory is
+    // declared iff a tracked file sits under it.
+    for (const p of tracked) {
+      if (!under(p, root)) continue;
+      const rest = p.slice(root.length + 1);
+      const slash = rest.indexOf("/");
+      if (slash > 0) declared.add(rest.slice(0, slash));
     }
-    for (const file of sources(abs, [".ts", ".mjs", ".js"])) {
+    for (const file of filesUnder(root, [".ts", ".mjs", ".js"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
@@ -1034,7 +1071,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
       for (const name of extractTsSymbols(text, basename(file), { valueSets })) declared.add(name);
       for (const name of importBindingNames(text, basename(file))) referenced.add(name);
     }
-    for (const file of sources(abs, [".svelte"])) {
+    for (const file of filesUnder(root, [".svelte"])) {
       filesIndexed += 1;
       const componentName = basename(file, ".svelte");
       declared.add(componentName);
@@ -1052,7 +1089,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
         if (!imported.has(name) && !name.includes(".")) declared.add(`${componentName}.${name}`);
       }
     }
-    for (const file of sources(abs, [".json"])) {
+    for (const file of filesUnder(root, [".json"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
@@ -1062,7 +1099,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
   // Repo-root config files: an eslint or TypeDoc option a skill cites is set here and nowhere
   // else, and the lint configs are real modules whose own bindings prose names. Their string
   // literals are configuration, not wire values, so value-set extraction stays off.
-  for (const name of readdirSync(repoRoot)) {
+  for (const name of tracked.filter((p) => !p.includes("/"))) {
     const path = join(repoRoot, name);
     if (name.endsWith(".json")) {
       filesIndexed += 1;
@@ -1110,7 +1147,7 @@ export function findMarkdownFiles(skillsRoot, trackedDirs) {
   const out = [];
   for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !trackedDirs.has(entry.name)) continue;
-    out.push(...sources(join(skillsRoot, entry.name), MD_EXTS));
+    out.push(...skillSources(join(skillsRoot, entry.name), MD_EXTS));
   }
   return out.sort();
 }
@@ -1534,10 +1571,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // standard's, not a declaration in this tree.
   "enum", "anyOf", "oneOf",
   // URL grammar terms from the standard the SSRF guard parses against.
-  "https", "userinfo",
-  // The filesystem RENAME syscall, whose backticks mark the one atomic operation apart from the
-  // same sentence's ordinary use of the word.
-  "rename",
+  "userinfo",
   // A filesystem copy command named while explaining what this repo's code does NOT shell out to.
   "xcopy", "robocopy",
   // A transitive dependency this repo never names in its own manifest, and two cargo FEATURES of
@@ -1548,20 +1582,19 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // allowlist setter).
   "url_schemes",
   // A tooling option this repo cites while explaining another tool's behaviour but never sets
-  // itself (TypeDoc's per-package option map), the plugin-cache state keys of the agent harness
-  // (a file outside this repo), and the TypeScript config concept named as a whole.
-  "packageOptions", "lastUpdated", "installedAt", "tsconfig",
+  // itself (TypeDoc's per-package option map), and the TypeScript config concept named as a whole.
+  "packageOptions", "tsconfig",
   // A derived quantity the implementation names only in its own explanatory comment - no binding
   // carries the name, so prose and code agree on a term the index cannot hold.
   "minConsecutiveDelta",
   // Deliberate NEGATIVE citations, each in a sentence asserting the named thing does NOT exist:
   // no back-compat `*System` aliases (verified against `src/server/src/data/engine/`, which
-  // declares none of them), no sidebar `tab` field on a `Contribution`, no `TabbedSurface`
+  // declares none of them), no `TabbedSurface`
   // component, no `sys_f64` pointer-walk helper, no polyanya `blocked_layers` mechanism, and no
   // `rand` dependency (determinism by construction). The citation's own sentence is what makes
   // the claim true, not a pointer to a live declaration.
   "ActorSystem", "TokenSystem", "FactionRegistrySystem", "ConditionRegistrySystem", "RegionSystem",
-  "tab", "TabbedSurface", "sys_f64", "blocked_layers", "rand",
+  "TabbedSurface", "sys_f64", "blocked_layers", "rand",
 ]);
 
 // The name of something EXTERNAL that owns members: a crate, a package, or a type declared inside
@@ -1579,13 +1612,13 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
 // whole token.
 export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Crates this repo depends on, named as the owner of whatever they expose.
-  "tokio", "clap", "reqwest", "serde_json", "ammonia", "polyanya",
+  "tokio", "clap", "serde_json", "ammonia", "polyanya",
   // Rust primitive and std types.
-  "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
+  "f64", "i128", "Vec", "Option", "Some", "Result", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
   "SqlitePoolOptions", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
-  "undefined", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
+  "undefined", "Map", "Window", "IntersectionObserver", "structuredClone",
   // Third-party UI libraries this repo depends on but does not declare (the dockview panel
   // library, TypeDoc's own internals).
   "DockviewComponent", "PopoutWindowService", "AsapEvent", "DockviewApi", "PanelApiImpl",
@@ -1593,10 +1626,10 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // `serde_json::Number`'s own PRIVATE variant names, cited while describing serde_json's internal
   // representation split.
   "PosInt", "NegInt", "Float",
-  // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, the
+  // Further external crate/Web-API types (`url`'s `Url`, the
   // `ammonia` HTML-sanitizer's `PassThrough` element-handling mode, `polyanya`'s `Mesh`/`Layer`,
   // `axum`'s `DefaultBodyLimit`).
-  "Host", "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
+  "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
 ]);
 
 /**
@@ -1713,8 +1746,10 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
  * @param {string} repoRoot - absolute path to the repository root (builds the CODE symbol index).
  * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`) —
  *   an independent checkout from `repoRoot` since the shadowcat-codebase migration.
- * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
- *   for a fixture tree that is not itself a git checkout; production passes nothing and asks git.
+ * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[], log?: (line: string) => void}} [opts] -
+ *   corpus scoping override, for a fixture tree that is not itself a git checkout; production
+ *   passes no scoping and asks git. `log` receives the symbol index's corpus size line; silent when
+ *   omitted, because this is a library function (see `repoFiles`).
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
  *   candidatesChecked: number, verified: number, acknowledged: number,
  *   broken: {file: string, line: number, token: string}[], nonCandidates: number,
@@ -1735,14 +1770,14 @@ export function checkSkillSymbolRefs(repoRoot, skillsRoot, opts = {}) {
   if (trackedDirs === undefined) {
     const dirs = listSkillDirs(skillsRoot);
     if (dirs === null)
-      throw new Error(
+      throw new CorpusListingError(
         "git could not list the skill corpus: this gate scopes by tracked-ness and cannot " +
           `guess it. Run it inside a git checkout with git on PATH (looked in ${skillsRoot}).`,
       );
     trackedDirs = dirs.tracked;
     untrackedDirs = dirs.untracked;
   }
-  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot, skillsRoot);
+  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot, skillsRoot, opts.log);
   const files = findMarkdownFiles(skillsRoot, trackedDirs);
   const acknowledgedHits = new Map();
   let verified = 0;

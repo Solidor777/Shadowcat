@@ -1,3 +1,7 @@
+//! This module creates the first admin account through a guarded, concurrent-safe insert.
+//!
+//! The setup-token policy is not enforced here; it lives in the `/api/setup` route.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

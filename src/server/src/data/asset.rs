@@ -1,8 +1,14 @@
+//! This module holds the uploaded-asset row types and the commit path that writes an asset's files
+//! and metadata row.
+//!
+//! `Asset::version` backs the asset's ETag.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use crate::trash::Trash;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -63,8 +69,7 @@ pub struct AssetMeta {
 impl AssetMeta {
     /// Metadata for bytes stored exactly as they arrived, with nothing
     /// decoded: no dimensions, no alpha/animation knowledge, no retained
-    /// original. The pre-pipeline shape every commit path records until the
-    /// conversion step fills the real values.
+    /// original.
     ///
     /// # Examples
     ///
@@ -211,18 +216,21 @@ pub enum AssetError {
 /// a sibling present at the staged stem replaces the one at the final stem,
 /// and a sibling ABSENT at the staged stem removes any stale one at the
 /// final stem (a pass-through replace has no `.orig`; an undecodable one has
-/// no derivatives). A missing final sibling is not an error.
+/// no derivatives); that stale sibling moves into `trash`. A missing final
+/// sibling is not an error.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::asset::move_asset_files;
-/// use std::path::Path;
+/// use shadowcat::trash::{Trash, TrashRetention};
+/// use std::path::{Path, PathBuf};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
 /// // Renaming a staged stem that was never written fails rather than panicking.
-/// let err = move_asset_files(Path::new("no-such-staged"), Path::new("no-such-final"))
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
+/// let err = move_asset_files(Path::new("no-such-staged"), Path::new("no-such-final"), &trash)
 ///     .await
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
@@ -231,6 +239,7 @@ pub enum AssetError {
 pub async fn move_asset_files(
     staged: &std::path::Path,
     final_path: &std::path::Path,
+    trash: &Trash,
 ) -> std::io::Result<()> {
     tokio::fs::rename(staged, final_path).await?;
     for (from, to) in process::sibling_paths(staged)
@@ -240,7 +249,7 @@ pub async fn move_asset_files(
         if tokio::fs::try_exists(from).await? {
             tokio::fs::rename(from, to).await?;
         } else {
-            match tokio::fs::remove_file(to).await {
+            match trash.discard(to).await {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
@@ -250,51 +259,90 @@ pub async fn move_asset_files(
     Ok(())
 }
 
-/// Best-effort removal of a canonical and every sibling artifact; a file
-/// that is already gone is not an error. Used on every rollback path and by
-/// asset delete.
+/// Moves a canonical and every sibling artifact into `trash`, in that order,
+/// and returns each path with its outcome. A file that is already gone is not
+/// an error (`Trash::discard` treats a missing source as success). The one
+/// place the canonical-then-siblings set and order is enumerated; callers
+/// differ only in what they do with the results.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::discard_asset_files;
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let canonical = dir.path().join("uuid");
+/// std::fs::write(&canonical, b"bytes").unwrap();
+/// let results = discard_asset_files(&trash, &canonical).await;
+/// assert_eq!(results[0].0, canonical);
+/// assert!(results.iter().all(|(_, r)| r.is_ok()));
+/// assert!(!canonical.exists());
+/// # }
+/// ```
+pub async fn discard_asset_files(
+    trash: &Trash,
+    canonical: &std::path::Path,
+) -> Vec<(std::path::PathBuf, std::io::Result<()>)> {
+    let mut results = Vec::new();
+    let outcome = trash.discard(canonical).await;
+    results.push((canonical.to_path_buf(), outcome));
+    for p in process::sibling_paths(canonical) {
+        let outcome = trash.discard(&p).await;
+        results.push((p, outcome));
+    }
+    results
+}
+
+/// Best-effort removal of a canonical and every sibling artifact into `trash`;
+/// a file that is already gone is not an error and a failure is ignored. Used
+/// on every rollback path.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::asset::process::sibling_paths;
 /// use shadowcat::data::asset::remove_asset_files;
+/// use shadowcat::trash::{Trash, TrashRetention};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
 /// // A directory outside the repo tree — never written to source control.
 /// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
 /// let canonical = dir.path().join("uuid");
 /// std::fs::write(&canonical, b"bytes").unwrap();
 /// for sibling in sibling_paths(&canonical) {
 ///     std::fs::write(&sibling, b"bytes").unwrap();
 /// }
-/// remove_asset_files(&canonical).await;
+/// remove_asset_files(&canonical, &trash).await;
 /// assert!(!canonical.exists());
 /// assert!(sibling_paths(&canonical).iter().all(|p| !p.exists()));
 /// # }
 /// ```
-pub async fn remove_asset_files(canonical: &std::path::Path) {
-    let _ = tokio::fs::remove_file(canonical).await;
-    for p in process::sibling_paths(canonical) {
-        let _ = tokio::fs::remove_file(p).await;
-    }
+pub async fn remove_asset_files(canonical: &std::path::Path, trash: &Trash) {
+    let _ = discard_asset_files(trash, canonical).await;
 }
 
 /// Runs `process::process_staged` on the blocking pool (it is CPU-bound).
-/// On any failure the staged file and its siblings are removed, so a caller
-/// never has to reason about a half-processed stem.
+/// On any failure the staged file and its siblings move into `trash`, so a
+/// caller never has to reason about a half-processed stem.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::asset::process_staged_blocking;
+/// use shadowcat::trash::{Trash, TrashRetention};
 /// use std::path::PathBuf;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true, Default::default())
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
+/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true, Default::default(), &trash)
 ///     .await
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
@@ -306,8 +354,10 @@ pub async fn process_staged_blocking(
     original_byte_size: i64,
     retain_originals: bool,
     audio_containers: process::audio::AudioContainers,
+    trash: &Trash,
 ) -> std::io::Result<process::Processed> {
     let path = staged.clone();
+    let blocking_trash = trash.clone();
     let result = tokio::task::spawn_blocking(move || {
         process::process_staged(
             &path,
@@ -315,37 +365,39 @@ pub async fn process_staged_blocking(
             original_byte_size,
             retain_originals,
             audio_containers,
+            &blocking_trash,
         )
     })
     .await
     .map_err(std::io::Error::other)
     .and_then(|r| r);
     if result.is_err() {
-        remove_asset_files(&staged).await;
+        remove_asset_files(&staged, trash).await;
     }
     result
 }
 
 /// Moves an already-processed staged stem into its final location, then
-/// inserts `asset`'s metadata row and its derived tags — file-BEFORE-row (see
-/// `create_asset_from_bytes`'s doc for why: a create has no prior bytes and
-/// no existing ETag to strand, so the failure that matters is an orphan DB
-/// row, not an orphan file) [[commit-db-row-before-swapping-file]]. Shared
+/// inserts `asset`'s metadata row and its derived tags — file-BEFORE-row (a
+/// create has no prior bytes and no existing ETag to strand, so the failure
+/// that matters is an orphan DB row, not an orphan file). Shared
 /// commit step: `http::assets::upload` streams its OWN tmp file via
 /// `store_streamed` (avoiding a second in-memory buffer for an arbitrarily
-/// large GM upload), processes it in place, and calls this directly;
-/// `create_asset_from_bytes` stages + processes `bytes` itself first and then
-/// calls this — so both callers' resulting `Asset` rows are committed through
-/// byte-for-byte the same ordering logic. A row-insert failure removes every
-/// file just moved; a tag-write failure after the row is in leaves the asset
-/// untagged (`refresh_derived_tags` repairs it) rather than orphaning files.
+/// large GM upload), processes it in place, and calls this directly, as does
+/// `http::assets::uploads::complete_session`; `create_asset_from_bytes` stages
+/// and processes `bytes` itself first and then calls this — so every caller's
+/// resulting `Asset` row is committed through the same ordering logic. A
+/// row-insert failure moves every file just moved into `trash`; a tag-write failure after
+/// the row is in leaves the asset untagged (`refresh_derived_tags` repairs it)
+/// rather than orphaning files.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::asset::{commit_staged_asset, Asset, AssetError, AssetMeta};
 /// use shadowcat::data::sqlite::SqliteRepository;
-/// use std::path::Path;
+/// use shadowcat::trash::{Trash, TrashRetention};
+/// use std::path::{Path, PathBuf};
 /// use uuid::Uuid;
 ///
 /// # #[tokio::main]
@@ -367,12 +419,14 @@ pub async fn process_staged_blocking(
 ///     meta: AssetMeta::unprocessed("image/png", 10),
 /// };
 /// // No file was ever staged, so the move fails before the row insert.
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
 /// let err = commit_staged_asset(
 ///     &repo,
 ///     Path::new("no-such-staged"),
 ///     Path::new("no-such-final"),
 ///     asset,
 ///     &[],
+///     &trash,
 /// )
 /// .await
 /// .unwrap_err();
@@ -385,14 +439,15 @@ pub async fn commit_staged_asset(
     final_path: &std::path::Path,
     asset: Asset,
     derived_tags: &[String],
+    trash: &Trash,
 ) -> Result<Asset, AssetError> {
-    if let Err(e) = move_asset_files(tmp_path, final_path).await {
-        remove_asset_files(tmp_path).await;
-        remove_asset_files(final_path).await;
+    if let Err(e) = move_asset_files(tmp_path, final_path, trash).await {
+        remove_asset_files(tmp_path, trash).await;
+        remove_asset_files(final_path, trash).await;
         return Err(AssetError::Io(e));
     }
     if let Err(e) = repo.insert_asset(&asset).await {
-        remove_asset_files(final_path).await;
+        remove_asset_files(final_path, trash).await;
         return Err(AssetError::Data(e));
     }
     repo.set_asset_tags(asset.id, &asset.tags, derived_tags)
@@ -403,11 +458,7 @@ pub async fn commit_staged_asset(
     })
 }
 
-/// Grouped byte-buffer/metadata parameters for `create_asset_from_bytes` —
-/// grouped instead of five positional parameters (bringing the call to eight
-/// total) to stay under `clippy::too_many_arguments` by restructuring the
-/// signature, never by suppressing the lint (same pattern as `chat`'s
-/// `RecalcRollRequestCtx`).
+/// The byte-buffer and metadata parameters of `create_asset_from_bytes`, grouped into one struct.
 ///
 /// # Examples
 ///
@@ -453,7 +504,7 @@ pub struct NewAssetBytes<'a> {
 /// Creates an asset from an already-in-memory byte buffer: allocates a fresh
 /// `Uuid`/`storage_key`, writes `bytes` to a unique temp sibling of the final
 /// path, runs the conversion pipeline on it, derives tags, then commits via
-/// `commit_staged_asset` (file-first-then-row, unchanged ordering). For a
+/// `commit_staged_asset` (file first, then row). For a
 /// SMALL buffer only (the link-preview/oEmbed background image pipeline,
 /// capped at `chat::link_preview::MAX_IMAGE_BYTES`) — `http::assets::upload`'s
 /// own arbitrarily-large GM uploads stream straight to disk via
@@ -465,6 +516,7 @@ pub struct NewAssetBytes<'a> {
 /// ```
 /// use shadowcat::data::asset::{create_asset_from_bytes, NewAssetBytes, Provenance};
 /// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::trash::{Trash, TrashRetention};
 /// use std::io::Cursor;
 ///
 /// # #[tokio::main]
@@ -473,6 +525,7 @@ pub struct NewAssetBytes<'a> {
 /// let world = repo.create_world("w", 0).await.unwrap();
 /// // A directory outside the repo tree — never written to source control.
 /// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
 /// let mut png = Vec::new();
 /// image::RgbaImage::new(2, 2)
 ///     .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
@@ -490,6 +543,7 @@ pub struct NewAssetBytes<'a> {
 ///         retain_originals: false,
 ///     },
 ///     0,
+///     &trash,
 /// )
 /// .await
 /// .unwrap();
@@ -502,6 +556,7 @@ pub async fn create_asset_from_bytes(
     world_id: uuid::Uuid,
     new: NewAssetBytes<'_>,
     now: i64,
+    trash: &Trash,
 ) -> Result<Asset, AssetError> {
     let NewAssetBytes {
         bytes,
@@ -527,6 +582,7 @@ pub async fn create_asset_from_bytes(
         // A programmatic byte-source (chat image, fixture) has no import-time
         // container selection to honor — the default selection applies.
         Default::default(),
+        trash,
     )
     .await?;
     let derived = tags::derive(tags::DeriveInput {
@@ -550,9 +606,10 @@ pub async fn create_asset_from_bytes(
         derived_tags: vec![],
         meta: processed.meta,
     };
-    commit_staged_asset(repo, &tmp_path, &final_path, asset, &derived).await
+    commit_staged_asset(repo, &tmp_path, &final_path, asset, &derived, trash).await
 }
 
+pub mod audio_upgrade;
 pub mod process;
 pub mod query;
 pub mod tags;

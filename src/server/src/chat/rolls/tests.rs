@@ -122,6 +122,7 @@ fn scan_button_without_label() {
         vec![BodyChunk::Button {
             formula: "2d6+3",
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -134,8 +135,46 @@ fn scan_button_with_label() {
         vec![BodyChunk::Button {
             formula: "2d6+3",
             label: Some("Attack"),
+            flavor: None,
         }]
     );
+}
+
+#[test]
+fn scan_button_with_label_and_flavor_splits_on_the_second_pipe() {
+    let chunks = scan_body("[[roll:2d6+3|Attack| Swing the axe ]]").unwrap();
+    assert_eq!(
+        chunks,
+        vec![BodyChunk::Button {
+            formula: "2d6+3",
+            label: Some("Attack"),
+            flavor: Some("Swing the axe"),
+        }]
+    );
+}
+
+#[test]
+fn scan_button_with_flavor_but_no_label_keeps_the_flavor() {
+    let chunks = scan_body("[[roll:2d6||Swing]]").unwrap();
+    assert_eq!(
+        chunks,
+        vec![BodyChunk::Button {
+            formula: "2d6",
+            label: None,
+            flavor: Some("Swing"),
+        }]
+    );
+}
+
+#[test]
+fn split_roll_flavor_splits_at_the_first_pipe_only() {
+    assert_eq!(split_roll_flavor("1d20+5"), ("1d20+5", None));
+    assert_eq!(
+        split_roll_flavor("1d20+5 | Attack roll"),
+        ("1d20+5", Some("Attack roll"))
+    );
+    assert_eq!(split_roll_flavor("1d20 | a | b"), ("1d20", Some("a | b")));
+    assert_eq!(split_roll_flavor("1d20 |   "), ("1d20", None));
 }
 
 #[test]
@@ -146,6 +185,7 @@ fn scan_button_with_whitespace_only_label_is_none() {
         vec![BodyChunk::Button {
             formula: "2d6",
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -158,6 +198,7 @@ fn scan_button_empty_formula_parses_then_fails_downstream() {
         vec![BodyChunk::Button {
             formula: "",
             label: None,
+            flavor: None,
         }]
     );
     match validate_formula("", total_ctx()) {
@@ -199,7 +240,7 @@ fn scan_doc_link() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: None,
             },
-            label: "My Document",
+            label: Some("My Document"),
         }]
     );
 }
@@ -215,7 +256,7 @@ fn scan_doc_link_with_embedded_path() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: Some("/embedded/actor/0".into()),
             },
-            label: "My Item",
+            label: Some("My Item"),
         }]
     );
 }
@@ -229,7 +270,7 @@ fn scan_token_link() {
             target: DocLinkTarget::Token {
                 token_id: Uuid::from_u128(2),
             },
-            label: "Goblin",
+            label: Some("Goblin"),
         }]
     );
 }
@@ -246,7 +287,7 @@ fn scan_doc_link_with_surrounding_text() {
                     doc_id: Uuid::from_u128(1),
                     embedded_path: None,
                 },
-                label: "Doc",
+                label: Some("Doc"),
             },
             BodyChunk::Text(" please"),
         ]
@@ -254,10 +295,30 @@ fn scan_doc_link_with_surrounding_text() {
 }
 
 #[test]
-fn scan_doc_link_missing_label_is_malformed() {
+fn scan_doc_link_without_a_pipe_has_no_label() {
     assert_eq!(
-        scan_body("[[doc:00000000-0000-0000-0000-000000000001]]"),
-        Err(RollError::MalformedDocLink)
+        scan_body("[[doc:00000000-0000-0000-0000-000000000001]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id: Uuid::from_u128(1),
+                embedded_path: None,
+            },
+            label: None,
+        }]
+    );
+}
+
+#[test]
+fn scan_doc_link_with_embedded_path_and_no_pipe_has_no_label() {
+    assert_eq!(
+        scan_body("[[doc:00000000-0000-0000-0000-000000000001/embedded/actor/0]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id: Uuid::from_u128(1),
+                embedded_path: Some("/embedded/actor/0".into()),
+            },
+            label: None,
+        }]
     );
 }
 
@@ -278,10 +339,15 @@ fn scan_doc_link_bad_uuid_is_malformed() {
 }
 
 #[test]
-fn scan_token_link_missing_label_is_malformed() {
+fn scan_token_link_without_a_pipe_has_no_label() {
     assert_eq!(
-        scan_body("[[token:00000000-0000-0000-0000-000000000002]]"),
-        Err(RollError::MalformedDocLink)
+        scan_body("[[token:00000000-0000-0000-0000-000000000002]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Token {
+                token_id: Uuid::from_u128(2),
+            },
+            label: None,
+        }]
     );
 }
 
@@ -314,7 +380,7 @@ fn scan_doc_link_label_may_contain_slash_and_pipe() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: None,
             },
-            label: "A/B|C",
+            label: Some("A/B|C"),
         }]
     );
 }
@@ -400,6 +466,24 @@ fn validate_formula_rejects_the_same_way_execute_roll_would() {
 }
 
 #[test]
+fn a_reference_in_a_dice_count_position_is_capped_like_a_typed_count() {
+    // The reference substitutes BEFORE parsing, so the rewritten text is plain
+    // dice notation and `validate_pre_roll` sees the real count. A count
+    // evaluated at roll time would skip this check.
+    let rewrite = |n: f64| {
+        crate::formula::resolve_notation_template("prof d6", &move |_: &[String]| Ok(n))
+            .expect("rewrite")
+    };
+    let over = notation::parse(&rewrite(101.0), total_ctx()).expect("parse");
+    assert!(matches!(
+        validate_pre_roll(&over),
+        Err(RollError::TooManyDice(101))
+    ));
+    let at_limit = notation::parse(&rewrite(100.0), total_ctx()).expect("parse");
+    assert!(validate_pre_roll(&at_limit).is_ok());
+}
+
+#[test]
 fn dice_nested_inside_a_call_argument_still_counts_toward_max_roll_dice() {
     // `walk_groups` must recurse into `Expr::Call`'s args -- otherwise a dice group
     // wrapped in floor/ceil/round/abs/min/max would bypass MAX_ROLL_DICE entirely.
@@ -407,6 +491,24 @@ fn dice_nested_inside_a_call_argument_still_counts_toward_max_roll_dice() {
         Err(RollError::TooManyDice(101)) => {}
         other => panic!("expected TooManyDice(101), got {other:?}"),
     }
+}
+
+#[test]
+fn every_best_of_branch_counts_toward_max_roll_dice() {
+    assert!(validate_formula("best(50d6, 50d6)", total_ctx()).is_ok());
+    match validate_formula("best(50d6, 51d6)", total_ctx()) {
+        Err(RollError::TooManyDice(101)) => {}
+        other => panic!("expected TooManyDice(101), got {other:?}"),
+    }
+}
+
+#[test]
+fn best_of_is_refused_in_success_count_mode_but_accepted_in_total_mode() {
+    assert_eq!(
+        validate_formula("best(3d6cs>=5, 3d6)", success_ctx()),
+        Err(RollError::BestOfRequiresTotal)
+    );
+    assert!(validate_formula("best(3d6, 3d6)", total_ctx()).is_ok());
 }
 
 #[test]
@@ -473,10 +575,11 @@ fn roll_error_display_has_no_debug_artifacts() {
         RollError::ImagesDisabled,
         RollError::AltTooLong,
         RollError::TableNeedsTotal,
+        RollError::BestOfRequiresTotal,
     ];
     assert_eq!(
         variants.len(),
-        15,
+        16,
         "update this test if a RollError variant is added or removed"
     );
     for v in variants {
@@ -664,4 +767,47 @@ fn a_reference_free_template_is_byte_identical_after_resolution() {
         let (formula, _, _, _) = execute_roll(src, total_ctx(), None).unwrap();
         assert_eq!(formula, src);
     }
+}
+
+#[test]
+fn a_floor_above_the_ceiling_is_refused_before_any_roll() {
+    // `mn5mx2` parses; the pre-roll guard is what keeps an untrusted floor/ceiling pair out of
+    // the evaluator, through both entry points.
+    let expected = Err(RollError::InvalidClamp { min: 5, max: 2 });
+    assert_eq!(validate_formula("4d6mn5mx2", total_ctx()), expected);
+    assert_eq!(
+        execute_roll("4d6mx2mn5", total_ctx(), None).map(|_| ()),
+        expected
+    );
+}
+
+#[test]
+fn a_clamp_with_floor_at_or_below_the_ceiling_is_accepted() {
+    for src in ["4d6mn2mx2", "4d6mn1mx5", "4d6mn3", "4d6mx3"] {
+        assert!(validate_formula(src, total_ctx()).is_ok(), "{src}");
+    }
+}
+
+#[test]
+fn a_clamped_roll_round_trips_through_execute_roll() {
+    let (formula, outcome, spec, raw) =
+        execute_roll_with_seed("6d6mn3mx4", total_ctx(), None, 9).unwrap();
+    assert_eq!(formula, "6d6mn3mx4");
+    assert_eq!(outcome.records.len(), 6);
+    assert!(outcome.records.iter().all(|r| (3..=4).contains(&r.value)));
+    assert_eq!(crate::dice::eval::evaluate(&spec, &raw), outcome);
+}
+
+#[test]
+fn invalid_clamp_displays_without_debug_artifacts() {
+    let text = RollError::InvalidClamp { min: 5, max: 2 }.to_string();
+    assert_eq!(text, "that die's floor (mn5) is above its ceiling (mx2)");
+}
+
+#[test]
+fn a_parity_roll_round_trips_through_execute_roll() {
+    let (_, outcome, spec, raw) = execute_roll_with_seed("6d6cse", total_ctx(), None, 9).unwrap();
+    let evens = outcome.records.iter().filter(|r| r.value % 2 == 0).count() as i32;
+    assert_eq!(outcome.successes, Some(evens));
+    assert_eq!(crate::dice::eval::evaluate(&spec, &raw), outcome);
 }

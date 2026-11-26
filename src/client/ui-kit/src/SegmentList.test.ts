@@ -49,6 +49,25 @@ describe("SegmentList — the {@html} boundary", () => {
     expect(strong?.textContent).toBe("bold");
   });
 
+  it("cancels a click on a same-page fragment link and leaves an external link alone", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [
+          { kind: "html", sanitized_html: '<a href="#intro">in</a> <a href="https://example.com/">out</a>' },
+        ],
+        channel: "general",
+      },
+      context: setAppContextForTest({}),
+    });
+    const click = (link: Element): MouseEvent => {
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      return ev;
+    };
+    expect(click(container.querySelector('a[href="#intro"]')!).defaultPrevented).toBe(true);
+    expect(click(container.querySelector('a[href^="https"]')!).defaultPrevented).toBe(false);
+  });
+
   it("filters out an unknown segment kind without crashing, rendering only known segments", () => {
     const { container } = render(SegmentList, {
       props: {
@@ -217,6 +236,118 @@ describe("SegmentList — doc_link", () => {
     });
     expect(container.querySelector("button.doc-link")).toBeNull();
     expect(container.querySelector(".seg-text")?.textContent).toBe("Gone");
+  });
+});
+
+/** A world document fixture for the live-label tests; `name` is the only varying field. */
+function namedDoc(id: string, docType: string, name: string | null): WireDocument {
+  return {
+    id,
+    scope: { kind: "world", world_id: "w1" },
+    doc_type: docType,
+    schema_version: 1,
+    name,
+    source: null,
+    owner: null,
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+    embedded: {},
+    parent_id: null,
+    engine: {},
+    system: {},
+    created_at: 0,
+    updated_at: 0,
+  };
+}
+
+describe("SegmentList — doc_link live-resolved label", () => {
+  it("shows the target's current name for a link with no label", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }], channel: "general" },
+      context: setAppContextForTest({ documents: storeWith(namedDoc("d1", "actor", "Goblin King")) }),
+    });
+    expect(container.querySelector("button.doc-link")?.textContent).toBe("Goblin King");
+  });
+
+  it("follows a rename of the target without the message changing", async () => {
+    const store = storeWith(namedDoc("d1", "actor", "Old Name"));
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: null }], channel: "general" },
+      context: setAppContextForTest({ documents: store }),
+    });
+    expect(container.querySelector("button.doc-link")?.textContent).toBe("Old Name");
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "update", doc_id: "d1", changes: [{ path: "/name", old: "Old Name", new: "New Name" }] }],
+    });
+    await Promise.resolve();
+    expect(container.querySelector("button.doc-link")?.textContent).toBe("New Name");
+  });
+
+  it("falls back to the document placeholder when the target is absent", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "gone" } }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("button.doc-link")).toBeNull();
+    expect(container.querySelector(".seg-text")?.textContent).toBe("chat.docLink.unknownDocument");
+  });
+
+  it("falls back to the token placeholder when the target's name is withheld", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "doc_link", target: { kind: "token", token_id: "t9" } }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT, documents: storeWith(namedDoc("t9", "token", null)) }),
+    });
+    expect(container.querySelector(".doc-link")?.textContent).toBe("chat.docLink.unknownToken");
+  });
+
+  it("keeps an explicit label even when the target has a different current name", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: "The Villain" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({ documents: storeWith(namedDoc("d1", "actor", "Renamed")) }),
+    });
+    expect(container.querySelector("button.doc-link")?.textContent).toBe("The Villain");
+  });
+});
+
+describe("SegmentList — roll flavor", () => {
+  it("renders a roll_embed flavor as escaped text beside the roll", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome(), flavor: "<b>Attack</b>" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({}),
+    });
+    const flavor = container.querySelector("[data-testid='roll-flavor']");
+    expect(flavor?.textContent).toBe("<b>Attack</b>");
+    expect(flavor?.querySelector("b")).toBeNull();
+  });
+
+  it("renders a legacy roll_embed with no flavor key identically to before (no caption)", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome() }], channel: "general" },
+      context: setAppContextForTest({}),
+    });
+    expect(container.querySelector("[data-testid='roll-flavor']")).toBeNull();
+  });
+
+  it("a flavored roll_button re-sends its flavor after a pipe", async () => {
+    const send = vi.fn(() => Promise.resolve());
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "roll_button", formula: "1d20", label: "Attack", flavor: "Swing" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({
+        chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: vi.fn() },
+      }),
+    });
+    expect(container.querySelector("[data-testid='roll-flavor']")?.textContent).toBe("Swing");
+    (container.querySelector("button.roll-btn") as HTMLButtonElement).click();
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "/roll 1d20 | Swing" });
   });
 });
 
@@ -389,12 +520,67 @@ describe("SegmentList — table_draw", () => {
       },
       context: setAppContextForTest({
         documents: storeWith(tableDoc),
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
       }),
     });
     const btn = container.querySelector('[data-testid="table-draw-button"]') as HTMLButtonElement;
     btn.click();
     await Promise.resolve();
     expect(drawTable).toHaveBeenCalledWith({ tableId: "t1", channel: "ic" });
+  });
+});
+
+describe("SegmentList — secret", () => {
+  it("renders the content a recipient received inside a labelled frame", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "secret", visibility: "gm_only", content: [{ kind: "text", text: "the vault" }] }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    const el = container.querySelector("[data-testid=secret-segment]");
+    expect(el?.textContent).toContain("the vault");
+    expect(el?.textContent).toContain("chat.secret.label");
+  });
+
+  it("renders nothing for a secret the server stripped", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "secret", content: [] }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=secret-segment]")).toBeNull();
+  });
+});
+
+describe("SegmentList — blind rolls the server withheld", () => {
+  it("draws a roll_embed with no outcome as a 'rolled blind' card, with no tooltip and no digits", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "text", text: "Perception: " }, { kind: "roll_embed", roll_id: "r1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")?.textContent).toBe("chat.blind.rolled");
+    expect(container.querySelector(".roll-chip, [role=tooltip]")).toBeNull();
+    expect(container.textContent).not.toMatch(/\d/);
+  });
+
+  it("draws a table_draw with no outcome as the same card and no row", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "d1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")).not.toBeNull();
+    expect(container.querySelector(".table-draw-no-row")).toBeNull();
+    expect(container.querySelector(".table-draw-row-label")).toBeNull();
+  });
+
+  it("draws no blind card for a roll that carries its outcome", () => {
+    const outcome = {
+      total: 7, records: [], successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
+      crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0, symbol_counts: {}, labeled_consts: [],
+    } satisfies RollOutcome;
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "roll_embed", formula: "1d8", outcome, roll_id: "r1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")).toBeNull();
+    expect(container.textContent).toContain("7");
   });
 });

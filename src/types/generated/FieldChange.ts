@@ -13,7 +13,7 @@
  * is `Null`); it is NOT byte-identical under double `invert` because `old: Null`
  * cannot distinguish "was absent" from "was explicitly null", so a set-creating-a-
  * key is not re-derived as a removal. `invert` has no live caller (undo/redo is
- * not wired), so this asymmetry is inert today.
+ * not wired), so this asymmetry is inert.
  *
  * # Examples
  *

@@ -1,4 +1,5 @@
 use super::*;
+use crate::data::engine::bars::{MAX_BAR_ATTRIBUTES, MAX_BAR_LABEL_CHARS};
 
 fn base() -> TokenEngine {
     TokenEngine {
@@ -12,7 +13,19 @@ fn base() -> TokenEngine {
         overrides: None,
         face: None,
         elevation: None,
+        lock_rotation: false,
+        identity_hidden: false,
+        facing_vision: None,
     }
+}
+
+#[test]
+fn a_stored_token_without_lock_rotation_decodes_unlocked() {
+    let t: TokenEngine = serde_json::from_value(
+        serde_json::json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+    )
+    .unwrap();
+    assert!(!t.lock_rotation);
 }
 
 #[test]
@@ -33,6 +46,157 @@ fn non_finite_fields_are_rejected() {
         t.elevation = Some(f);
         assert!(t.validate().is_err(), "elevation = {f} must be rejected");
     }
+}
+
+#[test]
+fn facing_vision_validates_arc_and_near() {
+    let ok = |arc: f64, near: f64| FacingVision { arc, near }.validate().is_ok();
+    assert!(ok(120.0, 1.0));
+    assert!(ok(360.0, 0.0), "a full circle is admissible");
+    assert!(ok(0.5, 0.0));
+    for bad in [0.0, -1.0, 360.5, f64::NAN, f64::INFINITY] {
+        assert!(!ok(bad, 0.0), "arc {bad} must be rejected");
+    }
+    for bad in [-0.1, f64::NAN, f64::INFINITY] {
+        assert!(!ok(90.0, bad), "near {bad} must be rejected");
+    }
+}
+
+#[test]
+fn facing_vision_is_validated_on_all_three_bands() {
+    let bad = FacingVision {
+        arc: 0.0,
+        near: 0.0,
+    };
+    let mut t = base();
+    t.facing_vision = Some(bad);
+    assert!(t.validate().is_err(), "token band");
+
+    let o = TokenOverrides {
+        name: None,
+        visual: None,
+        size: None,
+        shape: None,
+        vision: None,
+        facing_vision: Some(bad),
+        light: None,
+        movement: None,
+        aura: None,
+        sound: None,
+        vfx: None,
+        disposition: None,
+        bars: None,
+        nameplate_mode: None,
+    };
+    assert!(o.validate().is_err(), "overrides band");
+
+    let mut actor: ActorEngine = serde_json::from_value(serde_json::json!({
+        "displayName": "A",
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": false,
+    }))
+    .unwrap();
+    assert!(actor.validate().is_ok());
+    actor.facing_vision = Some(bad);
+    assert!(actor.validate().is_err(), "actor band");
+}
+
+/// A valid bar the bar-validation tests vary one field of.
+fn bar() -> BarAttribute {
+    BarAttribute {
+        label: "HP".to_string(),
+        current: crate::data::engine::combat::Formula::Text("hp.value".to_string()),
+        max: crate::data::engine::combat::Formula::Number(10.0),
+        color: "#cc2222".to_string(),
+        mode: BarDisplayMode::Always,
+    }
+}
+
+/// An `ActorEngine` carrying `bars`.
+fn actor_with_bars(bars: Option<Vec<BarAttribute>>) -> ActorEngine {
+    let mut actor: ActorEngine = serde_json::from_value(serde_json::json!({
+        "displayName": "A",
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": false,
+    }))
+    .unwrap();
+    actor.bars = bars;
+    actor
+}
+
+#[test]
+fn bar_attribute_validate_rejects_a_bad_color_label_or_formula() {
+    assert!(bar().validate("bars[0]").is_ok());
+    let mut b = bar();
+    b.color = "red".to_string();
+    assert!(b.validate("bars[0]").is_err(), "colour must be #rrggbb");
+    let mut b = bar();
+    b.label = String::new();
+    assert!(b.validate("bars[0]").is_err(), "label must not be empty");
+    let mut b = bar();
+    b.label = "x".repeat(MAX_BAR_LABEL_CHARS + 1);
+    assert!(b.validate("bars[0]").is_err(), "label is bounded");
+    let mut b = bar();
+    b.current = crate::data::engine::combat::Formula::Text("1 +".to_string());
+    assert!(b.validate("bars[0]").is_err(), "formula must parse");
+    let mut b = bar();
+    b.max = crate::data::engine::combat::Formula::Number(f64::NAN);
+    assert!(b.validate("bars[0]").is_err(), "a number must be finite");
+}
+
+#[test]
+fn bars_are_capped_on_the_actor_and_the_override_and_never_truncated() {
+    assert!(actor_with_bars(Some(vec![bar(); MAX_BAR_ATTRIBUTES]))
+        .validate()
+        .is_ok());
+    assert!(actor_with_bars(Some(vec![bar(); MAX_BAR_ATTRIBUTES + 1]))
+        .validate()
+        .is_err());
+    let overrides = |bars: Vec<BarAttribute>| {
+        let mut t = base();
+        t.overrides = Some(serde_json::from_value(serde_json::json!({ "bars": bars })).unwrap());
+        t
+    };
+    assert!(overrides(vec![bar(); MAX_BAR_ATTRIBUTES])
+        .validate()
+        .is_ok());
+    assert!(overrides(vec![bar(); MAX_BAR_ATTRIBUTES + 1])
+        .validate()
+        .is_err());
+}
+
+#[test]
+fn a_bar_without_a_mode_decodes_as_hover_and_unknown_keys_are_refused() {
+    let b: BarAttribute = serde_json::from_value(serde_json::json!({
+        "label": "HP", "current": 1.0, "max": 2.0, "color": "#ffffff"
+    }))
+    .unwrap();
+    assert_eq!(b.mode, BarDisplayMode::Hover);
+    assert!(serde_json::from_value::<BarAttribute>(serde_json::json!({
+        "label": "HP", "current": 1.0, "max": 2.0, "color": "#ffffff", "extra": 1
+    }))
+    .is_err());
+}
+
+#[test]
+fn absent_bars_and_nameplate_mode_are_not_serialized() {
+    let v = serde_json::to_value(actor_with_bars(None)).unwrap();
+    assert!(v.get("bars").is_none());
+    assert!(v.get("nameplate_mode").is_none());
+}
+
+#[test]
+fn an_absent_facing_vision_is_not_serialized() {
+    let v = serde_json::to_value(base()).unwrap();
+    assert!(v.get("facing_vision").is_none());
 }
 
 #[test]
@@ -214,6 +378,7 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        facing_vision: None,
         light: None,
         movement: None,
         aura: Some(AuraEmission {
@@ -224,6 +389,9 @@ fn token_validate_covers_override_emissions() {
         }),
         sound: None,
         vfx: None,
+        disposition: None,
+        bars: None,
+        nameplate_mode: None,
     });
     assert!(
         t.validate().is_err(),
@@ -235,11 +403,15 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        facing_vision: None,
         light: None,
         movement: None,
         aura: Some(aura()),
         sound: Some(sound()),
         vfx: Some(vfx()),
+        disposition: Some(FactionStance::Hostile),
+        bars: None,
+        nameplate_mode: None,
     });
     assert!(t.validate().is_ok());
 }
@@ -258,4 +430,50 @@ fn emission_serde_names_match_the_client_contract() {
     })
     .unwrap();
     assert_eq!(v.get("anchor").unwrap(), "above");
+}
+
+fn pool_with(fallback: TokenVisual) -> TokenVisual {
+    TokenVisual::RandomVariant {
+        filter: TokenArtFilter::default(),
+        fallback: Box::new(fallback),
+    }
+}
+
+fn plain_image() -> TokenVisual {
+    TokenVisual::Image {
+        asset: Uuid::nil().to_string(),
+        transform: None,
+        drawn: false,
+    }
+}
+
+#[test]
+fn a_random_variant_with_a_concrete_fallback_validates() {
+    assert!(pool_with(plain_image()).validate().is_ok());
+}
+
+#[test]
+fn a_random_variant_whose_fallback_is_a_pool_is_rejected() {
+    let nested = pool_with(pool_with(plain_image()));
+    assert!(nested.validate().is_err());
+}
+
+#[test]
+fn a_random_variant_validates_its_fallback() {
+    let bad = pool_with(TokenVisual::Image {
+        asset: "not-a-uuid".to_string(),
+        transform: None,
+        drawn: false,
+    });
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn a_random_variant_wire_shape_is_camel_case_tagged() {
+    let json = serde_json::to_value(pool_with(plain_image())).unwrap();
+    assert_eq!(json["kind"], "randomVariant");
+    assert_eq!(json["filter"]["tags"], serde_json::json!([]));
+    assert_eq!(json["fallback"]["kind"], "image");
+    let back: TokenVisual = serde_json::from_value(json).unwrap();
+    assert_eq!(back, pool_with(plain_image()));
 }

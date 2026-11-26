@@ -3,12 +3,13 @@
 // helpers that build/mutate combat/combatant documents through ordinary intents. The client
 // evaluates and stores no combat formula -- every resolved number comes from the "combat"
 // channel (parseCombats).
+import { randomUuid } from "./uuid";
 import type { ReadableDocuments } from "./store";
 import type { WireDocument, ClientMsg, WireCombatRollEntry, WireResourceOp, WireOperation } from "./wire";
 import type { CombatsView, CombatantView } from "./wire";
 import { EMPTY_COMBATS } from "./wire";
 import type { CombatEngine, CombatantEngine, CombatantKind } from "./scene-docs";
-import { buildCombatDoc, buildCombatantDoc, newCombatEngine } from "./scene-docs";
+import { buildCombatDoc, buildCombatantDoc, buildCombatantGroupDoc, COMBATANT_GROUP_DOC_TYPE, newCombatEngine } from "./scene-docs";
 import { effectiveOwner } from "./actor";
 import type { Logger } from "./logger";
 import { buildUpdate } from "./update-op";
@@ -37,6 +38,8 @@ export interface NewCombatant {
   actorId?: string;
   /** Hidden = unreadable to every non-GM. */
   hidden?: boolean;
+  /** The `combatant-group` document id this combatant joins, or omitted for none. */
+  group?: string;
   /** Display name override; defaults to the token's, else the actor's. */
   name?: string | null;
   /** Opaque system body. */
@@ -167,6 +170,10 @@ export interface CombatApi {
    * @param combatId The combat to query.
    * @returns Ordered combatant documents. */
   combatants(combatId: string): WireDocument[];
+  /** The combat's `combatant-group` documents, in id order.
+   * @param combatId The combat to query.
+   * @returns The group documents. */
+  groups(combatId: string): WireDocument[];
   /** The current turn's combatant document.
    * @param combatId The combat to query.
    * @returns The turn's combatant document, or `null` when there is no turn or the store
@@ -267,6 +274,24 @@ export interface CombatApi {
    * @param initiative The new initiative, or `null` to clear it.
    * @param tiebreak The new tiebreak, when given. */
   setInitiative(combatantId: string, initiative: number | null, tiebreak?: number): void;
+  /** Marks a combatant defeated or returns it to the fight: the turn walk skips a defeated
+   * combatant while its document, resources and effects stay alive.
+   * @param combatantId The combatant to update.
+   * @param defeated The new defeated state. */
+  setDefeated(combatantId: string, defeated: boolean): void;
+  /** Creates a `combatant-group` under `combatId`: one intent. Members join it through
+   * `NewCombatant.group` or `setGroup`.
+   * @param combatId The combat the group belongs to.
+   * @param name The group's display name.
+   * @param color Optional css `#rrggbb` accent.
+   * @returns The new group document's id.
+   * @throws {CombatClientError} `code: "not-connected"` when the host dropped the intent. */
+  createGroup(combatId: string, name: string, color?: string): string;
+  /** Moves a combatant into a group, or out of every group with `null`. A group's members
+   * share one initiative slot on the next roll or sort.
+   * @param combatantId The combatant to update.
+   * @param groupId The `combatant-group` document id, or `null` for none. */
+  setGroup(combatantId: string, groupId: string | null): void;
 }
 
 /**
@@ -395,6 +420,13 @@ export class CombatController implements CombatApi {
     return [...ordered, ...stray];
   }
 
+  groups(combatId: string): WireDocument[] {
+    return this.deps.documents
+      .query(COMBATANT_GROUP_DOC_TYPE)
+      .filter((d) => d.parent_id === combatId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
   turnOf(combatId: string): WireDocument | null {
     const combat = this.deps.documents.get(combatId);
     const turn = (combat?.engine as CombatEngine | undefined)?.turn;
@@ -432,33 +464,33 @@ export class CombatController implements CombatApi {
   }
 
   start(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_start", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_start", request_id: randomUuid(), combat_id: combatId });
   }
 
   pause(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_pause", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_pause", request_id: randomUuid(), combat_id: combatId });
   }
 
   end(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_end", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_end", request_id: randomUuid(), combat_id: combatId });
   }
 
   advance(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_advance", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_advance", request_id: randomUuid(), combat_id: combatId });
   }
 
   rewind(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_rewind", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_rewind", request_id: randomUuid(), combat_id: combatId });
   }
 
   sort(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_sort", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_sort", request_id: randomUuid(), combat_id: combatId });
   }
 
   roll(combatId: string, channel: string, rolls: WireCombatRollEntry[]): Promise<void> {
     return this.deps.sendCombat({
       type: "combat_roll",
-      request_id: crypto.randomUUID(),
+      request_id: randomUuid(),
       combat_id: combatId,
       channel,
       rolls,
@@ -468,7 +500,7 @@ export class CombatController implements CombatApi {
   modifyResource(combatId: string, combatantId: string, resource: string, op: WireResourceOp): Promise<void> {
     return this.deps.sendCombat({
       type: "combat_resource",
-      request_id: crypto.randomUUID(),
+      request_id: randomUuid(),
       combat_id: combatId,
       combatant_id: combatantId,
       resource,
@@ -515,7 +547,14 @@ export class CombatController implements CombatApi {
       const name = entry.name ?? host?.name ?? null;
       const owner = host ? effectiveOwner(host, this.deps.documents) : null;
       const kind: CombatantKind = { type: "actor", token_id: entry.tokenId ?? null, actor_id: actorId };
-      const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
+      const cengine: CombatantEngine = {
+        kind,
+        initiative: null,
+        tiebreak: 0,
+        defeated: false,
+        group: entry.group ?? null,
+        resources: {},
+      };
       const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
         owner,
         hidden: entry.hidden,
@@ -535,7 +574,7 @@ export class CombatController implements CombatApi {
     const engine = combat?.engine as CombatEngine | undefined;
     const oldOrder = engine?.order ?? [];
     const kind: CombatantKind = { type: "event", lifespan: ev.lifespan, message: ev.message };
-    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
+    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
       hidden: ev.hidden,
       system: ev.system,
@@ -602,5 +641,23 @@ export class CombatController implements CombatApi {
       edits.push({ path: "/engine/tiebreak", old: engine?.tiebreak ?? 0, value: tiebreak });
     }
     this.dispatch([buildUpdate(combatantId, edits)]);
+  }
+
+  setDefeated(combatantId: string, defeated: boolean): void {
+    const doc = this.deps.documents.get(combatantId);
+    const engine = doc?.engine as CombatantEngine | undefined;
+    this.dispatch([buildUpdate(combatantId, [{ path: "/engine/defeated", old: engine?.defeated ?? false, value: defeated }])]);
+  }
+
+  createGroup(combatId: string, name: string, color?: string): string {
+    const doc = buildCombatantGroupDoc(this.deps.world(), combatId, name, color);
+    this.dispatch([{ op: "create", doc }]);
+    return doc.id;
+  }
+
+  setGroup(combatantId: string, groupId: string | null): void {
+    const doc = this.deps.documents.get(combatantId);
+    const engine = doc?.engine as CombatantEngine | undefined;
+    this.dispatch([buildUpdate(combatantId, [{ path: "/engine/group", old: engine?.group ?? null, value: groupId }])]);
   }
 }

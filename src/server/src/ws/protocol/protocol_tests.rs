@@ -81,6 +81,50 @@ fn emote_round_trips_and_is_out_of_band() {
 }
 
 #[test]
+fn ruler_round_trips_defaults_active_to_false_and_is_out_of_band() {
+    let c = ClientMsg::RulerUpdate {
+        scene: Uuid::from_u128(1),
+        points: vec![(1.5, 2.5), (3.0, 4.0)],
+        active: true,
+        origin: "conn-a".to_string(),
+    };
+    let s = serde_json::to_string(&c).unwrap();
+    assert!(s.contains("\"type\":\"ruler_update\""), "got {s}");
+    assert!(s.contains("\"points\":[[1.5,2.5],[3.0,4.0]]"), "got {s}");
+    let back: ClientMsg = serde_json::from_str(&s).unwrap();
+    assert!(matches!(
+        back,
+        ClientMsg::RulerUpdate { active: true, ref origin, .. } if origin == "conn-a"
+    ));
+
+    // An absent `active` reads as false (the stop signal), never true.
+    let no_active = serde_json::json!({
+        "type": "ruler_update", "scene": Uuid::from_u128(1), "points": [[0.0, 0.0]]
+    });
+    let parsed: ClientMsg = serde_json::from_value(no_active).unwrap();
+    assert!(matches!(
+        parsed,
+        ClientMsg::RulerUpdate { active: false, ref origin, .. } if origin.is_empty()
+    ));
+
+    let sv = ServerMsg::Ruler {
+        from: Uuid::from_u128(2),
+        scene: Uuid::from_u128(1),
+        points: vec![(1.5, 2.5)],
+        active: true,
+        origin: "conn-a".to_string(),
+    };
+    // Out-of-band: never buffered/resynced.
+    assert_eq!(sv.event_seq(), None);
+    let j = serde_json::to_value(&sv).unwrap();
+    assert_eq!(j["type"], "ruler");
+    assert_eq!(j["points"], serde_json::json!([[1.5, 2.5]]));
+    assert_eq!(j["active"], true);
+    assert_eq!(j["origin"], "conn-a");
+    assert_eq!(j["from"], serde_json::to_value(Uuid::from_u128(2)).unwrap());
+}
+
+#[test]
 fn client_hello_round_trips_and_is_tagged() {
     let m = ClientMsg::Hello {
         world: Uuid::from_u128(7),
@@ -243,10 +287,11 @@ fn pathfind_frames_round_trip() {
     let err = ServerMsg::PathError {
         request_id: Uuid::from_u128(1),
         message: "unreachable".into(),
+        reason: PathErrorReason::Unreachable,
     };
-    assert!(serde_json::to_string(&err)
-        .unwrap()
-        .contains("\"type\":\"path_error\""));
+    let json = serde_json::to_string(&err).unwrap();
+    assert!(json.contains("\"type\":\"path_error\""));
+    assert!(json.contains("\"reason\":\"unreachable\""));
 }
 
 #[test]
@@ -290,8 +335,40 @@ fn move_request_round_trip() {
     let err = ServerMsg::MoveError {
         request_id: Uuid::from_u128(1),
         message: "token is moving".into(),
+        reason: None,
     };
     assert!(serde_json::to_string(&err).unwrap().contains("move_error"));
+}
+
+#[test]
+fn place_effect_frames_round_trip_and_the_caster_is_optional() {
+    let wire = r#"{"type":"place_effect","request_id":"00000000-0000-0000-0000-000000000001","module":"spells","placement":"ball","scene_id":"00000000-0000-0000-0000-000000000002","shape":{"kind":"circle","points":[0,0,3]}}"#;
+    let msg: ClientMsg = serde_json::from_str(wire).unwrap();
+    match &msg {
+        ClientMsg::PlaceEffect {
+            module,
+            placement,
+            caster,
+            ..
+        } => {
+            assert_eq!(module, "spells");
+            assert_eq!(placement, "ball");
+            assert!(caster.is_none());
+        }
+        other => panic!("expected PlaceEffect, got {other:?}"),
+    }
+    let back = serde_json::to_string(&msg).unwrap();
+    assert!(back.contains("\"type\":\"place_effect\""), "got {back}");
+    // A frame cannot carry an effect set: unknown behaviour fields are not part of the shape.
+    assert!(!back.contains("triggers") && !back.contains("behavior"));
+
+    let err = ServerMsg::PlaceEffectError {
+        request_id: Uuid::from_u128(1),
+        message: "placement rejected".into(),
+    };
+    assert!(serde_json::to_string(&err)
+        .unwrap()
+        .contains("\"type\":\"place_effect_error\""));
 }
 
 #[test]
@@ -312,6 +389,8 @@ fn move_stream_round_trips_and_is_tagged() {
         intensity: 0.8,
         falloff: crate::data::engine::FalloffCurve::Quadratic,
         color: 0xFFD9A0,
+        angle: Some(90.0),
+        rotation: Some(45.0),
         polygons: vec![vec![[-600.0, -600.0], [600.0, -600.0], [600.0, 600.0]]],
     }]);
     let msg = ServerMsg::MoveStream {
@@ -434,6 +513,7 @@ fn send_message_frame_parses() {
             content,
             actor_owner,
             audience,
+            system,
         } => {
             assert_eq!(request_id, Uuid::from_u128(0xaa));
             assert_eq!(channel, "all");
@@ -444,6 +524,19 @@ fn send_message_frame_parses() {
                 crate::chat::Audience::Public,
                 "omitted audience defaults to Public"
             );
+            assert_eq!(system, None, "omitted system payload defaults to None");
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn send_message_frame_carries_an_opaque_system_payload() {
+    let raw = r#"{"type":"send_message","request_id":"00000000-0000-0000-0000-0000000000aa","channel":"all","content":"hi","actor_owner":null,"system":{"k":[1,{"z":true}]}}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::SendMessage { system, .. } => {
+            assert_eq!(system, Some(serde_json::json!({"k": [1, {"z": true}]})));
         }
         _ => panic!("wrong variant"),
     }
@@ -500,6 +593,24 @@ fn recalc_roll_frame_parses() {
                 ops[2],
                 crate::chat::WireRecalcOp::RemoveDice { .. }
             ));
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn revise_audience_frame_parses() {
+    let raw = r#"{"type":"revise_audience","request_id":"00000000-0000-0000-0000-0000000000af","message_id":"00000000-0000-0000-0000-000000000001","audience":{"kind":"gm_only"}}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::ReviseAudience {
+            request_id,
+            message_id,
+            audience,
+        } => {
+            assert_eq!(request_id, Uuid::from_u128(0xaf));
+            assert_eq!(message_id, Uuid::from_u128(1));
+            assert_eq!(audience, crate::chat::Audience::GmOnly);
         }
         other => panic!("wrong variant: {other:?}"),
     }
@@ -595,8 +706,10 @@ fn combat_intents_round_trip_snake_case_tags() {
     let e = ServerMsg::CombatError {
         request_id: Uuid::nil(),
         message: "combat rejected".into(),
+        reason: Some(RejectReason::Paused),
     };
     assert_eq!(serde_json::to_value(&e).unwrap()["type"], "combat_error");
+    assert_eq!(serde_json::to_value(&e).unwrap()["reason"], "paused");
 
     let r = ServerMsg::CombatResult {
         request_id: Uuid::nil(),
@@ -824,9 +937,14 @@ fn welcome_carries_caps_role_and_requirements() {
         contract_declarations: Vec::new(),
         schema_declarations: Vec::new(),
         role_capabilities: RoleCapabilities::default(),
+        online_users: vec![Uuid::from_u128(7)],
     };
     let json = serde_json::to_value(&w).unwrap();
     assert_eq!(json["type"], "welcome");
+    assert_eq!(
+        json["online_users"],
+        serde_json::json!([Uuid::from_u128(7)])
+    );
     assert_eq!(json["user_role"], "player");
     assert!(json.get("world_default_grants").is_some());
     assert!(json.get("capability_requirements").is_some());
@@ -834,4 +952,118 @@ fn welcome_carries_caps_role_and_requirements() {
     assert!(json.get("schema_declarations").is_some());
     assert!(json.get("role_capabilities").is_some());
     assert_eq!(json["server_version"], "0.0.0-test");
+}
+
+#[test]
+fn portal_frames_round_trip_snake_case() {
+    let accept = ClientMsg::ChoosePortal {
+        request_id: Uuid::from_u128(1),
+        offer_id: Uuid::from_u128(2),
+        choice: Some(3),
+    };
+    let v = serde_json::to_value(&accept).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "type": "choose_portal",
+            "request_id": Uuid::from_u128(1),
+            "offer_id": Uuid::from_u128(2),
+            "choice": 3,
+        })
+    );
+    assert!(matches!(
+        serde_json::from_value::<ClientMsg>(v).unwrap(),
+        ClientMsg::ChoosePortal {
+            choice: Some(3),
+            ..
+        }
+    ));
+    let decline: ClientMsg = serde_json::from_value(serde_json::json!({
+        "type": "choose_portal",
+        "request_id": Uuid::from_u128(1),
+        "offer_id": Uuid::from_u128(2),
+        "choice": null,
+    }))
+    .unwrap();
+    assert!(matches!(
+        decline,
+        ClientMsg::ChoosePortal { choice: None, .. }
+    ));
+    let open = serde_json::to_value(ClientMsg::OpenPortal {
+        request_id: Uuid::from_u128(1),
+        token: Uuid::from_u128(4),
+    })
+    .unwrap();
+    assert_eq!(open["type"], "open_portal");
+
+    let offer = ServerMsg::PortalOffer {
+        offer_id: Uuid::from_u128(2),
+        scene: Uuid::from_u128(5),
+        token: Uuid::from_u128(4),
+        prompt: None,
+        options: vec![PortalOfferOption {
+            index: 0,
+            label: "The Cellar".into(),
+            destination_name: None,
+            available: true,
+        }],
+        gm_only: false,
+        owner: None,
+    };
+    let v = serde_json::to_value(&offer).unwrap();
+    assert_eq!(v["type"], "portal_offer");
+    assert_eq!(v["options"][0]["label"], "The Cellar");
+    assert!(
+        v["options"][0].get("target").is_none(),
+        "the frame never carries a destination target"
+    );
+    let err = ServerMsg::PortalChoiceError {
+        request_id: Uuid::nil(),
+        message: "portal rejected".into(),
+        reason: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&err).unwrap()["type"],
+        "portal_choice_error"
+    );
+}
+
+#[test]
+fn toggle_door_frames_round_trip_snake_case() {
+    // The intent: `{"type":"toggle_door", request_id, scene_id, wall_id, to}` with the
+    // `DoorState` spelled snake_case.
+    let m = ClientMsg::ToggleDoor {
+        request_id: Uuid::from_u128(1),
+        scene_id: Uuid::from_u128(2),
+        wall_id: Uuid::from_u128(3),
+        to: crate::data::engine::DoorState::Open,
+    };
+    let v = serde_json::to_value(&m).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "type": "toggle_door",
+            "request_id": Uuid::from_u128(1),
+            "scene_id": Uuid::from_u128(2),
+            "wall_id": Uuid::from_u128(3),
+            "to": "open",
+        })
+    );
+    assert!(matches!(
+        serde_json::from_value::<ClientMsg>(v).unwrap(),
+        ClientMsg::ToggleDoor {
+            to: crate::data::engine::DoorState::Open,
+            ..
+        }
+    ));
+
+    // The refusal: sender-only, correlated by request_id, one message string.
+    let e = ServerMsg::DoorToggleError {
+        request_id: Uuid::nil(),
+        message: "door rejected".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&e).unwrap()["type"],
+        "door_toggle_error"
+    );
 }

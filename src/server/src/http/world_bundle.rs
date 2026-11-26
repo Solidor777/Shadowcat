@@ -1,25 +1,23 @@
-//! `POST /api/worlds/{id}/export` and `POST /api/worlds/import` — per-world
-//! bundle export/import. The bundle format itself (`manifest.json` +
-//! `rows/<table>.jsonl` + `assets/<asset_id>`, with `manifest.json` always
-//! the tar's first entry) is `crate::world_bundle`'s concern; this module is
-//! the HTTP boundary around it. BOTH routes are server-admin-only
-//! (`AdminUser`): export is not GM-gated, because `export_world_rows`
-//! (`data::sqlite`) selects every `documents` row for the world verbatim
-//! with no `gm_role`-based redaction — a world's own GM could otherwise
-//! export and read whisper content (`Audience::Whisper` sets
-//! `permissions.gm_role: Some(DocRole::None)` specifically so the GM
-//! does not get unconditional access) that the live API denies them, and
-//! `world_events.command_json` carries the same unfiltered content. Import
-//! is server-admin-only for a second, independent reason: a bulk
-//! multi-table insert that bypasses every capability/schema/OCC gate the
-//! live write paths enforce (the same trusted-substrate posture
-//! `apply_command`'s replay path already has) — a materially more
-//! privileged operation than ordinary world CREATION (`POST /api/worlds`,
-//! open to any authenticated user) or GM-level world management. Export and
-//! import are a full-fidelity data-migration primitive, the same category as
-//! `backup`/`restore` (already admin-only and unredacted) — not a live-view
-//! read surface, so redacting content at export time would make bundles
-//! lossy instead.
+//! This module serves `POST /api/worlds/{id}/export` and `POST /api/worlds/import`, the per-world
+//! bundle export and import.
+//!
+//! The bundle format itself (`manifest.json` + `rows/<table>.jsonl` + `assets/<asset_id>`, with
+//! `manifest.json` always the tar's first entry) is `crate::world_bundle`'s concern; this module is
+//! the HTTP boundary around it.
+//!
+//! BOTH routes are server-admin-only (`AdminUser`). Export is not GM-gated, because
+//! `export_world_rows` (`data::sqlite`) selects every `documents` row for the world verbatim with
+//! no `gm_role`-based redaction — a world's own GM could otherwise export and read whisper content
+//! (`Audience::Whisper` sets `permissions.gm_role: Some(DocRole::None)` specifically so the GM does
+//! not get unconditional access) that the live API denies them, and `world_events.command_json`
+//! carries the same unfiltered content. Import is server-admin-only for a second, independent
+//! reason: a bulk multi-table insert that skips the capability and optimistic-concurrency gates of
+//! the live write paths is a materially more privileged operation than ordinary world CREATION
+//! (`POST /api/worlds`, open to any authenticated user) or GM-level world management.
+//!
+//! Export and import are a full-fidelity data-migration primitive, the same category as
+//! `backup`/`restore` (admin-only and unredacted) — not a live-view read surface, so redacting
+//! content at export time would make bundles lossy instead.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -80,7 +78,10 @@ impl std::io::Write for ChannelWriter {
 /// so releasing there is exact, not loose). Same accepted trade-off
 /// `assets::upload`/`assets::replace` already document for their own
 /// `DefaultBodyLimit`-disabled routes: a slow producer can hold the permit a
-/// long time. Streams the world's `.tar` bundle as the response body:
+/// long time. Also takes one `http::assets::permits::StreamedFilePermits` permit (a bounded wait,
+/// then 503 with `Retry-After`) before any header is written and releases it with the barrier,
+/// since the producing task reads asset files. The download has no length and no `Range`: a cut
+/// export restarts from zero. Streams the world's `.tar` bundle as the response body:
 /// `write_bundle` runs on a blocking thread and writes into a
 /// `ChannelWriter`, whose bounded channel this function turns directly into
 /// the response body stream — bytes reach the client as `write_bundle`
@@ -115,6 +116,10 @@ impl std::io::Write for ChannelWriter {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
 /// let response = export_world(State(state), admin, Path(world.id)).await.unwrap();
@@ -123,7 +128,7 @@ impl std::io::Write for ChannelWriter {
 /// ```
 pub async fn export_world(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Path(world): Path<Uuid>,
 ) -> Result<Response, AppError> {
     // Owned (not borrowed) so it can move into the detached task below,
@@ -131,6 +136,11 @@ pub async fn export_world(
     // `.read().await` guard is tied to a borrow of `state.write_barrier`
     // and cannot cross that move.
     let read_permit = state.write_barrier.clone().read_owned().await;
+    // The export reads asset files for as long as the client keeps receiving, so it takes one
+    // streamed-file permit before any header exists: an exhausted pool is a 503, and the permit
+    // is released with `read_permit` when the producing task ends, which a cut or dropped
+    // download triggers (the dropped receiver fails the next `ChannelWriter` write).
+    let file_permit = state.file_permits.acquire(admin.id).await?;
     let data = state.repo.export_world_rows(world).await?;
     let assets_dir = state.config.assets_path();
 
@@ -152,6 +162,7 @@ pub async fn export_world(
         // snapshot can never interleave with this export's row read +
         // asset file reads.
         let _read_permit = read_permit;
+        let _file_permit = file_permit;
         if let Err(e) = handle.await {
             tracing::error!(?e, %world, "world export task panicked");
         }
@@ -199,9 +210,9 @@ fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
     }
 }
 
-/// Removes the wrapped path on drop unless `keep()` was called — the single
+/// Moves the wrapped path into the trash on drop unless `keep()` was called — the single
 /// source of truth for staged-import-upload cleanup, so a temp file cannot
-/// survive an early return (present or future) without a `remove_file` call
+/// survive an early return (present or future) without a trash call
 /// repeated at every failure site. That alone (multipart error, oversize
 /// upload, I/O failure, `Err(WorldBundleError)`, `Err(DataError)`) is
 /// sufficient reason for this guard to exist: every one of those is an
@@ -215,34 +226,31 @@ fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
 /// including a `spawn_blocking` worker, aborts the whole process
 /// immediately; there is no unwind for any `Drop` to run during, so in a
 /// release binary this guard cannot and does not protect against that case
-/// — an accepted, pre-existing characteristic of the abort profile, not
+/// — a characteristic of the abort profile, not
 /// something a `Drop` impl is ever able to change. In a dev/test build
 /// (default `panic = "unwind"`), `spawn_blocking` itself converts a
 /// panicked task into a `JoinError`, so the panic is caught and re-surfaced
 /// as an ordinary `Err` on the awaiting side well before it would reach
 /// this guard — the shape this guard actually sees there is the same
-/// ordinary early return as every other failure path. The removal itself is
-/// a synchronous `std::fs::remove_file`, not a spawned task: a fire-and-
+/// ordinary early return as every other failure path. The move itself is
+/// a synchronous `Trash::discard_sync`, not a spawned task: a fire-and-
 /// forget `tokio::spawn` from inside `drop` could be dropped before it runs
 /// if the runtime is tearing down, where a blocking call on the current
 /// thread is guaranteed to complete before `drop` returns.
-struct TempFileGuard(Option<std::path::PathBuf>);
+struct TempFileGuard(
+    Option<std::path::PathBuf>,
+    std::sync::Arc<crate::trash::Trash>,
+);
 
 impl TempFileGuard {
     /// Arms cleanup for `path`.
-    fn new(path: std::path::PathBuf) -> Self {
-        Self(Some(path))
+    fn new(path: std::path::PathBuf, trash: std::sync::Arc<crate::trash::Trash>) -> Self {
+        Self(Some(path), trash)
     }
 
-    /// Cancels the cleanup. No production call site needs this today (the
-    /// one `TempFileGuard` this module creates is always explicitly
-    /// `drop`ped once its file is no longer needed — see `import_world`),
-    /// so this stays test-only rather than shipping an unused release-build
-    /// method; it exists to let a test assert the disarmed half of the
-    /// guard's contract directly, the same way
-    /// `temp_file_guard_removes_the_file_on_ordinary_drop` asserts the armed
-    /// half.
-    #[cfg(test)]
+    /// Cancels the cleanup, for a caller that has moved the file itself. `import_world` calls it
+    /// once extraction is done and it moves the staged upload through the async
+    /// `Trash::discard`.
     fn keep(mut self) {
         self.0 = None;
     }
@@ -251,7 +259,7 @@ impl TempFileGuard {
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
+            let _ = self.1.discard_sync(&path);
         }
     }
 }
@@ -365,6 +373,10 @@ async fn stream_bundle_upload(
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let admin_id = uuid::Uuid::new_v4();
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
@@ -382,21 +394,27 @@ pub async fn import_world(
 ) -> Result<Json<ImportSummary>, AppError> {
     let _read_permit = state.write_barrier.read().await;
     let tmp_tar = std::env::temp_dir().join(format!("shadowcat-import-{}.tar", Uuid::new_v4()));
-    let guard = TempFileGuard::new(tmp_tar.clone());
+    let guard = TempFileGuard::new(tmp_tar.clone(), state.trash.clone());
     stream_bundle_upload(multipart, &tmp_tar).await?;
 
     let assets_dir = state.config.assets_path();
     let tar_path = tmp_tar.clone();
-    let import_result = tokio::task::spawn_blocking(move || read_bundle(&tar_path, &assets_dir))
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "world import extraction task panicked");
-            AppError::Internal
-        })?;
-    // Extraction is done with the staged file either way — drop the guard
-    // here (rather than letting it ride to the end of the function) so the
-    // temp file is removed before the DB insert, not after.
-    drop(guard);
+    let bundle_trash = state.trash.clone();
+    let import_result =
+        tokio::task::spawn_blocking(move || read_bundle(&tar_path, &assets_dir, &bundle_trash))
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "world import extraction task panicked");
+                AppError::Internal
+            })?;
+    // Extraction is done with the staged file either way. It moves into the trash here, before the
+    // DB insert, through `Trash::discard` on the blocking pool: a cross-device move copies the
+    // whole upload, which must not run on an async worker. The guard is disarmed because the
+    // move has been made; it still covers every early return above.
+    guard.keep();
+    if let Err(e) = state.trash.discard(&tmp_tar).await {
+        tracing::warn!(error = %e, "the staged import upload could not be moved to the trash");
+    }
 
     let import_data = match import_result {
         Ok(d) => d,
@@ -428,7 +446,7 @@ pub async fn import_world(
         }
     };
 
-    let summary = state.repo.import_world(import_data).await?;
+    let summary = state.repo.import_world(import_data, &state.trash).await?;
     Ok(Json(summary))
 }
 

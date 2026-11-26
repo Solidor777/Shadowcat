@@ -1,7 +1,8 @@
 import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
-import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
+import type { WireDocument, WireOperation, FootprintLookup, TokenVisual, TokenEngine, ActorEngine } from "@shadowcat/core";
+import type { TokenNodeSpec } from "./types";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
@@ -137,7 +138,7 @@ test("a token with no faction has a null border", () => {
 test("resolves condition icon glyphs into token badges via the registry", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" }, prone: { name: "Prone", icon: "🛌" } }, "creg1");
+  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false }, prone: { name: "Prone", icon: "🛌", overlay: false } }, "creg1");
   const actor = buildActorDoc(
     "w1",
     "G",
@@ -246,7 +247,7 @@ test("a token the server has stated no extent for keeps its document's own autho
 test("raw token keeps its own size + defaults to square", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok1");
+  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   const spec = backend.tokens.get("tok1")!;
@@ -362,6 +363,80 @@ test("renders a generated visual with animated art and no authored frame fields"
   });
 });
 
+/** Reconcile one linked token whose actor carries `visual`, and return the node the backend received. */
+function specFor(visual: TokenVisual): { spec: TokenNodeSpec | undefined; assets: AssetResolver } {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Framed",
+    { displayName: "Framed", visual, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  return { spec: backend.tokens.get("tok1"), assets };
+}
+
+test("resolves a transform's anchor, scale and packed tint on an image visual", () => {
+  const { spec, assets } = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.25, y: 0.75 }, scale: 1.5, tint: "#ff8800" } });
+  expect(spec!.visual).toEqual({
+    kind: "image",
+    url: assets.url("p1"),
+    transform: { anchorX: 0.25, anchorY: 0.75, scale: 1.5, tint: 0xff8800 },
+  });
+});
+
+test("resolves a transform's facing onto the resolved art transform and omits it when unset", () => {
+  const { spec } = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 270 } });
+  expect((spec!.visual as { transform: { facing?: number } }).transform.facing).toBe(270);
+  const unset = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1 } });
+  expect("facing" in (unset.spec!.visual as { transform: object }).transform).toBe(false);
+});
+
+test("resolves a transform with no tint on an animated visual, leaving tint absent", () => {
+  const { spec, assets } = specFor({ kind: "animated", source: { type: "frames", frames: ["f1"] }, fps: 4, loop: true, transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } });
+  expect(spec!.visual).toEqual({
+    kind: "animated",
+    source: { type: "frames", urls: [assets.url("f1")] },
+    fps: 4,
+    loop: true,
+    transform: { anchorX: 0.5, anchorY: 0.5, scale: 2 },
+  });
+  expect("tint" in (spec!.visual as { transform: object }).transform).toBe(false);
+});
+
+test("a visual with no transform resolves with no transform key", () => {
+  const { spec } = specFor({ kind: "image", asset: "p1" });
+  expect("transform" in spec!.visual).toBe(false);
+});
+
+test("a generated visual's own frame ignores a transform, which only its nested art carries", () => {
+  const { spec, assets } = specFor({
+    kind: "generated",
+    art: { kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1.2, tint: "#102030" } },
+    crop: "circle",
+    border: { color: "#ff8800", width: 0.06 },
+    background: null,
+  });
+  expect(spec!.visual).toEqual({
+    kind: "generated",
+    art: { kind: "image", url: assets.url("p1"), transform: { anchorX: 0.5, anchorY: 0.5, scale: 1.2, tint: 0x102030 } },
+    crop: "circle",
+    border: { color: 0xff8800, width: 0.06 },
+    background: undefined,
+  });
+  expect("transform" in spec!.visual).toBe(false);
+});
+
+test("a token whose visual carries a malformed transform is skipped, not drawn", () => {
+  const bad = { kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 0 } } as TokenVisual;
+  const { spec } = specFor(bad);
+  expect(spec).toBeUndefined();
+});
+
 test("renders a generated face selected from a faces visual", () => {
   const store = new DocumentStore();
   const assets = new AssetResolver();
@@ -415,6 +490,59 @@ test("a token whose visual fails to resolve (empty faces) is skipped, not crashe
   expect(backend.tokens.has("tok1")).toBe(false);
 });
 
+describe("a token whose identity the server withheld", () => {
+  const SILHOUETTE = { kind: "generated", crop: "circle", background: { color: 0x6b6b6b }, border: { color: 0x2b2b2b, width: 0.06 } };
+  const registry = buildFactionRegistryDoc("w1", { f1: { name: "F1", color: "#ff0000", stance: "hostile", movement: [] } }, "reg1");
+  const actor = buildActorDoc(
+    "w1",
+    "Cultist",
+    { displayName: "Cultist", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+    "act1",
+  );
+
+  it("a linked token with no actor link or visual draws the generic silhouette and no faction border", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
+    // The wire shape a non-owner receives: the link and the visual keys are gone.
+    const engine = token.engine as Partial<TokenEngine>;
+    delete engine.actor_id;
+    delete engine.visual;
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+    new TokenView(store, new AssetResolver(), backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual(SILHOUETTE);
+    expect(spec.borderColor).toBeNull();
+  });
+
+  it("an instanced token whose copy lost its visual and faction draws the silhouette with no border", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    const copyEngine = token.embedded!.actor![0].engine as Partial<ActorEngine>;
+    delete copyEngine.visual;
+    delete copyEngine.faction;
+    delete copyEngine.displayName;
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: token }]));
+    new TokenView(store, new AssetResolver(), backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual(SILHOUETTE);
+    expect(spec.borderColor).toBeNull();
+  });
+
+  it("the same token for its owner (link and visual intact) still draws its real art and border", () => {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+    new TokenView(store, assets, backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual({ kind: "image", url: assets.url("actorimg") });
+    expect(spec.borderColor).toBe(0xff0000);
+  });
+});
+
 test("tick() forwards dtMs to the backend's tickTokenAnimations", () => {
   const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
   const backend = new MockBackend();
@@ -439,7 +567,7 @@ function storeWithAuraToken(aura: { color: string; opacity: number; radius: numb
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   if (override !== undefined) {
-    (token.engine as { overrides?: unknown }).overrides = { name: null, visual: null, size: null, shape: null, vision: null, aura: override, sound: null, vfx: null };
+    (token.engine as { overrides?: unknown }).overrides = { name: null, visual: null, size: null, shape: null, vision: null, aura: override, sound: null, vfx: null, disposition: null };
   }
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   return { store, backend };
@@ -506,9 +634,9 @@ function storeWithFxToken(
 test("condition fx folds into the TokenNodeSpec in condition array order, colors packed, at the condition strength", () => {
   const { store, backend } = storeWithFxToken(
     {
-      poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } },
-      blinded: { name: "Blinded", icon: "🙈", fx: { desaturate: true } },
-      hasted: { name: "Hasted", icon: "⚡", fx: { highlight: "#ffee00" } },
+      poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false },
+      blinded: { name: "Blinded", icon: "🙈", fx: { desaturate: true }, overlay: false },
+      hasted: { name: "Hasted", icon: "⚡", fx: { highlight: "#ffee00" }, overlay: false },
     },
     ["poisoned", "blinded", "hasted"],
   );
@@ -522,7 +650,7 @@ test("condition fx folds into the TokenNodeSpec in condition array order, colors
 
 test("one condition's fx fields fold tint → desaturate → highlight", () => {
   const { store, backend } = storeWithFxToken(
-    { cursed: { name: "Cursed", icon: "🕸", fx: { highlight: "#ffffff", desaturate: true, tint: "#102030" } } },
+    { cursed: { name: "Cursed", icon: "🕸", fx: { highlight: "#ffffff", desaturate: true, tint: "#102030" }, overlay: false } },
     ["cursed"],
   );
   new TokenView(store, new AssetResolver(), backend).reconcile();
@@ -535,19 +663,19 @@ test("one condition's fx fields fold tint → desaturate → highlight", () => {
 
 test("a malformed fx color contributes no entry (fail closed), and no conditions means no fx", () => {
   const { store, backend } = storeWithFxToken(
-    { broken: { name: "Broken", icon: "🕸", fx: { tint: "green", highlight: "#fff" } } },
+    { broken: { name: "Broken", icon: "🕸", fx: { tint: "green", highlight: "#fff" }, overlay: false } },
     ["broken"],
   );
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
-  const plain = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  const plain = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
   new TokenView(plain.store, new AssetResolver(), plain.backend).reconcile();
   expect(plain.backend.tokens.get("tok1")!.fx).toBeUndefined();
 });
 
 test("a selected token's spec appends the selection highlight after every condition fx", () => {
   const { store, backend } = storeWithFxToken(
-    { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+    { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } },
     ["poisoned"],
   );
   const selected = new Set<string>(["tok1"]);
@@ -559,7 +687,7 @@ test("a selected token's spec appends the selection highlight after every condit
 });
 
 test("an unselected token (or a view with no selection source) gains no highlight", () => {
-  const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
   const selected = new Set<string>(["someone-else"]);
   new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
@@ -575,13 +703,68 @@ describe("tokenFx budget", () => {
     // Same fixture shape as the condition-fx tests above: a condition that carries fx, with
     // the token additionally selected (the selection highlight is the one exempt entry).
     const { store, backend } = storeWithFxToken(
-      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } },
       ["poisoned"],
     );
     const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, undefined, () => new Set(["tok1"]), undefined, () => false);
     view.reconcile();
     const spec = view.specOf("tok1")!;
     expect(spec.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+  });
+});
+
+describe("creature-sense marker fx", () => {
+  const MARKER = { kind: "tint", color: 0x4fc3ff, strength: 0.35 };
+  const perceivedTok1 = (): ReadonlySet<string> => new Set(["tok1"]);
+
+  it("a perceived token gets the reserved tint; an unperceived one does not", () => {
+    const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1);
+    view.reconcile();
+    expect(view.specOf("tok1")!.fx).toEqual([MARKER]);
+    const plain = new TokenView(store, new AssetResolver(), new MockBackend(), () => null, () => null, undefined, () => new Set());
+    plain.reconcile();
+    expect(plain.specOf("tok1")!.fx).toBeUndefined();
+  });
+
+  it("survives tokenFx off, which sheds condition fx", () => {
+    const { store, backend } = storeWithFxToken({ poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } }, ["poisoned"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1, undefined, undefined, () => false);
+    view.reconcile();
+    expect(view.specOf("tok1")!.fx).toEqual([MARKER]);
+  });
+
+  it("sits after condition fx and before the selection highlight", () => {
+    const { store, backend } = storeWithFxToken({ poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } }, ["poisoned"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1, () => new Set(["tok1"]));
+    view.reconcile();
+    const fx = view.specOf("tok1")!.fx!;
+    expect(fx).toEqual([{ kind: "tint", color: 0x66ff66, strength: 0.5 }, MARKER, { kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+    expect(fx[fx.length - 1].kind).toBe("highlight");
+  });
+});
+
+describe("overlay condition", () => {
+  const registry = {
+    prone: { name: "Prone", icon: "🛌", overlay: false },
+    stunned: { name: "Stunned", icon: "💫", overlay: true },
+    dead: { name: "Dead", icon: "💀", overlay: true },
+  };
+
+  it("picks the first overlay condition in effective order and keeps every badge", () => {
+    const { store, backend } = storeWithFxToken(registry, ["prone", "dead", "stunned"]);
+    const view = new TokenView(store, new AssetResolver(), backend);
+    view.reconcile();
+    const spec = view.specOf("tok1")!;
+    expect(spec.overlayIcon).toBe("💀");
+    expect(spec.badges).toEqual(["🛌", "💀", "💫"]);
+  });
+
+  it("omits overlayIcon when no active condition is flagged", () => {
+    const { store, backend } = storeWithFxToken(registry, ["prone"]);
+    const view = new TokenView(store, new AssetResolver(), backend);
+    view.reconcile();
+    expect(view.specOf("tok1")!.overlayIcon).toBeUndefined();
   });
 });
 
@@ -674,8 +857,8 @@ test("a viewedLevel function scopes reconcile() via levelOf over each token's ow
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1").reconcile();
   expect(backend.tokens.has("tok-ground")).toBe(true);
@@ -690,8 +873,8 @@ test("ghostOtherLevels: () => true renders an other-level token with the ghost T
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   const view = new TokenView(
     store, new AssetResolver(), backend, () => "s1", () => "l1",
@@ -714,8 +897,8 @@ test("ghostOtherLevels: () => false (default) excludes the other-level token ent
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   const view = new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1");
   view.reconcile();
@@ -733,7 +916,7 @@ test("resolvedLevelOf prefers the server-resolved FootprintLookup.level over the
   );
   // Locally, this token's stored elevation (0) resolves to "l1" — but the server's resolved
   // footprints entry states "l2". The server value must win.
-  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: tok }]));
   const footprints: FootprintLookup = {
     token: () => null,

@@ -21,6 +21,9 @@ fn lamp() -> Light {
         dim_radius: 6.0,
         falloff: Falloff::Linear,
         enabled: true,
+        active_below_env: None,
+        angle: None,
+        rotation: 0.0,
     }
 }
 
@@ -386,18 +389,30 @@ fn env_light_polys_seal_a_blocks_light_box_interior() {
         vision::Seg {
             a: (200.0, 200.0),
             b: (300.0, 200.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (300.0, 200.0),
             b: (300.0, 300.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (300.0, 300.0),
             b: (200.0, 300.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (200.0, 300.0),
             b: (200.0, 200.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
     ];
     let polys = env_light_polys(origin_extent(500.0, 500.0), 100.0, &walls);
@@ -434,4 +449,204 @@ fn cell_illumination_occludes_environment_outside_the_boundary_polys() {
         lit.level, 0.5,
         "cell inside a boundary poly gets the full ambient"
     );
+}
+
+/// The cone fixture both languages read: `lightSampleCells`' TS test reads the same file.
+#[test]
+fn cone_admits_matches_the_shared_cross_language_fixture() {
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../../client/core/src/__fixtures__/light-cone.json"
+    ))
+    .expect("light-cone.json parses");
+    assert!(cases.len() >= 10, "the fixture is not vacuous");
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let num = |v: &serde_json::Value| v.as_f64().unwrap();
+        let light = Light {
+            pos: (num(&case["pos"][0]), num(&case["pos"][1])),
+            angle: case["angle"].as_f64(),
+            rotation: num(&case["rotation"]),
+            ..lamp()
+        };
+        let point = (num(&case["point"][0]), num(&case["point"][1]));
+        assert_eq!(
+            cone_admits(&light, point),
+            case["lit"].as_bool().unwrap(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn cone_light_illuminates_within_arc() {
+    let cone = Light {
+        angle: Some(90.0),
+        rotation: 0.0,
+        ..lamp()
+    };
+    // Straight ahead (+x), inside bright: full.
+    assert_eq!(source_level(&cone, &[], (1.0, 0.0), 1.0), 1.0);
+    // Inside the arc and the taper band: the radial level, unchanged by the cone.
+    let radial = source_level(&lamp(), &[], (4.0, 1.0), 1.0);
+    assert!(radial > 0.0);
+    assert_eq!(source_level(&cone, &[], (4.0, 1.0), 1.0), radial);
+}
+
+#[test]
+fn cone_light_dark_outside_arc() {
+    let cone = Light {
+        angle: Some(90.0),
+        rotation: 0.0,
+        ..lamp()
+    };
+    // A cell straight behind the light is well inside `dim_radius` yet reads 0.
+    assert!(source_level(&lamp(), &[], (-1.0, 0.0), 1.0) > 0.0);
+    assert_eq!(source_level(&cone, &[], (-1.0, 0.0), 1.0), 0.0);
+    // The cone narrows the composed field the same way.
+    let lit = cell_illumination(
+        (-1.0, 0.0),
+        0.0,
+        0,
+        std::slice::from_ref(&cone),
+        &[],
+        &[],
+        1.0,
+    );
+    assert_eq!(lit.level, 0.0);
+}
+
+#[test]
+fn cone_light_angle_none_is_full_circle() {
+    let radial = lamp();
+    assert_eq!(radial.angle, None);
+    for p in [
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 3.0),
+        (0.0, -3.0),
+        (-2.0, -2.0),
+    ] {
+        let rotated = Light {
+            rotation: 123.0,
+            ..lamp()
+        };
+        assert_eq!(
+            source_level(&rotated, &[], p, 1.0),
+            source_level(&radial, &[], p, 1.0),
+            "a rotation with no angle changes nothing at {p:?}"
+        );
+    }
+}
+
+#[test]
+fn cone_bearing_is_measured_from_the_light_to_the_point() {
+    // A cone facing +y (rotation 90) lights the cell BELOW the lamp (y-down canvas) and not the
+    // cell above it; measuring the bearing from the point to the light would swap them.
+    let cone = Light {
+        pos: (10.0, 10.0),
+        angle: Some(60.0),
+        rotation: 90.0,
+        ..lamp()
+    };
+    assert!(source_level(&cone, &[], (10.0, 12.0), 1.0) > 0.0);
+    assert_eq!(source_level(&cone, &[], (10.0, 8.0), 1.0), 0.0);
+}
+
+#[test]
+fn cone_with_a_non_finite_rotation_or_angle_admits_nothing() {
+    for (angle, rotation) in [(f64::NAN, 0.0), (90.0, f64::NAN), (f64::INFINITY, 0.0)] {
+        let l = Light {
+            angle: Some(angle),
+            rotation,
+            ..lamp()
+        };
+        assert!(!cone_admits(&l, (1.0, 0.0)));
+    }
+}
+
+#[test]
+fn active_below_env_suppresses_light_above_threshold() {
+    let night = Light {
+        active_below_env: Some(0.3),
+        ..lamp()
+    };
+    let at = |env: f64| {
+        cell_illumination(
+            (0.0, 0.0),
+            env,
+            0,
+            std::slice::from_ref(&night),
+            &[],
+            &open_env(),
+            1.0,
+        )
+        .level
+    };
+    // Above the threshold the light is dropped: only the ambient remains.
+    assert_eq!(at(0.5), 0.5);
+    // Below it the light joins the ambient (the sum clamps to 1).
+    assert_eq!(at(0.1), 1.0);
+}
+
+#[test]
+fn active_below_env_admits_light_at_or_below_threshold() {
+    let night = Light {
+        active_below_env: Some(0.3),
+        ..lamp()
+    };
+    assert!(
+        night.active_at_env(0.3),
+        "the threshold itself is dark enough"
+    );
+    assert!(night.active_at_env(0.0));
+    assert!(!night.active_at_env(0.300_001));
+    let lit = cell_illumination(
+        (0.0, 0.0),
+        0.3,
+        0,
+        std::slice::from_ref(&night),
+        &[],
+        &[],
+        1.0,
+    );
+    assert_eq!(lit.level, 1.0, "env == threshold is active");
+}
+
+#[test]
+fn active_below_env_absent_is_always_active() {
+    let always = lamp();
+    assert_eq!(always.active_below_env, None);
+    for env in [0.0, 0.5, 1.0] {
+        assert!(always.active_at_env(env));
+    }
+    let lit = cell_illumination(
+        (0.0, 0.0),
+        1.0,
+        0,
+        std::slice::from_ref(&always),
+        &[],
+        &[],
+        1.0,
+    );
+    assert_eq!(lit.level, 1.0);
+}
+
+#[test]
+fn a_suppressed_light_contributes_no_tint() {
+    // The guard runs before `source_level`, so a suppressed light leaves no hue in the mix.
+    let night = Light {
+        active_below_env: Some(0.2),
+        color: 0xFF0000,
+        ..lamp()
+    };
+    let lit = cell_illumination(
+        (0.0, 0.0),
+        0.5,
+        0x0000FF,
+        std::slice::from_ref(&night),
+        &[],
+        &open_env(),
+        1.0,
+    );
+    assert_eq!(lit.tint, 0x0000FF, "only the ambient colour remains");
 }

@@ -1,16 +1,25 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { SpeakAs, SpeakAsToken } from "@shadowcat/ui-kit";
+import { SpeakAs, SpeakAsToken, confirmDialog } from "@shadowcat/ui-kit";
 import {
+  CHAT_CARD_EXTENSION_CONTRACT,
+  ContributionRegistry,
   DocumentStore,
   buildActorDoc,
   buildTokenFromActor,
   type ActorEngine,
+  type ChatCardExtensionMeta,
   type WireDocument,
   type WireOperation,
 } from "@shadowcat/core";
 import MessageCard from "./MessageCard.svelte";
+import ExtensionProbe from "./__fixtures__/ExtensionProbe.svelte";
+
+vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
+  return { ...actual, confirmDialog: vi.fn() };
+});
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -77,6 +86,7 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.rollPending": "🎲 {formula}",
     "chat.whisperTo": "to {names}",
     "chat.systemBadge": "System",
+    "chat.kind.ooc": "OOC",
     "chat.roll.pass": "Success",
     "chat.roll.fail": "Failure",
     "chat.openActor": "Open {name}'s sheet",
@@ -204,6 +214,32 @@ describe("MessageCard — header", () => {
       context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u1", "Alice"]]) }),
     });
     expect(container.querySelector(".author")?.textContent).toBe("Alice");
+  });
+
+  it("colours the author name with the author's account colour, and only that author's", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const profiles = new Map([
+      ["u1", { colour: "#336699", pronouns: null, avatar: null }],
+      ["u2", { colour: "#ff0000", pronouns: null, avatar: null }],
+    ]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        members: new Map([["u1", "Alice"]]),
+        memberProfiles: profiles,
+      }),
+    });
+    expect((container.querySelector(".author") as HTMLElement).style.color).toBe("rgb(51, 102, 153)");
+  });
+
+  it("leaves the author name uncoloured when the author has no colour", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u1", "Alice"]]) }),
+    });
+    expect((container.querySelector(".author") as HTMLElement).style.color).toBe("");
   });
 
   it("falls back to a short id when the author is not in ctx.members", () => {
@@ -652,7 +688,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.reroll"));
@@ -667,7 +703,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.remove"));
@@ -683,7 +719,7 @@ describe("MessageCard — GM recalc menu", () => {
         documents: storeWith(doc),
         role: "gm",
         t: fakeT, plural: fakePlural,
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     const input = screen.getByLabelText("Replacement face value for die 1") as HTMLInputElement;
@@ -766,7 +802,7 @@ describe("MessageCard — roll button", () => {
     const send = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
@@ -781,7 +817,7 @@ describe("MessageCard — roll button", () => {
     speakAs.actorId = "actor-1";
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -802,7 +838,7 @@ describe("MessageCard — roll button", () => {
     speakAsToken.select("tok-1");
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -824,6 +860,28 @@ describe("MessageCard — roll button", () => {
     });
     const btn = container.querySelector(".roll-btn");
     expect(btn?.textContent?.trim()).toBe("1d20+5");
+  });
+});
+
+describe("MessageCard — out-of-character messages", () => {
+  it("renders an ooc message italic with the OOC badge and its own text", () => {
+    const doc = msgDoc("m1", baseSystem({ kind: "ooc", content: [{ kind: "text", text: "brb" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
+    });
+    expect(container.querySelector(".card.ooc")).not.toBeNull();
+    expect(container.querySelector(".chip.ooc-badge")?.textContent).toBe("OOC");
+    expect(container.querySelector(".card.ooc .body p")?.textContent?.trim()).toBe("brb");
+  });
+
+  it("shows no OOC badge on a normal message", () => {
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "hi" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
+    });
+    expect(container.querySelector(".chip.ooc-badge")).toBeNull();
   });
 });
 
@@ -922,7 +980,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     const textarea = screen.getByLabelText("chat.edit") as HTMLTextAreaElement;
@@ -937,7 +995,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     await fireEvent.click(screen.getByText("chat.cancel"));
@@ -951,29 +1009,93 @@ describe("MessageCard — delete", () => {
     vi.restoreAllMocks();
   });
 
-  it("Delete calls ctx.chat.delete only after window.confirm returns true", async () => {
+  it("Delete calls ctx.chat.delete only after confirmDialog resolves true", async () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
     const del = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
-    expect(window.confirm).toHaveBeenCalledWith("chat.deleteConfirm");
-    expect(del).toHaveBeenCalledWith("m1");
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ messageKey: "chat.deleteConfirm", danger: true }),
+    );
+    await vi.waitFor(() => expect(del).toHaveBeenCalledWith("m1"));
   });
 
-  it("Delete does not call ctx.chat.delete when window.confirm returns false", async () => {
+  it("Delete does not call ctx.chat.delete when confirmDialog resolves false", async () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
     const del = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(confirmDialog).mockResolvedValue(false);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    // Let the resolved `false` reach the handler before asserting nothing was deleted.
+    await new Promise((r) => setTimeout(r, 0));
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageCard — revise audience", () => {
+  const members = new Map([
+    ["u1", "Author"],
+    ["u2", "Friend"],
+    ["u3", "Other"],
+  ]);
+
+  it("never renders the control for a non-GM viewer, even the message's owner", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", members }),
+    });
+    expect(screen.queryByText("chat.revise.open")).toBeNull();
+  });
+
+  it("a GM conceals to a whisper: the author is not offered and the chosen recipients are sent", async () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const reviseAudience = vi.fn(() => Promise.resolve());
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        selfId: "gm",
+        role: "gm",
+        members,
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience, drawTable: () => Promise.resolve() },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    await fireEvent.change(screen.getByLabelText("chat.revise.audience"), { target: { value: "whisper" } });
+    expect(screen.queryByLabelText("Author")).toBeNull();
+    await fireEvent.click(screen.getByLabelText("Friend"));
+    await fireEvent.click(screen.getByText("chat.revise.apply"));
+    expect(reviseAudience).toHaveBeenCalledWith("m1", { kind: "whisper", recipients: ["u2"] });
+  });
+
+  it("a GM reveals to everyone with a bare public audience", async () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1", audience: { kind: "gm_only" } }));
+    const reviseAudience = vi.fn(() => Promise.resolve());
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        selfId: "gm",
+        role: "gm",
+        members,
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience, drawTable: () => Promise.resolve() },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    expect((screen.getByLabelText("chat.revise.audience") as HTMLSelectElement).value).toBe("gm_only");
+    await fireEvent.change(screen.getByLabelText("chat.revise.audience"), { target: { value: "public" } });
+    await fireEvent.click(screen.getByText("chat.revise.apply"));
+    expect(reviseAudience).toHaveBeenCalledWith("m1", { kind: "public" });
   });
 });
 
@@ -1113,5 +1235,120 @@ describe("doc_link segments", () => {
       context: setAppContextForTest({ documents: storeWith(doc) }),
     });
     expect(screen.getByText("Ghost Doc").tagName).toBe("SPAN");
+  });
+});
+
+describe("MessageCard — chat-card extensions", () => {
+  /** A message document carrying an opaque `system` payload. */
+  function msgWithSystem(system: Record<string, unknown>): WireDocument {
+    return { ...msgDoc("m1", baseSystem()), system };
+  }
+
+  /** Registers a probe extension; `name` is the probe's rendered identity. */
+  function addProbe(
+    registry: ContributionRegistry,
+    id: string,
+    meta: ChatCardExtensionMeta,
+    module?: string,
+  ): () => void {
+    return registry.contribute(
+      { id, contract: CHAT_CARD_EXTENSION_CONTRACT, component: ExtensionProbe, props: { name: id }, chatCardExtension: meta },
+      { module },
+    );
+  }
+
+  it("renders a matching extension with the opaque system payload and the parsed message body", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: (system) => (system as { tag?: string }).tag === "yes" });
+    const doc = msgWithSystem({ tag: "yes" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.getByTestId("ext-probe").textContent).toBe("a:yes:general");
+  });
+
+  it("does not render an extension whose match returns false", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: () => false });
+    const doc = msgWithSystem({ tag: "yes" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+  });
+
+  it("renders no extension for a message whose system is empty", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: (system) => "tag" in (system as object) });
+    const doc = msgWithSystem({});
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+    expect(screen.getByText("hello")).toBeTruthy();
+  });
+
+  it("renders extensions in descending priority, ties by module id", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "low", { priority: 1 }, "m-a");
+    addProbe(contributions, "high", { priority: 5 }, "m-z");
+    addProbe(contributions, "tie-b", { priority: 1 }, "m-b");
+    const doc = msgWithSystem({ tag: "t" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.getAllByTestId("ext-probe").map((n) => n.textContent?.split(":")[0])).toEqual(["high", "low", "tie-b"]);
+  });
+
+  it("mounts an extension registered after the card is on screen", async () => {
+    const contributions = new ContributionRegistry();
+    const doc = msgWithSystem({ tag: "t" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+    addProbe(contributions, "late", { priority: 0 });
+    expect((await screen.findByTestId("ext-probe")).textContent).toBe("late:t:general");
+  });
+});
+
+describe("MessageCard — blind rolls", () => {
+  const blindCopy = (content: unknown[]) =>
+    msgDoc("m1", baseSystem({ kind: "roll", audience: { kind: "blind" }, content }));
+
+  it("shows a reader the server withheld the roll from only a 'rolled blind' card, with no formula or digits", () => {
+    const doc = blindCopy([{ kind: "roll_embed", roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "player" }),
+    });
+    expect(container.querySelector("[data-testid='blind-roll-card']")?.textContent).toBe("chat.blind.rolled");
+    expect(container.querySelector(".roll-block")).toBeNull();
+    expect(container.querySelector(".roll-pending")).toBeNull();
+    expect(container.querySelector("[data-testid='blind-badge']")).toBeNull();
+    expect(container.querySelector(".body")?.textContent).not.toMatch(/\d/);
+  });
+
+  it("shows the GM the full roll and a blind badge", () => {
+    const doc = blindCopy([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome({ total: 9 }), roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "gm" }),
+    });
+    expect(container.querySelector(".roll-formula")?.textContent).toBe("2d6+1");
+    expect(container.querySelector(".roll-total")?.textContent).toBe("9");
+    expect(container.querySelector("[data-testid='blind-badge']")?.textContent).toBe("chat.blind.badge");
+    expect(container.querySelector("[data-testid='blind-roll-card']")).toBeNull();
+  });
+
+  it("shows a withheld table draw as the same card, with no row label", () => {
+    const doc = blindCopy([{ kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "d1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "player" }),
+    });
+    expect(container.querySelector("[data-testid='blind-roll-card']")).not.toBeNull();
+    expect(container.querySelector(".table-draw-no-row")).toBeNull();
+  });
+
+  it("offers the GM the blind audience when revising a blind message", async () => {
+    const doc = blindCopy([{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome(), roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "gm" }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    const select = container.querySelector(".revise-box select") as HTMLSelectElement;
+    expect(select.value).toBe("blind");
   });
 });

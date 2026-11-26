@@ -103,7 +103,7 @@ parent_id: string | null,
 engine: unknown, 
 /**
  * Opaque game-system band: structurally validated only (size, JSON,
- * optional tier-2 shape schema) — the server NEVER interprets its meaning.
+ * optional structural shape schema) — the server NEVER interprets its meaning.
  */
 system: unknown, 
 /**

@@ -66,6 +66,7 @@ fn rebuild(prev: &CombatSnapshot, docs: HashMap<Uuid, Document>) -> CombatSnapsh
         history,
         registry: prev.registry.clone(),
         other_active: Vec::new(),
+        groups: Vec::new(),
         chain: prev.chain.clone(),
     }
 }
@@ -311,11 +312,15 @@ fn forward_restore_keeps_the_future_and_fast_forwards_when_nothing_changed() {
     let s1 = rebuild(&s2, apply(&s2, &rewind(&s2, 0).unwrap()));
     let h: &CombatHistoryEngine = &s1.history.as_ref().unwrap().1;
     assert_eq!((h.records.len(), h.cursor), (2, 0), "future retained");
-    let ops = advance(&s1, WORLD, Uuid::nil(), 0).unwrap();
+    let (ops, plan) = advance_with_trigger_plan(&s1, WORLD, Uuid::nil(), 0).unwrap();
     assert!(
         !ops.iter()
             .any(|o| matches!(o, Operation::Create { doc } if doc.doc_type == "message")),
         "no transition ran"
+    );
+    assert!(
+        plan.is_empty(),
+        "a fast-forward crosses no boundary, so it records no region-trigger firing plan"
     );
     let docs = apply(&s1, &ops);
     assert_eq!(

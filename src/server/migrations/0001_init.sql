@@ -11,7 +11,11 @@ CREATE TABLE users (
   server_role TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   password_hash TEXT,
-  ui_state TEXT
+  ui_state TEXT,
+  avatar_bytes BLOB,
+  avatar_content_type TEXT,
+  colour TEXT,
+  pronouns TEXT
 );
 
 CREATE TABLE worlds (
@@ -192,16 +196,18 @@ CREATE TRIGGER assets_fts_tag_delete AFTER DELETE ON asset_tags BEGIN
 END;
 
 -- Persisted link-preview cache: the DB-backed tier behind chat::LinkPreviewCache's
--- in-memory fast path. No world_id — same process-global, URL-keyed scope the
--- in-memory cache already has, now durable across restarts. title/description
--- both NULL together = a cached negative outcome (the fetch failed or found no
--- content), mirroring LinkPreview's own None-outcome convention.
+-- in-memory fast path, durable across restarts. Rows are world-scoped: image_asset_id
+-- names an asset created in the row's world, and deleting the world deletes its rows.
+-- title/description both NULL together = a cached negative outcome (the fetch failed or
+-- found no content), mirroring LinkPreview's own None-outcome convention.
 CREATE TABLE link_preview_cache (
-    url TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
     title TEXT,
     description TEXT,
     image_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
-    fetched_at TEXT NOT NULL
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (world_id, url)
 );
 
 -- Per-(scene, user) explored-fog memory. world_id denormalized for the

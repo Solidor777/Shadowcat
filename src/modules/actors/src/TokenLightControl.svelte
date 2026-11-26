@@ -67,7 +67,7 @@
     const tok = token;
     if (!tok || !editable) return;
     const cur = engine?.overrides ?? null;
-    const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null };
+    const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null, disposition: null };
     ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/overrides", old: cur, value: { ...base, light: next } }])]);
   }
 
@@ -102,7 +102,7 @@
       </select>
     </label>
     {#if mode === "custom" && rawOverride}
-      <LightEmissionEditor value={rawOverride} onCommit={(next) => setOverride(next)} />
+      <LightEmissionEditor value={rawOverride} carriedByToken onCommit={(next) => setOverride(next)} />
     {/if}
   </div>
 {/if}

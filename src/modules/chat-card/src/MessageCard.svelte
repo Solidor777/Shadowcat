@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { getAppContext, SegmentList } from "@shadowcat/ui-kit";
+  import type { Component } from "svelte";
+  import { createSubscriber } from "svelte/reactivity";
+  import { getAppContext, SegmentList, confirmDialog } from "@shadowcat/ui-kit";
   import {
+    CHAT_CARD_EXTENSION_CONTRACT,
     parseMessageEngine,
     isKnownSegment,
     resolveTokenActor,
@@ -9,6 +12,7 @@
     numericBounds,
     type ChatSegment,
     type RollEmbedSegment,
+    type RollOutcome,
     type UnknownSegment,
     type WireActorOwnerRef,
     type WireDocument,
@@ -32,6 +36,35 @@
   // foreign-shaped body renders nothing rather than a partially-broken card.
   const sys = $derived(parseMessageEngine(message));
 
+  // Bridges the framework-neutral registry's subscribe/snapshot to Svelte's reactivity, the
+  // same pattern `Settings.svelte` uses for its contributed sections.
+  const subscribeExtensions = createSubscriber((update) => {
+    const off = ctx.contributions.subscribe(update);
+    return () => off();
+  });
+
+  // Extensions render in descending `priority`; equal priorities fall back to the registering
+  // module id, then the contribution id — the `pickSheet` tie-break, so the order does not
+  // depend on module load order. A provider whose `match` returns false for this message's
+  // `system` is skipped; a provider without `match` renders for every message.
+  const extensions = $derived.by(() => {
+    subscribeExtensions();
+    if (!sys) return [];
+    const engine = sys;
+    return ctx.contributions
+      .entriesFor(CHAT_CARD_EXTENSION_CONTRACT)
+      .filter((e) => e.contribution.chatCardExtension && (!e.contribution.chatCardExtension.match || e.contribution.chatCardExtension.match(message.system, engine)))
+      .sort((a, b) => {
+        const pa = a.contribution.chatCardExtension!.priority;
+        const pb = b.contribution.chatCardExtension!.priority;
+        if (pb !== pa) return pb > pa ? 1 : -1;
+        return (a.module ?? a.contribution.id).localeCompare(b.module ?? b.contribution.id) || a.contribution.id.localeCompare(b.contribution.id);
+      })
+      .map((e) => e.contribution);
+  });
+
+  // The author's account colour accent, from the same roster read as `ctx.members`.
+  const authorColour = $derived(sys ? (ctx.memberProfiles.get(sys.user_owner)?.colour ?? null) : null);
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
 
   // Actor attribution: wraps the ActorOwnerRef in the same read-through every other
@@ -161,12 +194,23 @@
   // known-segment-filtered list — filtering first would let an extra UNKNOWN segment silently
   // vanish and the lone roll_embed still render as a block, contradicting this guard's own
   // "additional/other segments fall back to the pending shell" intent.
-  const rollBlock = $derived.by((): RollEmbedSegment | null => {
+  // A roll_embed the server withheld (no outcome) is not a block: `isWithheldRoll` below renders it.
+  const rollBlock = $derived.by((): (RollEmbedSegment & { /** The formula, present on a block. */ formula: string; /** The outcome, present on a block. */ outcome: RollOutcome }) | null => {
     if (!sys || sys.kind !== "roll") return null;
     if (sys.content.length !== 1) return null;
     const known = sys.content.filter(isKnownSegment);
-    if (known.length === 1 && known[0].kind === "roll_embed") return known[0] as RollEmbedSegment;
+    if (known.length === 1 && known[0].kind === "roll_embed" && known[0].formula !== undefined && known[0].outcome !== undefined) {
+      return known[0] as RollEmbedSegment & { /** The formula, present on a block. */ formula: string; /** The outcome, present on a block. */ outcome: RollOutcome };
+    }
     return null;
+  });
+
+  // A blind roll's card for a reader the server withheld the result from: every raw segment a
+  // known `roll_embed` or `table_draw` with no outcome. The audience gate keeps a malformed
+  // public roll on the pending-shell fallback; `SegmentList` draws the "rolled blind" card.
+  const isWithheldRoll = $derived.by((): boolean => {
+    if (!sys || sys.kind !== "roll" || sys.audience.kind !== "blind" || sys.content.length === 0) return false;
+    return sys.content.every((s) => isKnownSegment(s) && (s.kind === "roll_embed" || s.kind === "table_draw") && s.outcome === undefined);
   });
 
   // A `table_draw` message is ALSO `MessageKind::Roll` (`tables::handle_draw_table` reuses
@@ -226,6 +270,43 @@
     ctx.chat.recalc(message.id, rollId, [op]);
   }
 
+  // GM reveal/conceal editor state. Advisory UI only: the server re-authorizes every
+  // revision against its own GM-only check in `handle_revise_audience`.
+  let revising = $state(false);
+  let reviseKind = $state<"public" | "gm_only" | "whisper" | "blind">("public");
+  let reviseRecipients = $state<string[]>([]);
+  // Members a whisper can name: everyone but the author, who always keeps the message.
+  const whisperCandidates = $derived(
+    [...ctx.members.entries()].filter(([id]) => id !== sys?.user_owner).sort((a, b) => a[1].localeCompare(b[1])),
+  );
+
+  /** Opens the audience editor seeded from the message's current audience.
+   * @example
+   * ```
+   * // internal; called from the "Change audience" button
+   * startRevise();
+   * ```
+   */
+  function startRevise(): void {
+    if (!sys) return;
+    reviseKind = sys.audience.kind;
+    reviseRecipients = sys.audience.kind === "whisper" ? [...sys.audience.recipients] : [];
+    revising = true;
+  }
+  /** Sends the chosen audience via `ctx.chat.reviseAudience` and closes the editor; a server
+   * rejection surfaces through chat's shared `ChatError` seam, not through this function.
+   * @example
+   * ```
+   * // internal; called from the audience editor's Apply button
+   * applyRevise();
+   * ```
+   */
+  function applyRevise(): void {
+    const audience = reviseKind === "whisper" ? { kind: "whisper" as const, recipients: [...reviseRecipients] } : { kind: reviseKind };
+    ctx.chat.reviseAudience(message.id, audience);
+    revising = false;
+  }
+
   let editing = $state(false);
   let draft = $state("");
 
@@ -265,7 +346,7 @@
   function cancelEdit(): void {
     editing = false;
   }
-  /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a native confirm dialog.
+  /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a confirm dialog.
    * The server applies this as a soft-tombstoning `Operation::Update` on `/engine` in
    * `handle_delete_message`, published under `WriteOrigin::ServerMessageRevision` — never a
    * hard `Operation::Delete`; the doc stays in the sequenced log at its original seq. A
@@ -279,15 +360,25 @@
    * doDelete();
    * ```
    */
-  function doDelete(): void {
-    if (window.confirm(t("chat.deleteConfirm"))) ctx.chat.delete(message.id);
+  async function doDelete(): Promise<void> {
+    const confirmed = await confirmDialog(
+      { t },
+      {
+        titleKey: "chat.deleteTitle",
+        messageKey: "chat.deleteConfirm",
+        confirmLabelKey: "chat.delete",
+        cancelLabelKey: "chat.cancel",
+        danger: true,
+      },
+    );
+    if (confirmed) ctx.chat.delete(message.id);
   }
 </script>
 
 {#if sys}
-  <article class="card" class:emote={sys.kind === "emote"} class:system={sys.kind === "system"}>
+  <article class="card" class:emote={sys.kind === "emote"} class:ooc={sys.kind === "ooc"} class:system={sys.kind === "system"}>
     <header class="header">
-      <span class="author">{authorName}</span>
+      <span class="author" style:color={authorColour ?? undefined}>{authorName}</span>
       {#if actorName}
         {#if actorOpenRef}
           <button type="button" class="actor-name link" onclick={() => ctx.openDocument(actorOpenRef)} aria-label={t("chat.openActor", { name: actorName })}>({actorName})</button>
@@ -308,8 +399,14 @@
       {#if sys.audience.kind === "gm_only"}
         <span class="chip gm">{t("chat.gmBadge")}</span>
       {/if}
+      {#if sys.audience.kind === "blind" && isGm}
+        <span class="chip blind" data-testid="blind-badge">{t("chat.blind.badge")}</span>
+      {/if}
       {#if sys.kind === "system"}
         <span class="chip system-badge">{t("chat.systemBadge")}</span>
+      {/if}
+      {#if sys.kind === "ooc"}
+        <span class="chip ooc-badge">{t("chat.kind.ooc")}</span>
       {/if}
     </header>
 
@@ -419,7 +516,7 @@
               </div>
             {/if}
           </div>
-        {:else if isTableDrawContent}
+        {:else if isTableDrawContent || isWithheldRoll}
           <SegmentList segments={sys.content} channel={sys.channel} />
         {:else if sys.kind === "roll"}
           <p class="roll-pending">{t("chat.rollPending", { formula: rollFormula })}</p>
@@ -433,10 +530,46 @@
         {/if}
       </div>
 
+      {#each extensions as extension (extension.id)}
+        {@const ExtensionComponent = extension.component as Component<Record<string, unknown>>}
+        <div class="card-extension">
+          <ExtensionComponent {...(extension.props ?? {})} system={message.system} message={sys} />
+        </div>
+      {/each}
+
       {#if canModerate}
         <div class="actions">
           <button type="button" onclick={startEdit}>{t("chat.edit")}</button>
           <button type="button" onclick={doDelete}>{t("chat.delete")}</button>
+          {#if isGm}
+            <button type="button" onclick={startRevise}>{t("chat.revise.open")}</button>
+          {/if}
+        </div>
+      {/if}
+      {#if isGm && revising}
+        <div class="revise-box">
+          <select aria-label={t("chat.revise.audience")} bind:value={reviseKind}>
+            <option value="public">{t("chat.revise.public")}</option>
+            <option value="gm_only">{t("chat.revise.gmOnly")}</option>
+            <option value="blind">{t("chat.revise.blind")}</option>
+            <option value="whisper">{t("chat.revise.whisper")}</option>
+          </select>
+          {#if reviseKind === "whisper"}
+            <ul class="revise-recipients">
+              {#each whisperCandidates as [id, name] (id)}
+                <li>
+                  <label>
+                    <input type="checkbox" value={id} bind:group={reviseRecipients} />
+                    {name}
+                  </label>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="revise-actions">
+            <button type="button" onclick={applyRevise}>{t("chat.revise.apply")}</button>
+            <button type="button" onclick={() => (revising = false)}>{t("chat.cancel")}</button>
+          </div>
         </div>
       {/if}
     {/if}
@@ -465,6 +598,32 @@
     border-radius: var(--radius-1);
     border: 1px solid var(--border);
   }
+  .revise-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+  }
+  .revise-recipients {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .revise-recipients label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 2.5rem;
+  }
+  .revise-actions {
+    display: flex;
+    gap: var(--space-1);
+  }
   .tombstone {
     font-style: italic;
     opacity: 0.7;
@@ -485,6 +644,10 @@
   // Single hook for emote styling — anchored on .card (the class:emote binding), not a
   // second class on the inner <p>, so there is one source of truth for "this is an emote".
   .card.emote .body p {
+    font-style: italic;
+  }
+  // Out-of-character text reads italic like an emote; the header's OOC chip names the kind.
+  .card.ooc .body p {
     font-style: italic;
   }
   .roll-pending {

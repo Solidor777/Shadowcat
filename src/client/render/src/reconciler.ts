@@ -1,3 +1,4 @@
+import { resolveViewedScene } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, WireDocument, SceneEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 
@@ -50,10 +51,10 @@ export class SceneReconciler {
    * ```
    */
   reconcile(): void {
-    // The viewed scene's background. `null` viewed id ⇒ the first scene (legacy
-    // single-scene behavior; `[0]` is insertion-order).
-    const vsid = this.viewedSceneId();
-    const scene = (vsid ? this.store.get(vsid) : this.store.query("scene")[0]) as WireDocument | undefined;
+    // The viewed scene's background. A `null` viewed id (no host resolver supplied) defers to
+    // `resolveViewedScene`, the one definition of the rendered scene.
+    const vsid = this.viewedSceneId() ?? resolveViewedScene(this.store);
+    const scene = (vsid ? this.store.get(vsid) : undefined) as WireDocument | undefined;
     const bg = (scene?.engine as SceneEngine | undefined)?.background;
     if (typeof bg === "string" && bg.length > 0) {
       this.backend.setBackground({ url: this.assets.url(bg) });

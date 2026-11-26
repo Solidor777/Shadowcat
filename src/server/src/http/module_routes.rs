@@ -1,3 +1,7 @@
+//! This module serves the installed-module routes: discovery (`list_installed_modules`),
+//! path-guarded static file serving (`serve_module_file`) and per-world enablement
+//! (`get_world_enabled_modules`, `set_world_enabled_modules`).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -30,6 +34,7 @@ use crate::http::AppState;
 ///     entry_url: "/modules/dnd5e/index.js".into(),
 ///     has_validators: false,
 ///     validator_load_error: None,
+///     engine_compat_ok: true,
 /// };
 /// let value = serde_json::to_value(&info).unwrap();
 /// assert_eq!(value["id"], "dnd5e");
@@ -40,7 +45,7 @@ use crate::http::AppState;
 pub struct InstalledModuleInfo {
     /// The install FOLDER name — the authoritative enablement key.
     pub id: String,
-    /// The raw module.json, byte-for-byte (the client's Zod schema reads it).
+    /// The module manifest (the client's Zod schema reads it).
     #[ts(type = "unknown")]
     pub manifest: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
@@ -51,6 +56,11 @@ pub struct InstalledModuleInfo {
     /// to load (`sandbox::registry::ValidatorRegistry::load_error_for`) — shown beside the
     /// "Run sandboxed validators" toggle.
     pub validator_load_error: Option<String>,
+    /// The server's own `crate::modules::engine_compat_ok` verdict for this install, computed at
+    /// scan time (fail-closed: no `engines.shadowcat` declaration is `false`). The client reads
+    /// this and never re-derives it from `engines.shadowcat`: a second semver matcher could
+    /// disagree with the one `set_world_enabled_modules` enforces on every save.
+    pub engine_compat_ok: bool,
 }
 
 impl InstalledModuleInfo {
@@ -65,6 +75,7 @@ impl InstalledModuleInfo {
             entry_url: m.entry_url.clone(),
             has_validators: !m.validators.is_empty(),
             validator_load_error: registry.load_error_for(&m.id).map(str::to_string),
+            engine_compat_ok: crate::modules::engine_compat_ok(m),
         }
     }
 }
@@ -98,6 +109,10 @@ impl InstalledModuleInfo {
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let modules = list_installed_modules(user, State(state)).await;
@@ -130,8 +145,8 @@ use crate::http::error::AppError;
 /// an `id` segment that canonicalizes to exactly `modules_root` (a `.`
 /// segment, or a module "folder" that is a symlink back to the root itself)
 /// would otherwise collapse the per-module boundary onto its parent, letting
-/// stage 2 read ANY file under `modules_root` — including another module's
-/// own files, not just loose root files.
+/// the file-path check read ANY file under `modules_root` — including another
+/// module's own files, not just loose root files.
 pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
     candidate != root && candidate.starts_with(root)
 }
@@ -140,15 +155,15 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// module's OWN folder only. Auth: any authenticated user (browsers `import()`
 /// the entry + fetch its relative assets under session cookies). The server
 /// never reads or executes this JS — this is byte-serving with a MANDATORY
-/// two-stage path-traversal guard:
-///   1. `id` alone (a single URL segment, but percent-encoded `..`/`/` can
-///      still smuggle a traversal into it) must canonicalize to a path still
-///      inside the modules root.
-///   2. `rel_path` joined onto that module's own canonicalized root must
-///      still canonicalize to a path inside THAT root.
+/// path-traversal guard of two checks:
+/// - The module-folder check: `id` alone (a single URL segment, but
+///   percent-encoded `..`/`/` can still smuggle a traversal into it) must
+///   canonicalize to a path still inside the modules root.
+/// - The file-path check: `rel_path` joined onto the module's folder must
+///   canonicalize to a path inside THAT module's canonicalized folder.
 ///
-/// Both canonicalize calls resolve symlinks too, closing that escape route in
-/// the same check. Any failure (missing file, either escape) is a uniform 404
+/// Canonicalization resolves symlinks too, closing that escape route in the
+/// same checks. Any failure (missing file, either escape) is a uniform 404
 /// — never distinguishing "traversal rejected" from "not found".
 ///
 /// Windows case-insensitive/case-preserving filesystem semantics (a request
@@ -181,6 +196,10 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let result = serve_module_file(
@@ -275,6 +294,10 @@ const MAX_ENABLED_MODULES: usize = 256;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let ids = get_world_enabled_modules(user, State(state), Path(world.id)).await.unwrap();
@@ -293,13 +316,30 @@ pub async fn get_world_enabled_modules(
     Ok(Json(state.repo.world_enabled_modules(world).await?))
 }
 
+/// The module ids an installed module's raw manifest declares it conflicts with. A missing,
+/// non-array or partly non-string `conflicts` member contributes only its string entries (none
+/// when it is not an array): the scanner does not validate this optional member, so a malformed
+/// one must not reject the module.
+fn declared_conflicts(m: &crate::modules::InstalledModule) -> Vec<String> {
+    m.manifest_json
+        .get("conflicts")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Replace a world's enabled installed-module set. GM/admin only. Every entry
 /// must name a currently-installed, validly-manifested module whose
 /// `engines.shadowcat` range is satisfied by the running server version —
 /// enabling a version-incompatible or unknown module is rejected outright,
 /// atomically (never partially applied). An entry opting into
 /// `validators_enabled` on a module that declares no validators is rejected
-/// the same way (there is nothing to opt into).
+/// the same way (there is nothing to opt into). Two entries where one module's manifest
+/// `conflicts` names the other are rejected the same way; every failure is reported together.
 ///
 /// # Examples
 ///
@@ -328,6 +368,10 @@ pub async fn get_world_enabled_modules(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = set_world_enabled_modules(
@@ -389,6 +433,24 @@ pub async fn set_world_enabled_modules(
             failures.push(format!("module '{}' declares no validators", entry.id));
         }
     }
+    // A module's `conflicts` names install-folder ids (the enable set's key space) that must not
+    // be enabled beside it. The check is directional per declaration and covers either listing
+    // order; a conflict with a module outside the requested set is irrelevant. An absent or
+    // malformed `conflicts` member reads as empty, the same fail-open posture the scanner takes
+    // for optional manifest members it does not validate.
+    for entry in &entries {
+        let Some(m) = installed.iter().find(|m| m.id == entry.id) else {
+            continue;
+        };
+        for named in declared_conflicts(m) {
+            if named != entry.id && entries.iter().any(|e| e.id == named) {
+                failures.push(format!(
+                    "module '{}' conflicts with module '{named}'; both cannot be enabled",
+                    entry.id
+                ));
+            }
+        }
+    }
     if !failures.is_empty() {
         return Err(AppError::Unprocessable(failures.join("; ")));
     }
@@ -431,6 +493,9 @@ pub async fn set_world_enabled_modules(
             {
                 tracing::warn!(world = %world, error = %e, "system-defaults refresh failed after enable-set change");
             }
+            // Fires whether or not the refresh succeeded: the enabled set itself changed, so
+            // every connected client must reconcile its loaded modules against it.
+            room.broadcast_aux(crate::ws::protocol::ServerMsg::ModulesChanged);
         }
         Ok(None) => {}
         Err(e) => {

@@ -1,5 +1,5 @@
-//! Asset rows + tags: the `assets` / `asset_tags` half of `SqliteRepository`,
-//! in a sibling `impl` block so `sqlite.rs` stays under the file-size limit.
+//! This module holds the asset rows and tags: the `assets` / `asset_tags` half of
+//! `SqliteRepository`, in a sibling `impl` block.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -1013,6 +1013,37 @@ impl SqliteRepository {
         after: Option<&AssetCursor>,
         limit: u32,
     ) -> Result<Vec<Asset>, DataError> {
+        let Some(mut qb) = Self::asset_query_builder(world, filter, sort, after, limit)? else {
+            return Ok(Vec::new());
+        };
+        let rows = qb.build().fetch_all(&self.pool).await?;
+        let mut assets: Vec<Asset> = rows
+            .iter()
+            .map(Self::asset_from_row)
+            .collect::<Result<_, _>>()?;
+        self.fill_tags(&mut assets).await?;
+        Ok(assets)
+    }
+
+    /// Builds the `query_assets` SELECT without running it, so a caller already inside a
+    /// transaction can run the identical filter on its own connection (the single-writer pool
+    /// would deadlock on a second connection acquire). `Ok(None)` means the filter cannot match
+    /// anything (its free-text query sanitizes to nothing, or its id set is empty), which
+    /// `query_assets` answers with an empty page.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let Some(mut qb) = Self::asset_query_builder(world, &filter, sort, None, 10)? else { return Ok(vec![]) };
+    /// let rows = qb.build().fetch_all(&mut *conn).await?;
+    /// ```
+    pub(super) fn asset_query_builder(
+        world: Uuid,
+        filter: &AssetFilter,
+        sort: AssetSort,
+        after: Option<&AssetCursor>,
+        limit: u32,
+    ) -> Result<Option<sqlx::QueryBuilder<sqlx::Sqlite>>, DataError> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
         if let Some(FolderFilter::In {
             folder,
@@ -1064,12 +1095,24 @@ impl SqliteRepository {
                 );
             }
         }
+        if let Some(ids) = &filter.ids {
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            // The world predicate above still applies, so a foreign id matches nothing.
+            qb.push(" AND a.id IN (");
+            let mut separated = qb.separated(", ");
+            for id in ids {
+                separated.push_bind(id.to_string());
+            }
+            separated.push_unseparated(")");
+        }
         if let Some(q) = &filter.query {
             // The ONE MATCH sanitizer, shared with `Repository::search`; a
             // `None` (empty/punctuation-only query) mirrors that seam's own
             // posture and yields an empty page rather than reaching FTS5.
             match crate::data::search::build_match(q) {
-                None => return Ok(Vec::new()),
+                None => return Ok(None),
                 Some(expr) => {
                     qb.push(
                         " AND a.id IN (SELECT asset_id FROM assets_fts WHERE assets_fts MATCH ",
@@ -1100,13 +1143,7 @@ impl SqliteRepository {
         }
         qb.push(format!(" ORDER BY {key}, a.id LIMIT "));
         qb.push_bind(i64::from(limit));
-        let rows = qb.build().fetch_all(&self.pool).await?;
-        let mut assets: Vec<Asset> = rows
-            .iter()
-            .map(Self::asset_from_row)
-            .collect::<Result<_, _>>()?;
-        self.fill_tags(&mut assets).await?;
-        Ok(assets)
+        Ok(Some(qb))
     }
 
     /// All asset rows for `world`, oldest first, tags filled.
@@ -1134,5 +1171,35 @@ impl SqliteRepository {
             .collect::<Result<_, _>>()?;
         self.fill_tags(&mut assets).await?;
         Ok(assets)
+    }
+
+    /// Every asset the audio pipeline transcoded (one with a recorded duration), as
+    /// `(id, storage_key)` in creation order: the set whose Opus siblings the derivative upgrade
+    /// sweep examines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main] async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.list_transcoded_audio_assets().await?.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_transcoded_audio_assets(&self) -> Result<Vec<(Uuid, String)>, DataError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, storage_key FROM assets WHERE duration_ms IS NOT NULL ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(id, key)| {
+                Uuid::parse_str(&id)
+                    .map(|id| (id, key))
+                    .map_err(|e| DataError::OpFailed(e.to_string()))
+            })
+            .collect()
     }
 }

@@ -1,12 +1,12 @@
 import { test, expect, vi } from "vitest";
 import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
-import type { DisplayBackend, TokenNodeSpec } from "@shadowcat/render";
+import type { DisplayBackend, RemoteRulerPath, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
-import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, buildRegionDoc, ContributionRegistry, EMPTY_FOOTPRINTS, EMPTY_BARS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
+import type { ReadableDocuments, FootprintLookup, BarsLookup, Logger, RulerNotice } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController, SnapModePreference, StageView } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -24,17 +24,21 @@ function tokenDocs(): ReadableDocuments {
 /** A documents view exposing a single scene doc with the given `engine` body, read by
  * `resolveSceneSettings` via `documents.query("scene")[0]`. */
 function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
+  const scene = { id: "s1", doc_type: "scene", engine, system: {}, created_at: 0 };
   return {
-    query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", engine, system: {} }] : []),
-    get: () => undefined,
+    query: (t: string) => (t === "scene" ? [scene] : []),
+    get: (id: string) => (id === "s1" ? scene : undefined),
     subscribe: () => () => {},
     snapshot: () => [],
     appliedSeq: 0,
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null; rulers: RemoteRulerPath[]; outlineSegments: number } {
   return {
+    rulers: [],
+    outlineSegments: 0,
+    drawBoundsOutline(lines: unknown[]) { this.outlineSegments = lines.length; },
     destroyed: false,
     clearColor: null,
     gridColor: null,
@@ -57,6 +61,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     clearMeasure() {},
     drawPings() {},
     drawEmotes() {},
+    drawRulers(rulers: RemoteRulerPath[]) { this.rulers = rulers; },
     setVfx() {},
     removeVfx() {},
     tickVfx() {},
@@ -134,6 +139,25 @@ test("the ghost-other-levels toggle is GM-only", async () => {
   expect(player.queryByTestId("ghost-other-levels")).toBeNull();
 });
 
+test("the authored-rectangle outline shows for the GM on a padded scene only", async () => {
+  const padded = sceneDocs({ grid: { kind: "square", size: 100 }, bounds: { width: 10, height: 8 }, padding: 2 });
+  const unpadded = sceneDocs({ grid: { kind: "square", size: 100 }, bounds: { width: 10, height: 8 } });
+  const run = async (role: "gm" | "player", documents: ReadableDocuments): Promise<number> => {
+    const backend = fakeBackend();
+    const view = render(Stage, {
+      props: { createBackend: async () => backend },
+      context: setAppContextForTest({ role, documents, subscribeScene: () => ({ unsubscribe() {} }) }),
+    });
+    await vi.waitFor(() => expect(view.container.querySelector(".stage-host")).toBeTruthy());
+    await vi.waitFor(() => expect(backend.tick).not.toBeNull());
+    view.unmount();
+    return backend.outlineSegments;
+  };
+  expect(await run("gm", padded)).toBe(4);
+  expect(await run("player", padded)).toBe(0);
+  expect(await run("gm", unpadded)).toBe(0);
+});
+
 test("a backend-init failure logs through the injected logger, not silently", async () => {
   const failure = new Error("no webgl context");
   const createBackend = vi.fn(async () => {
@@ -196,6 +220,47 @@ test("pushes the resolved snapToGrid to the engine (continuous scene: default fa
   spy.mockRestore();
 });
 
+test("pushes the session snap-mode preference to the engine (default center, then vertex on toggle)", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "setSnapMode");
+  const snapModePreference = new SnapModePreference();
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: sceneDocs({ grid: { kind: "square", size: 100 } }),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      snapModePreference,
+    }),
+  });
+  // The engine gets the session's current mode at attach, with no document involvement.
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("center"));
+  // A preference change re-runs the engine-push effect and reaches the engine.
+  snapModePreference.set("vertex");
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("vertex"));
+  spy.mockRestore();
+});
+
+test("mirrors the engine's camera transform and fog probe into ctx.stageView", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const stageView = new StageView();
+  const { unmount } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: sceneDocs({ grid: { kind: "square", size: 100 } }),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      stageView,
+    }),
+  });
+  // The engine's first camera push reaches the view, and the probe answers from the engine's
+  // applied mask: the pre-vision default is no fog, so a token is revealed.
+  await vi.waitFor(() => expect(stageView.isTokenRevealed("t", { x: 5, y: 5 })).toBe(true));
+  expect(stageView.transform).toEqual({ x: 0, y: 0, scale: 1 });
+  expect(stageView.sceneToScreen({ x: 5, y: 5 })).toEqual({ x: 5, y: 5 });
+  // Unmounting detaches the probe: fail-closed again.
+  unmount();
+  expect(stageView.isTokenRevealed("t", { x: 5, y: 5 })).toBe(false);
+});
+
 test("drives the initial reconcile from ctx.viewedSceneId", async () => {
   const store = new DocumentStore();
   store.applyCommand({
@@ -211,7 +276,7 @@ test("drives the initial reconcile from ctx.viewedSceneId", async () => {
         doc: buildTokenDoc(
           "w1",
           "sB",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t-b",
         ),
       },
@@ -270,7 +335,7 @@ test("exposes the viewed scene's committed token positions as data-token-positio
     doc: buildTokenDoc(
       "w1",
       scene,
-      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       id,
     ),
   });
@@ -394,7 +459,7 @@ test("exposes each viewed-scene token's resolved visual kind as data-token-visua
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, elevation: null, lock_rotation: false, identity_hidden: false, actor_id: null, overrides: null, face: null },
           "t-gen",
         ),
       },
@@ -403,7 +468,7 @@ test("exposes each viewed-scene token's resolved visual kind as data-token-visua
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, lock_rotation: false, identity_hidden: false, actor_id: null, overrides: null, face: null },
           "t-img",
         ),
       },
@@ -441,7 +506,7 @@ test("re-projects tokens with the selection highlight fx when the token selectio
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, lock_rotation: false, identity_hidden: false, actor_id: null, overrides: null, face: null },
           "t1",
         ),
       },
@@ -498,6 +563,88 @@ test("exposes the server's move-resolution outcome as data-last-move-outcome", a
   expect(host.dataset.lastMoveOutcome).toBe("executed");
 });
 
+test("a rejected move outcome raises one warning notice; executed and truncated raise none", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
+  const notices: Array<{ message: string; level: string | undefined }> = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message, level) => { notices.push({ message, level }); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  capturedCb!({ tokenId: "tok1", outcome: "executed" });
+  capturedCb!({ tokenId: "tok1", outcome: "truncated" });
+  expect(notices).toEqual([]);
+  capturedCb!({ tokenId: "tok1", outcome: "rejected" });
+  expect(notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a rejected move outcome flagged paused raises the paused notice, not the generic refusal", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected"; paused?: boolean }) => void) | null = null;
+  const notices: string[] = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message) => { notices.push(message); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  capturedCb!({ tokenId: "tok1", outcome: "rejected", paused: true });
+  expect(notices).toEqual(["intent.rejected.paused"]);
+});
+
+test("rejections sharing one gesture raise one notice; a new gesture or a gestureless rejection raises its own", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; gesture?: object; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
+  const notices: string[] = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message) => { notices.push(message); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  const g1 = {};
+  const g2 = {};
+  capturedCb!({ tokenId: "a", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "b", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "c", gesture: g1, outcome: "rejected" });
+  expect(notices).toHaveLength(1);
+  capturedCb!({ tokenId: "a", gesture: g2, outcome: "rejected" });
+  expect(notices).toHaveLength(2);
+  capturedCb!({ tokenId: "a", outcome: "rejected" });
+  capturedCb!({ tokenId: "b", outcome: "rejected" });
+  expect(notices).toHaveLength(4);
+  // An interleaved gestureless outcome must not make an earlier gesture speak again.
+  capturedCb!({ tokenId: "c", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "c", gesture: g2, outcome: "rejected" });
+  expect(notices).toHaveLength(4);
+});
+
 test("exposes each viewed-scene token's projected badge chips as data-token-badges", async () => {
   const store = new DocumentStore();
   store.applyCommand({
@@ -511,7 +658,7 @@ test("exposes each viewed-scene token's projected badge chips as data-token-badg
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 3 },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 3, lock_rotation: false, identity_hidden: false },
           "t-a",
         ),
       },
@@ -519,7 +666,7 @@ test("exposes each viewed-scene token's projected badge chips as data-token-badg
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 200, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 200, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t-b",
         ),
       },
@@ -562,7 +709,7 @@ test("exposes the applied vision frame's creature-sense ids as data-perceived-to
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t-a",
         ),
       },
@@ -653,7 +800,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t1",
         ),
       },
@@ -674,7 +821,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t2",
         ),
       },
@@ -729,7 +876,7 @@ test("a viewedLevel context change re-subscribes vision exactly once per genuine
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t1",
         ),
       },
@@ -749,7 +896,7 @@ test("a viewedLevel context change re-subscribes vision exactly once per genuine
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t2",
         ),
       },
@@ -801,7 +948,7 @@ test("data-token-count reflects the level-scoped token count, changing when a to
   );
   const token = buildTokenDoc(
     "w1", "sA",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false },
     "t1",
   );
   store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: scene }, { op: "create", doc: token }] } as never);
@@ -871,7 +1018,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t1",
         ),
       },
@@ -891,13 +1038,69 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
           "t2",
         ),
       },
     ],
   } as never);
   await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("a new bars lookup re-projects the tokens exactly once per genuine change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") }],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  // A live getter, mirroring the session's reactive `#bars` $state: a frame replaces the lookup
+  // wholesale, so the Stage watches the reference.
+  let bars: BarsLookup = EMPTY_BARS;
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "bars", { get: () => bars, configurable: true });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyBars");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  const tokenDoc = (id: string) =>
+    buildTokenDoc(
+      "w1",
+      "sA",
+      { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
+      id,
+    );
+  bars = { token: () => ({ nameplate: "Goblin", nameplateMode: "always", bars: [] }) };
+  store.applyCommand({ seq: 2, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: tokenDoc("t1") }] } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // An unrelated doc mutation with the same lookup must not re-project.
+  store.applyCommand({ seq: 3, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: tokenDoc("t2") }] } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("the pointer leaving the canvas clears the hovered token", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "clearHoveredToken");
+  const { container } = render(Stage, { props: { createBackend }, context: setAppContextForTest({ subscribeScene: () => ({ unsubscribe() {} }) }) });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  host.querySelector("canvas")!.dispatchEvent(new Event("pointerleave"));
   expect(spy).toHaveBeenCalledTimes(1);
   spy.mockRestore();
 });
@@ -967,6 +1170,7 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
         },
         setChannel: () => {},
         unlock: async () => {},
+        needsGesture: false,
         context: () => null,
         duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
         playOneShot,
@@ -1000,6 +1204,66 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
   });
   await vi.waitFor(() => expect(playOneShot).toHaveBeenCalledWith("snd1", { channel: "sfx" }));
   vi.unstubAllGlobals();
+});
+
+test("onRuler drives the engine's remote rulers per connection: active draws, stop clears exactly that connection's", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let rulerCb: ((m: RulerNotice) => void) | null = null;
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      onRuler: (cb) => {
+        rulerCb = cb;
+        return () => {};
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(rulerCb).not.toBeNull();
+
+  rulerCb!({ from: "a", scene: "s1", points: [[0, 0], [10, 0]], active: true, origin: "o1" });
+  rulerCb!({ from: "b", scene: "s1", points: [[0, 5], [10, 5]], active: true, origin: "o2" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["a", "b"]);
+
+  rulerCb!({ from: "a", scene: "s1", points: [], active: false, origin: "o1" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["b"]);
+
+  // `active: false` ends the ruler whatever points ride along: the flag, not the point count, decides.
+  rulerCb!({ from: "b", scene: "s1", points: [[3, 3]], active: false, origin: "o2" });
+  backend.tick!(16);
+  expect(backend.rulers).toEqual([]);
+});
+
+test("onRuler keys a remote ruler by connection: two origins of one user both render, and stopping one leaves the other", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let rulerCb: ((m: RulerNotice) => void) | null = null;
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      onRuler: (cb) => {
+        rulerCb = cb;
+        return () => {};
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+
+  rulerCb!({ from: "u1", scene: "s1", points: [[0, 0], [10, 0]], active: true, origin: "tablet" });
+  rulerCb!({ from: "u1", scene: "s1", points: [[0, 9], [10, 9]], active: true, origin: "laptop" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.origin)).toEqual(["tablet", "laptop"]);
+
+  rulerCb!({ from: "u1", scene: "s1", points: [], active: false, origin: "tablet" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.origin)).toEqual(["laptop"]);
 });
 
 test("an emitter-bearing token committed into the store warms its emission asset's metadata", async () => {
@@ -1108,4 +1372,121 @@ test("an antialias-flip backend re-init replaces the canvas element and the data
   expect(host.dataset.fpsCap).toBe("30");
   expect(host.dataset.renderScale).toBe("0.75");
   expect(host.dataset.idleSkip).toBe("1");
+});
+
+test("exposes the viewed scene's region geometry forms as data-region-shapes", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "sA", {
+          shape: [
+            { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+            { shape: { kind: "circle", points: [50, 50, 25] }, hole: true },
+          ],
+          behavior: "terrain",
+          cost: 1,
+          cost_by_tag: {},
+          enabled: true,
+          triggers: [],
+          elevation: null,
+          ambient_override: null,
+          occludes: null,
+          anchor: null,
+        }, "r-compound"),
+      },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "sA", {
+          shape: { kind: "circle", points: [50, 50, 25] },
+          behavior: "arrest",
+          cost: 1,
+          cost_by_tag: {},
+          enabled: true,
+          triggers: [],
+          elevation: null,
+          ambient_override: null,
+          occludes: null,
+          anchor: null,
+        }, "r-legacy"),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // Id-sorted; a `!` prefix marks the hole part of the compound form; the legacy singular
+  // form reports its bare kind.
+  expect(host.dataset.regionShapes).toBe("r-compound:rect+!circle;r-legacy:circle");
+});
+
+test("writes the wall and region markers only when their values change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") }],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  const observer = new MutationObserver(() => {});
+  observer.observe(host, { attributes: true, attributeFilter: ["data-wall-segments", "data-region-shapes"] });
+  // A commit that touches neither walls nor regions rewrites neither marker.
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 1,
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "sA", {
+      x: 0, y: 0, w: 10, h: 10, rotation: 0,
+      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
+    }, "tok1") }],
+  } as never);
+  expect(host.dataset.tokenCount).toBe("1");
+  expect(observer.takeRecords()).toEqual([]);
+  // A region commit changes the region marker alone.
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 2,
+    ops: [{ op: "create", doc: buildRegionDoc("w1", "sA", {
+      shape: { kind: "circle", points: [50, 50, 25] },
+      behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null, anchor: null,
+    }, "r1") }],
+  } as never);
+  expect(observer.takeRecords().map((r) => r.attributeName)).toEqual(["data-region-shapes"]);
+  expect(host.dataset.regionShapes).toBe("r1:circle");
+  observer.disconnect();
 });

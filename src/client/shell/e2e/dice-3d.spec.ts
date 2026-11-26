@@ -1,5 +1,6 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page } from "@playwright/test";
+import { latchAttributeValues } from "./transient-latch";
 
 /** The 3D dice overlay host element on one page (`DiceOverlay`'s root). */
 function dice3dOverlay(page: Page) {
@@ -51,6 +52,10 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
 
     // Chat panel docks by default on both sessions; send the roll from the GM. The composer's
     // label text is dynamic ("Message #{name}"/"Message the GM"), so target its stable id.
+    // `settled` lasts 2.5 s and then falls back to `idle` by itself, and the two overlays settle
+    // independently: latch both states before rolling so neither assertion depends on where a poll lands.
+    const gmStates = await latchAttributeValues(dice3dOverlay(gm), "data-dice3d-state");
+    const playerStates = await latchAttributeValues(dice3dOverlay(player), "data-dice3d-state");
     await gm.locator("#chat-composer-input").fill("/roll 1d20");
     await gm.locator("#chat-composer-input").press("Enter");
 
@@ -59,23 +64,36 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
     const total = await card.locator(".roll-total").textContent();
     expect(total).not.toBeNull();
 
-    await expect(dice3dOverlay(gm)).toHaveAttribute("data-dice3d-state", "settled", { timeout: 8_000 });
-    await expect(dice3dOverlay(player)).toHaveAttribute("data-dice3d-state", "settled", { timeout: 8_000 });
+    await expect.poll(() => gmStates.seen(), { timeout: 8_000 }).toContain("settled");
+    await expect.poll(() => playerStates.seen(), { timeout: 8_000 }).toContain("settled");
+    // `data-dice3d-values` is the last settled roll and persists after the overlay returns to idle.
     const gmValues = await dice3dOverlay(gm).getAttribute("data-dice3d-values");
     const playerValues = await dice3dOverlay(player).getAttribute("data-dice3d-values");
     expect(gmValues).toBe(total!.trim());
     expect(playerValues).toBe(total!.trim());
 
     // The player turns dice3d off through the real Settings > Performance toggle; the next
-    // roll leaves the player's overlay idle.
+    // roll must never move the player's overlay out of idle.
     await player.getByTestId("launcher-trigger").click();
     await player.getByTestId("launcher-item-settings:panel").click();
     await player.getByTestId("perf-dice3d").uncheck();
+    // The first roll's `settled` state falls back to idle by itself; wait for that so the history
+    // length below is measured from rest.
+    await expect(dice3dOverlay(player)).toHaveAttribute("data-dice3d-state", "idle", { timeout: 10_000 });
+    const gmBefore = (await gmStates.transitions()).length;
+    const playerBefore = (await playerStates.transitions()).length;
 
     await gm.locator("#chat-composer-input").fill("/roll 1d6");
     await gm.locator("#chat-composer-input").press("Enter");
     await expect(gm.locator(".card").filter({ has: gm.locator(".roll-total") })).toHaveCount(2, { timeout: 15_000 });
-    await expect(dice3dOverlay(player)).toHaveAttribute("data-dice3d-state", "idle", { timeout: 5_000 });
+    // Positive control: the GM's own overlay does react to the second roll, so the roll reached the
+    // overlays and the interval below is long enough for a player overlay to have started.
+    await expect.poll(async () => (await gmStates.transitions()).length, { timeout: 8_000 }).toBeGreaterThan(gmBefore);
+    await player.waitForTimeout(1_500);
+    // A read of the current state would say "idle" whether or not the overlay ran and finished; the
+    // ordered history shows whether it ever left idle.
+    expect((await playerStates.transitions()).length).toBe(playerBefore);
+    await expect(dice3dOverlay(player)).toHaveAttribute("data-dice3d-state", "idle");
   } finally {
     await playerCtx.close();
   }

@@ -1,10 +1,17 @@
-//! oEmbed provider embeds: allowlisted provider HOSTS only, never
-//! autodiscovery (`<link rel="alternate" type="application/json+oembed">`
-//! against an arbitrary posted URL would reintroduce the arbitrary-host-
-//! fetch risk this feature must avoid). Structured fields only — `title`,
-//! `author_name`, `provider_name`, `thumbnail_asset_id` — never a
-//! provider's raw `html` field, which is third-party-controlled markup and
-//! a direct stored-XSS vector this server does not control.
+//! This module holds the oEmbed provider allowlist and the structured-fields-only oEmbed types.
+//!
+//! `match_provider` admits allowlisted provider HOSTS only, and `OEmbedProvider::endpoint` builds
+//! the request URL from a fixed per-provider base, passing the posted URL only as the `url` query
+//! value, so no endpoint is ever discovered. Autodiscovery (reading a `<link rel="alternate"
+//! type="application/json+oembed">` tag from an arbitrary posted URL) would reintroduce the
+//! arbitrary-host-fetch risk this feature must avoid. The fetch itself runs in
+//! `chat::post_publish`.
+//!
+//! The accepted input, `OEmbedResponse`, carries `title`, `author_name` and `thumbnail_url` only,
+//! and never a provider's raw `html` field, which is third-party-controlled markup and a direct
+//! stored-XSS vector this server does not control. The output, `OEmbedSegment`, carries the posted
+//! `url`, this server's fixed `OEmbedProvider::name` as `provider_name` (the provider's own
+//! self-reported name is never used), `title`, `author_name` and `thumbnail_asset_id`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -65,10 +72,12 @@ impl OEmbedProvider {
 /// Synchronous, zero-network host check against the allowlist — matched at
 /// `link_preview::enrich` time against the SAME candidate URLs the generic
 /// preview scraper extracts (genuine `<a href>` targets from sanitized HTML,
-/// never raw body-text substrings). No I/O: this check IS the entire SSRF
-/// mitigation for oEmbed — a URL failing it falls through to the existing
-/// generic `LinkPreview` scrape unchanged; there is no autodiscovery fetch
-/// anywhere in this module.
+/// never raw body-text substrings). No I/O: this check admits allowlisted provider hosts only,
+/// and a URL failing it falls through to the existing generic `LinkPreview` scrape unchanged.
+/// The request for an admitted URL then goes through `link_preview::fetch_json_bytes`, which
+/// calls `guarded_get`, so it passes the same URL validation and redirect re-validation as every
+/// other fetch routed through that function. There is no autodiscovery fetch anywhere in this
+/// module.
 pub fn match_provider(raw_url: &str) -> Option<OEmbedProvider> {
     let url = url::Url::parse(raw_url).ok()?;
     if url.scheme() != "http" && url.scheme() != "https" {
@@ -115,7 +124,7 @@ pub struct OEmbedResponse {
 /// "open on `<provider_name>`" link), never any provider markup.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct OEmbedSegment {
-    /// The URL as posted in the message.
+    /// The candidate URL `enrich` extracted from the message.
     pub url: String,
     /// This server's own fixed provider display name (`OEmbedProvider::name`).
     pub provider_name: String,

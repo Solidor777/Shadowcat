@@ -1,9 +1,12 @@
-//! `playlist`/`audio-state` engine bands. `playlist` is a standard-write-rules document
-//! (owner + WRITE_FIELDS, same as `table`/`note`); `audio-state` is the world's singleton
-//! transport state, writable only by `WriteOrigin::AudioTransport` (the guard lives in
-//! `data::sqlite::SqliteRepository::apply_intent`, mirroring the `system-defaults`/
-//! `WriteOrigin::ConfigSeed` guard exactly — see that guard's own doc for why this is NOT a
-//! `validate_engine`/`normalize_engine` rule).
+//! This module defines the `playlist` and `audio-state` engine bands.
+//!
+//! `playlist` is a standard-write-rules document (owner + `WRITE_FIELDS`, same as `table`/`note`).
+//! `audio-state` is the world's singleton transport state: `WriteOrigin::ConfigSeed` alone creates
+//! and deletes it, and `WriteOrigin::AudioTransport` alone updates it. The guards live in
+//! `data::sqlite::authorize_create_intent`, `data::sqlite::authorize_update_access` and the delete
+//! arm of `SqliteRepository::apply_intent`, beside the `system-defaults`/`ConfigSeed` guards. They
+//! are not a `validate_engine`/`normalize_engine` rule, because those validators receive only the
+//! doc_type and the engine value, never the write origin.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -16,8 +19,9 @@ use uuid::Uuid;
 
 /// Doc_type for a playlist: a standalone world document, standard write rules.
 pub const PLAYLIST_DOC_TYPE: &str = "playlist";
-/// Doc_type for the world's singleton transport-state document. Writable only by
-/// `WriteOrigin::AudioTransport` — see `data::sqlite::SqliteRepository::apply_intent`'s guard.
+/// Doc_type for the world's singleton transport-state document. `WriteOrigin::ConfigSeed` alone
+/// creates and deletes it and `WriteOrigin::AudioTransport` alone updates it; the module doc names
+/// the guards.
 pub const AUDIO_STATE_DOC_TYPE: &str = "audio-state";
 /// `PlaylistEngine::validate`'s track-count cap.
 pub const MAX_PLAYLIST_TRACKS: usize = 512;
@@ -48,6 +52,13 @@ pub enum PlaylistMode {
     LoopAll,
     /// Plays exactly one track (the first, or whichever `AudioOp::Play` names) on loop.
     Single,
+    /// Every track plays at once, each as its own `PlayingTrack` (a layered cue). One
+    /// `AudioOp::Play` pushes one entry per track; `Next`/`Prev`/`TrackEnded` on a layer stop
+    /// only that layer.
+    Simultaneous,
+    /// Each track is a one-shot trigger: `AudioOp::Play` naming a `track_index` starts that
+    /// track, and `AudioOp::TrackEnded` removes the entry rather than advancing.
+    Soundboard,
 }
 
 /// A device-independent audio bus a playlist or a one-shot sound plays through. `"master"` and
@@ -152,6 +163,14 @@ impl PlaylistEngine {
                 self.tracks.len()
             ));
         }
+        // One Simultaneous play starts every track, so the track count alone must fit the
+        // concurrent-playing cap.
+        if self.mode == PlaylistMode::Simultaneous && self.tracks.len() > MAX_PLAYING_TRACKS {
+            return Err(format!(
+                "a simultaneous playlist may have at most {MAX_PLAYING_TRACKS} tracks, got {}",
+                self.tracks.len()
+            ));
+        }
         for track in &self.tracks {
             crate::data::engine::geometry::validate_asset_ref(&track.asset)
                 .map_err(|m| format!("track asset: {m}"))?;
@@ -184,6 +203,7 @@ impl PlaylistEngine {
 ///     loop_: false,
 ///     started_at: 0.0,
 ///     paused_at: None,
+///     session_paused: false,
 /// };
 /// assert!(entry.paused_at.is_none());
 /// ```
@@ -223,6 +243,11 @@ pub struct PlayingTrack {
     /// rationale as `started_at`.
     #[serde(default, rename = "pausedAt")]
     pub paused_at: Option<f64>,
+    /// `true` when the session pause (`SessionState.paused` with `pause_audio`) paused this entry;
+    /// the session resume resumes only entries carrying it, so a track the GM paused by hand stays
+    /// paused. Cleared by every `AudioOp::Resume` and by the session resume.
+    #[serde(default, rename = "sessionPaused")]
+    pub session_paused: bool,
 }
 
 /// The engine body of the world's singleton "audio-state" document: the server's own transport

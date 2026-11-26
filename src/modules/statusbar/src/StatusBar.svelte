@@ -6,6 +6,9 @@
   let unlocked = $state(false);
 
   /** Unlock this device's `AudioContext` from the click gesture, then swap to the mute toggle.
+   * The unlock button also returns whenever `AudioApi.needsGesture` is `true` (the browser
+   * refused playback or an interrupted context did not resume), and this same handler is the
+   * retry.
    * @example
    * ```
    * // component handler; exercised through `StatusBar.test.ts`'s unlock-click case
@@ -19,7 +22,7 @@
 
 <footer class="statusbar">
   <span>{role}</span>
-  {#if !unlocked}
+  {#if !unlocked || ctx.audio.needsGesture}
     <button type="button" data-testid="audio-unlock" onclick={unlock}>{ctx.t("statusbar.audio.enable")}</button>
   {:else}
     <button
@@ -41,7 +44,7 @@
     padding: 0 var(--space-3);
     height: 100%;
   }
-  /* The row is a fixed `2rem` grid track (`Layout.svelte`); unlike the toolrail's `1fr` row
+  /* The row is a fixed `--statusbar-height` grid track (`Layout.svelte`); unlike the toolrail's `1fr` row
    * it carries no growth cap, so a button left at UA default sizing (unset font/padding/border)
    * renders a few px taller than the track and overflows the grid past 100vh. Inheriting the
    * row's own font-size and using compact padding keeps every statusbar button inside it. */

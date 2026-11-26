@@ -384,16 +384,18 @@ fn small_base_passes() {
 
 /// A complete, valid `MergeBase` value for a wall-engine document; the
 /// embedded collection carries one record keyed by `child_source_id`. The
-/// root engine is the NORMALIZED `WallEngine` form (the optional `blocks_*`
-/// fields materialize as explicit nulls through `normalize_engine_opt`'s
-/// re-serialization), so a valid snapshot survives the walk untouched.
+/// root engine is the NORMALIZED `WallEngine` form (the optional `blocks_*`,
+/// `door`, `direction` and `sightTier` fields materialize as explicit nulls
+/// through `normalize_engine_opt`'s re-serialization), so a valid snapshot
+/// survives the walk untouched.
 fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
     serde_json::json!({
         "name": "Old",
         "engine": {
             "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
-            "blocksSight": null, "blocksLight": null, "blocksMove": null,
-            "elevation": null
+            "blocksSight": null, "blocksLight": null, "blocksMove": null, "blocksSound": null,
+            "elevation": null, "door": null, "direction": null, "sightTier": null,
+            "proximity": null
         },
         "system": { "hp": 1 },
         "embedded": {
@@ -994,6 +996,28 @@ fn validate_containment_requires_a_parent_for_combat_history_and_forbids_embeddi
 }
 
 #[test]
+fn combatant_group_doc_must_be_parented_to_a_combat() {
+    let mut group = crate::data::document::tests::sample_doc();
+    group.doc_type = "combatant-group".into();
+    group.engine = crate::data::document::tests::default_test_engine("combatant-group");
+    group.parent_id = None;
+    assert!(validate_containment(&group).is_err());
+    group.parent_id = Some(crate::test_ids::test_uuid(5));
+    assert!(validate_containment(&group).is_ok());
+}
+
+#[test]
+fn combatant_group_doc_cannot_be_embedded() {
+    let mut child = crate::data::document::tests::sample_doc();
+    child.doc_type = "combatant-group".into();
+    child.engine = crate::data::document::tests::default_test_engine("combatant-group");
+    child.parent_id = Some(crate::test_ids::test_uuid(5));
+    let mut parent = crate::data::document::tests::sample_doc();
+    parent.embedded.insert("groups".into(), vec![child]);
+    assert!(validate_containment(&parent).is_err());
+}
+
+#[test]
 fn validate_containment_rejects_combat_combatant_and_note_as_embedded_children() {
     for child_type in ["combat", "combatant", "note"] {
         let mut child = crate::data::document::tests::sample_doc();
@@ -1044,8 +1068,18 @@ fn validate_containment_forbids_embedding_an_asset_folder() {
     assert!(validate_containment(&actor).is_err());
 }
 
+#[test]
+fn validate_containment_forbids_embedding_a_table_folder() {
+    let mut actor = crate::data::document::tests::sample_doc();
+    let mut folder = crate::data::document::tests::sample_doc();
+    folder.doc_type = "table_folder".into();
+    folder.engine = Some(serde_json::json!({ "sort": 0 }));
+    actor.embedded.insert("stuff".into(), vec![folder]);
+    assert!(validate_containment(&actor).is_err());
+}
+
 /// A stored `world-settings` document serialized the way `apply_intent`'s
-/// Phase 1 serializes the current row (`whole`).
+/// validation pass serializes the current row (`whole`).
 fn stored_world_settings(combat: serde_json::Value) -> serde_json::Value {
     let mut d = doc_with_system(serde_json::json!({}));
     d.doc_type = "world-settings".into();
@@ -1164,7 +1198,7 @@ fn derive_engine_side_effects_ignores_semantically_equal_numeric_noise() {
     // `values_semantically_eq`, not raw `Value` equality: a whole-number
     // round trip through the typed normalizer must never register as a
     // derived change. `note` is the only doc_type registering a derived
-    // path today, so the registry itself is exercised with a stand-in
+    // path, so the registry itself is exercised with a stand-in
     // shape rather than a real `NoteEngine` (whose `body` is a segment
     // list, not a bare number) to isolate the comparator behavior.
     let pre = serde_json::json!({ "body": 30 });

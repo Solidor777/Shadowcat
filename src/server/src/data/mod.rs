@@ -1,39 +1,26 @@
-//! The data layer: the document model, per-recipient permissions/redaction,
-//! command application, validation, search, assets, and SQLite persistence.
+//! This module is the data layer.
+//!
+//! It holds the document model, per-recipient permissions/redaction, command application,
+//! engine-band validation, search, assets, and SQLite persistence.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Uploaded binary assets: rows, content-addressed storage, ETag revalidation.
 pub mod asset;
-/// Commands/operations/field changes + the shared JSON-pointer mutation ops.
 pub mod command;
-/// The document envelope, permission types, and structural schema types.
 pub mod document;
 pub mod engine;
 pub mod membership;
-/// Schema migrations applied at pool open.
 pub mod migrate;
-/// The authz/redaction core: access resolution + per-recipient filtering.
 pub mod permission;
-/// The storage seam (`Repository` trait) the HTTP/WS layers program against.
 pub mod repository;
 pub mod search;
-/// Commit-time redaction snapshot types (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`) —
-/// server-internal transport, never serialized to the wire.
 pub mod snapshot;
-/// The SQLite `Repository` implementation + the authoritative apply loops.
 pub mod sqlite;
-/// Structural (never semantic) validation: size caps, paths, tier-2 shape.
 pub mod validation;
-/// Per-world export/import bundle row/manifest DTOs (see `crate::world_bundle`
-/// for the tar file-format I/O built from them).
 pub mod world_bundle;
-/// Server-side world-config seeding: the config-singleton ops-builder plus
-/// the enabled-system defaults/author derivations its callers commit under
-/// `WriteOrigin::ConfigSeed`.
 pub mod world_seed;
 
 pub use asset::Asset;
@@ -82,7 +69,7 @@ pub enum DataError {
     #[error("invalid engine body: {0}")]
     BadEngine(String),
     /// A structurally-checked band failed shape validation: a `system`
-    /// subtree against a declared tier-2 structural schema, or the
+    /// subtree against a declared structural schema, or the
     /// server-owned `base` snapshot against the `MergeBase` shape
     /// (`validation::validate_engine_tree`'s base walk).
     #[error("schema violation at {pointer}: {reason}")]

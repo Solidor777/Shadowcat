@@ -89,6 +89,11 @@ async function tokenCenter(page: Page): Promise<ScenePoint> {
  * level (`makeMeasureTool`'s and `ToolRail`'s own unit tests). The hover is re-nudged on every poll so
  * a preview requested before the player's client held the combat's current rules is refreshed
  * rather than frozen (the preview fires per pointer move, leading-edge).
+ *
+ * INVARIANT: the helper swaps tools immediately after the double-click, so the commit must
+ * complete despite the tool's deactivation (the measure tool's `activeCommit` detaches rather
+ * than aborts). `data-last-move-outcome` is cleared before the commit so the caller's
+ * assertion reads THIS commit's outcome, never the previous move's identical value.
  * @param page The routing player's page.
  * @param from The token's center (the press point), in stage-canvas-local pixels.
  * @param to The route's goal, in stage-canvas-local pixels.
@@ -117,6 +122,7 @@ async function routeExpectingLabel(
     }, { timeout: 15_000 })
     .toContain(labelSubstring);
   await page.mouse.up();
+  await stageHost(page).evaluate((el) => el.removeAttribute("data-last-move-outcome"));
   await dblclickScene(page, to);
   await activateTool(page, "select");
 }

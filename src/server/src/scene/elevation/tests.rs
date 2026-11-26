@@ -1,6 +1,489 @@
 use super::*;
 use crate::data::engine::ElevationBand;
 
+/// A scene (id 10, square grid) plus, per entry in `doors`, one
+/// all-flags-authored wall carrying that door state — `None` = a doorless wall.
+/// Returns the ECS and the scene id.
+fn scene_with_door_walls(doors: &[Option<eng::DoorState>]) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut docs = vec![scene];
+    for door in doors {
+        let mut wall = crate::data::document::tests::world_scoped_doc(
+            crate::test_ids::test_uuid(9),
+            Uuid::new_v4(),
+            "wall",
+        );
+        wall.parent_id = Some(scene_id);
+        wall.engine = Some(
+            serde_json::to_value(eng::WallEngine {
+                seg: eng::Seg {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 10.0,
+                    y2: 0.0,
+                },
+                blocks_sight: Some(true),
+                blocks_light: Some(true),
+                blocks_move: Some(true),
+                blocks_sound: None,
+                elevation: None,
+                door: *door,
+                direction: None,
+                sight_tier: None,
+                proximity: None,
+            })
+            .unwrap(),
+        );
+        docs.push(wall);
+    }
+    (SceneEcs::from_documents(docs, 0), scene_id)
+}
+
+#[test]
+fn sight_wall_entries_excludes_an_open_door() {
+    // One open door, one closed door, one doorless wall — every one with all
+    // authored flags true: the open door drops out, the other two stay.
+    let (ecs, scene) = scene_with_door_walls(&[
+        Some(eng::DoorState::Open),
+        Some(eng::DoorState::Closed),
+        None,
+    ]);
+    assert_eq!(
+        ecs.sight_wall_entries(scene).len(),
+        2,
+        "an open door resolves blocks_sight to false and leaves the sight set"
+    );
+}
+
+#[test]
+fn light_wall_entries_excludes_an_open_door() {
+    let (ecs, scene) = scene_with_door_walls(&[
+        Some(eng::DoorState::Open),
+        Some(eng::DoorState::Locked),
+        None,
+    ]);
+    assert_eq!(
+        ecs.light_wall_entries(scene).len(),
+        2,
+        "an open door resolves blocks_light to false and leaves the light set"
+    );
+}
+
+/// A scene (id 10) with one all-flags wall carrying the given direction/sight tier.
+/// Returns the ECS and the scene id.
+fn scene_with_directed_wall(
+    direction: Option<f64>,
+    sight_tier: Option<eng::WallSightTier>,
+) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut wall = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        Uuid::new_v4(),
+        "wall",
+    );
+    wall.parent_id = Some(scene_id);
+    wall.engine = Some(
+        serde_json::to_value(eng::WallEngine {
+            seg: eng::Seg {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+            },
+            blocks_sight: Some(true),
+            blocks_light: Some(true),
+            blocks_move: Some(true),
+            blocks_sound: None,
+            elevation: None,
+            door: None,
+            direction: direction.map(|blocking_side| eng::WallDirection { blocking_side }),
+            sight_tier,
+            proximity: None,
+        })
+        .unwrap(),
+    );
+    (SceneEcs::from_documents(vec![scene, wall], 0), scene_id)
+}
+
+#[test]
+fn sight_wall_entries_carries_the_one_way_sign_and_limited_tier() {
+    // The sight collector populates BOTH occlusion-metadata fields — the raycast reads
+    // them, so they must survive collection.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.sight_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, Some(1.0));
+    assert!(entries[0].seg.limited);
+}
+
+#[test]
+fn move_wall_entries_carry_the_one_way_sign_but_never_the_limited_tier() {
+    // Movement honors a one-way wall (`Seg::transparent_from` per step) but the partial-
+    // blocking tier is sight-only: `limited` must NOT leak into the routing set.
+    let (ecs, scene) = scene_with_directed_wall(Some(-1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.move_wall_entries(scene, None);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, Some(-1.0));
+    assert!(
+        !entries[0].seg.limited,
+        "a Limited wall still fully blocks movement when blocksMove is set"
+    );
+}
+
+#[test]
+fn light_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
+    // Light occlusion is symmetric and immediate by design: neither field propagates.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.light_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, None);
+    assert!(!entries[0].seg.limited);
+}
+
+/// A scene (id 10) with one wall carrying the given authored sight/sound flags and door
+/// state. Returns the ECS and the scene id.
+fn scene_with_sound_wall(
+    blocks_sight: Option<bool>,
+    blocks_sound: Option<bool>,
+    door: Option<eng::DoorState>,
+) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut wall = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        Uuid::new_v4(),
+        "wall",
+    );
+    wall.parent_id = Some(scene_id);
+    wall.engine = Some(
+        serde_json::to_value(eng::WallEngine {
+            seg: eng::Seg {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+            },
+            blocks_sight,
+            blocks_light: None,
+            blocks_move: None,
+            blocks_sound,
+            elevation: None,
+            door,
+            direction: None,
+            sight_tier: None,
+            proximity: None,
+        })
+        .unwrap(),
+    );
+    (SceneEcs::from_documents(vec![scene, wall], 0), scene_id)
+}
+
+#[test]
+fn sound_wall_entries_inherits_blocks_sight_when_blocks_sound_absent() {
+    // A wall that never authors `blocks_sound` occludes sound exactly as it occludes
+    // sight — the default that keeps every stored wall's sound behavior unchanged.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), None, None);
+    assert_eq!(
+        ecs.sound_wall_entries(scene).len(),
+        1,
+        "absent blocks_sound inherits blocks_sight: true"
+    );
+    let (ecs, scene) = scene_with_sound_wall(Some(false), None, None);
+    assert!(
+        ecs.sound_wall_entries(scene).is_empty(),
+        "absent blocks_sound inherits blocks_sight: false"
+    );
+}
+
+#[test]
+fn sound_wall_entries_honors_explicit_blocks_sound_true_when_blocks_sight_false() {
+    // A window: sound-blocking while sight-transparent — the explicit flag wins.
+    let (ecs, scene) = scene_with_sound_wall(Some(false), Some(true), None);
+    assert_eq!(ecs.sound_wall_entries(scene).len(), 1);
+}
+
+#[test]
+fn sound_wall_entries_honors_explicit_blocks_sound_false_when_blocks_sight_true() {
+    // A heavy curtain: sight-blocking while sound-transparent — the explicit flag wins.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), Some(false), None);
+    assert!(ecs.sound_wall_entries(scene).is_empty());
+}
+
+#[test]
+fn sound_wall_entries_excludes_an_open_door() {
+    // An open door is a hole for sound even with an explicit `blocks_sound: true`;
+    // a closed door keeps the authored (or inherited) flag.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), Some(true), Some(eng::DoorState::Open));
+    assert!(
+        ecs.sound_wall_entries(scene).is_empty(),
+        "the resolver resolves every flag false for an open door"
+    );
+    let (ecs, scene) = scene_with_sound_wall(Some(true), None, Some(eng::DoorState::Closed));
+    assert_eq!(ecs.sound_wall_entries(scene).len(), 1);
+}
+
+#[test]
+fn sound_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
+    // Sound occlusion is symmetric and immediate by design: neither sight-only field
+    // propagates into the sound set.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.sound_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, None);
+    assert!(!entries[0].seg.limited);
+}
+
+/// A scene (id 10, 100-unit square grid) with one all-flags wall carrying a proximity tier of
+/// `within` cells over `senses` and `sound_gain`. Returns the ECS and the scene id.
+fn scene_with_proximity_wall(
+    within: f64,
+    senses: Vec<eng::WallSense>,
+    sound_gain: Option<f64>,
+) -> (SceneEcs, Uuid) {
+    let (mut ecs, scene_id) = scene_with_directed_wall(None, None);
+    let mut wall = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "wall")
+        .map(|e| e.doc.clone())
+        .expect("the fixture carries one wall");
+    let mut body: eng::WallEngine = serde_json::from_value(wall.engine.clone().unwrap()).unwrap();
+    body.proximity = Some(eng::WallProximity {
+        within,
+        senses,
+        sound_gain,
+    });
+    wall.engine = Some(serde_json::to_value(body).unwrap());
+    let scene = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "scene")
+        .map(|e| e.doc.clone())
+        .unwrap();
+    ecs = SceneEcs::from_documents(vec![scene, wall], 0);
+    (ecs, scene_id)
+}
+
+#[test]
+fn each_sense_collector_fills_open_within_only_for_a_sense_the_tier_names() {
+    // Two cells on a 100-unit grid = 200 scene units; the sound gain rides along. A sense
+    // the tier omits keeps the wall ordinary, and movement never reads the tier.
+    let (ecs, scene) = scene_with_proximity_wall(
+        2.0,
+        vec![eng::WallSense::Sight, eng::WallSense::Sound],
+        Some(0.4),
+    );
+    let sight = ecs.sight_wall_entries(scene)[0].seg.open_within;
+    assert_eq!(
+        sight,
+        Some(vision::OpenWithin {
+            distance: 200.0,
+            gain: 0.4
+        })
+    );
+    assert_eq!(ecs.light_wall_entries(scene)[0].seg.open_within, None);
+    assert_eq!(
+        ecs.sound_wall_entries(scene)[0].seg.open_within,
+        Some(vision::OpenWithin {
+            distance: 200.0,
+            gain: 0.4
+        })
+    );
+    assert_eq!(ecs.move_wall_entries(scene, None)[0].seg.open_within, None);
+}
+
+#[test]
+fn a_tier_naming_only_light_opens_only_the_light_collector() {
+    let (ecs, scene) = scene_with_proximity_wall(1.0, vec![eng::WallSense::Light], None);
+    assert_eq!(ecs.sight_wall_entries(scene)[0].seg.open_within, None);
+    assert_eq!(
+        ecs.light_wall_entries(scene)[0].seg.open_within,
+        Some(vision::OpenWithin {
+            distance: 100.0,
+            gain: 1.0
+        })
+    );
+    assert_eq!(ecs.sound_wall_entries(scene)[0].seg.open_within, None);
+}
+
+/// A scene (id 10, 100-unit square grid) with one region over the 2 x 2 cells `[0, 200]²`,
+/// carrying `extra` merged into its engine body (`occludes`, `elevation`, `enabled`, ...).
+/// Returns the ECS and the scene id.
+fn scene_with_occluding_region(extra: serde_json::Value) -> (SceneEcs, Uuid) {
+    let (docs, scene_id) = occluding_region_docs(extra);
+    (SceneEcs::from_documents(docs, 0), scene_id)
+}
+
+/// The scene and region documents `scene_with_occluding_region` hydrates, plus the scene id.
+fn occluding_region_docs(extra: serde_json::Value) -> (Vec<crate::data::document::Document>, Uuid) {
+    let (ecs, scene_id) = scene_with_door_walls(&[]);
+    let scene = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "scene")
+        .map(|e| e.doc.clone())
+        .unwrap();
+    let mut region = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(40),
+        "region",
+    );
+    region.parent_id = Some(scene_id);
+    let mut body = serde_json::json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 200.0, 200.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+    });
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    region.engine = Some(body);
+    (vec![scene, region], scene_id)
+}
+
+/// The unordered rounded endpoint pairs of `entries`' segments.
+fn entry_segments(entries: &[WallEntry]) -> std::collections::BTreeSet<[i64; 4]> {
+    entries
+        .iter()
+        .map(|w| {
+            let (a, b) = (w.seg.a, w.seg.b);
+            let (p, q) = if (a.0, a.1) <= (b.0, b.1) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            [p.0 as i64, p.1 as i64, q.0 as i64, q.1 as i64]
+        })
+        .collect()
+}
+
+#[test]
+fn a_region_occludes_only_the_senses_its_flags_name() {
+    let (ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": false, "sound": true } }),
+    );
+    let sight = ecs.sight_wall_entries(scene);
+    assert_eq!(sight.len(), 4, "the 2 x 2 block merges to its four sides");
+    assert!(ecs.light_wall_entries(scene).is_empty());
+    assert_eq!(
+        entry_segments(&sight),
+        entry_segments(&ecs.sound_wall_entries(scene)),
+        "sight and sound read one outline for the same region"
+    );
+    for w in &sight {
+        assert_eq!(w.seg.one_way, None);
+        assert!(!w.seg.limited);
+        assert_eq!(w.seg.open_within, None);
+    }
+}
+
+#[test]
+fn a_region_without_occludes_or_disabled_adds_no_walls() {
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({}));
+    assert!(ecs.sight_wall_entries(scene).is_empty());
+    assert!(ecs.light_wall_entries(scene).is_empty());
+    assert!(ecs.sound_wall_entries(scene).is_empty());
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({
+        "enabled": false,
+        "occludes": { "sight": true, "light": true, "sound": true },
+    }));
+    assert!(ecs.sight_wall_entries(scene).is_empty());
+}
+
+#[test]
+fn a_region_occluder_never_reaches_the_movement_collector() {
+    let (ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": true, "sound": true } }),
+    );
+    assert!(!ecs.sight_wall_entries(scene).is_empty());
+    assert!(ecs.move_wall_entries(scene, None).is_empty());
+}
+
+#[test]
+fn a_region_occluder_honours_its_elevation_band() {
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({
+        "occludes": { "sight": true, "light": false, "sound": false },
+        "elevation": { "bottom": 10.0, "top": 20.0 },
+    }));
+    let entries = ecs.sight_wall_entries(scene);
+    assert_eq!(entries.len(), 4);
+    assert!(
+        walls_at_elevation(&entries, 0.0).is_empty(),
+        "a source on another level is not occluded"
+    );
+    assert_eq!(walls_at_elevation(&entries, 15.0).len(), 4);
+}
+
+#[test]
+fn a_hidden_region_still_occludes_for_every_viewer() {
+    // The collector reads the permission-blind view: the region's `gm_only` engine band does
+    // not remove its walls.
+    let (mut docs, scene) = occluding_region_docs(
+        serde_json::json!({ "occludes": { "sight": true, "light": false, "sound": false } }),
+    );
+    docs[1]
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+    let ecs = SceneEcs::from_documents(docs, 0);
+    assert_eq!(ecs.sight_wall_entries(scene).len(), 4);
+}
+
+#[test]
+fn the_outline_memo_is_reused_and_follows_a_shape_edit() {
+    let (mut ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": true, "sound": true } }),
+    );
+    let first = entry_segments(&ecs.sight_wall_entries(scene));
+    assert_eq!(ecs.occluder_cache.lock().unwrap().len(), 1);
+    assert_eq!(entry_segments(&ecs.light_wall_entries(scene)), first);
+    assert_eq!(
+        ecs.occluder_cache.lock().unwrap().len(),
+        1,
+        "every sense reads the one memo entry"
+    );
+    ecs.apply_op(&crate::data::command::Operation::Update {
+        doc_id: crate::test_ids::test_uuid(40),
+        changes: vec![crate::data::command::FieldChange {
+            remove: false,
+            path: "/engine/shape/points".into(),
+            old: serde_json::json!(0),
+            new: serde_json::json!([0.0, 0.0, 400.0, 200.0]),
+        }],
+    });
+    let edited = entry_segments(&ecs.sight_wall_entries(scene));
+    assert_ne!(
+        edited, first,
+        "a shape edit must not serve the stale outline"
+    );
+    assert!(edited.contains(&[0, 0, 400, 0]));
+}
+
 #[test]
 fn elevation_or_ground_defaults_and_clamps() {
     assert_eq!(elevation_or_ground(None), GROUND);
@@ -181,4 +664,113 @@ mod levels_conformance {
             );
         }
     }
+}
+
+// --- band_overlaps_level: the band-versus-level-span membership rule ---
+
+/// Two-level scene fixture: `ground` [0, 10) and `upper` [10, 20).
+fn two_levels() -> Vec<eng::SceneLevel> {
+    vec![
+        eng::SceneLevel {
+            id: "ground".to_string(),
+            name: "Ground".to_string(),
+            bottom: 0.0,
+            top: 10.0,
+            background: None,
+        },
+        eng::SceneLevel {
+            id: "upper".to_string(),
+            name: "Upper".to_string(),
+            bottom: 10.0,
+            top: 20.0,
+            background: None,
+        },
+    ]
+}
+
+#[test]
+fn band_overlaps_level_span_membership() {
+    let levels = two_levels();
+    // A band fully inside a level's span applies to that level only.
+    assert!(band_overlaps_level(
+        Some(&band(Some(2.0), Some(8.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(2.0), Some(8.0))),
+        &levels,
+        "upper"
+    ));
+    // A band straddling the level boundary applies to BOTH levels (a darkness globe hovering
+    // over the boundary shades both floors' fields).
+    assert!(band_overlaps_level(
+        Some(&band(Some(5.0), Some(12.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(5.0), Some(12.0))),
+        &levels,
+        "upper"
+    ));
+    // Boundary conventions: the band's ends are inclusive, the level's top exclusive — a band
+    // whose top lands exactly on a level's bottom shares that one elevation with it, while a
+    // band whose bottom lands exactly on a level's top shares nothing.
+    assert!(band_overlaps_level(
+        Some(&band(Some(0.0), Some(10.0))),
+        &levels,
+        "upper"
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(10.0), Some(20.0))),
+        &levels,
+        "ground"
+    ));
+    // An absent band end is unbounded; an absent band applies to every level.
+    assert!(band_overlaps_level(None, &levels, "ground"));
+    assert!(band_overlaps_level(
+        Some(&band(None, Some(5.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(15.0), None)),
+        &levels,
+        "upper"
+    ));
+}
+
+#[test]
+fn band_overlaps_level_fails_closed_and_grounds_a_level_less_scene() {
+    let levels = two_levels();
+    // A malformed interval or a non-finite endpoint applies everywhere (the same direction
+    // `band_contains` takes).
+    assert!(band_overlaps_level(
+        Some(&band(Some(10.0), Some(0.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(f64::NAN), Some(1.0))),
+        &levels,
+        "upper"
+    ));
+    // A level-less scene (or an undeclared level id) falls back to the grounded point test —
+    // the same answer a mover at ground reads through `band_contains`.
+    assert!(band_overlaps_level(
+        Some(&band(Some(-1.0), Some(1.0))),
+        &[],
+        ""
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(5.0), Some(9.0))),
+        &[],
+        ""
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(5.0), Some(9.0))),
+        &levels,
+        "attic"
+    ));
 }

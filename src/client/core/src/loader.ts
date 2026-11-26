@@ -114,11 +114,15 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   OptimisticClient,
  *   ContributionRegistry,
  *   I18n,
+ *   KeybindingsController,
+ *   UserModuleSettings,
  *   silentLogger,
  * } from "@shadowcat/core";
  *
+ * const hooks = new HookBus(silentLogger);
  * const registry = new ModuleRegistry({
- *   hooks: new HookBus(silentLogger),
+ *   keybindings: new KeybindingsController(hooks),
+ *   hooks,
  *   services: new ServiceRegistry(),
  *   middleware: new MiddlewareChain(),
  *   store: new DocumentStore(),
@@ -126,6 +130,8 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   logger: silentLogger,
  *   i18n: new I18n("en", { en: {} }),
  *   contributions: new ContributionRegistry(),
+ *   dispatchIntent: () => true,
+ *   userSettings: new UserModuleSettings({}),
  * });
  * await loadModules({
  *   entries: [],

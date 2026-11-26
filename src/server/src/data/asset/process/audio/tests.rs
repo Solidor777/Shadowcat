@@ -8,7 +8,7 @@ fn synth_wav_440hz(secs: f64) -> Vec<u8> {
 
 /// `synth_wav_440hz` at an explicit sample rate (a 48 kHz source skips the resampler, which
 /// makes the end-trim granule's expected value exact rather than approximate).
-fn synth_wav_440hz_at(sample_rate: u32, secs: f64) -> Vec<u8> {
+pub(crate) fn synth_wav_440hz_at(sample_rate: u32, secs: f64) -> Vec<u8> {
     let n = (sample_rate as f64 * secs).round() as u32;
     let mut pcm = Vec::with_capacity(n as usize * 2);
     for i in 0..n {

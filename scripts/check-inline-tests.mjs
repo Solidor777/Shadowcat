@@ -11,23 +11,19 @@
 //
 // Telling code from comment is shared with the other gates through comment-span.mjs so an
 // attribute quoted in a doc comment is prose, not a match.
+//
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files,
+// minus files deleted in the working tree), so a new Rust file is checked before `git add`.
 
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { norm, under } from "./lib/gate-corpus.mjs";
+import { RUST_ROOTS, isRustSource, norm, repoFiles } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
 
 const ATTR = /^\s*#\[cfg\(test\)\]\s*$/;
 const ANY_ATTR = /^\s*#\[/;
 const MOD_BODY = /^\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
-
-/** Whether `path` is a Rust source file the gate covers. */
-export function isRustSource(path) {
-  const p = norm(path);
-  return under(p, "src") && p.endsWith(".rs");
-}
 
 /** Every `#[cfg(test)]` attribute followed (past blanks, comments, other attributes) by a braced `mod`. */
 export function scanInlineTests(text) {
@@ -52,9 +48,13 @@ export function scanInlineTests(text) {
 }
 
 function main() {
-  const files = execFileSync("git", ["ls-files", "-z", "--", "src"], { encoding: "utf8" })
-    .split("\0")
-    .filter(isRustSource);
+  let files;
+  try {
+    files = repoFiles({ roots: RUST_ROOTS, label: "lint:inline-tests" }).filter(isRustSource);
+  } catch (e) {
+    console.error(`lint:inline-tests: ${e.message}`);
+    process.exit(2);
+  }
   let errors = 0;
   for (const path of files) {
     for (const v of scanInlineTests(readFileSync(path, "utf8"))) {

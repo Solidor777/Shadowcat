@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import type {
   AudioBufferLike,
   AudioContextLike,
+  BiquadFilterNodeLike,
   BufferSourceNodeLike,
   GainNodeLike,
   MediaElementLike,
@@ -9,6 +10,7 @@ import type {
   PannerNodeLike,
   WasmOpusDecoderLike,
 } from "../context";
+import { PlaybackGate } from "../playback-gate";
 
 /** A no-op `GainNodeLike` (unit `setTargetAtTime` writes through to `value` so a test can
  * read the last target back).
@@ -53,6 +55,29 @@ function stubPanner(): PannerNodeLike {
   };
 }
 
+/** A `BiquadFilterNodeLike` whose `connect`/`disconnect` are spies and whose cutoff param
+ * writes through like `stubGain`'s.
+ * @returns The stub node.
+ * @example
+ * ```ts
+ * import { stubAudioContext } from "../__fixtures__/stubContext";
+ * stubAudioContext().createBiquadFilter().type; // "lowpass"
+ * ```
+ */
+function stubBiquad(): BiquadFilterNodeLike {
+  return {
+    type: "lowpass",
+    frequency: {
+      value: 350,
+      setTargetAtTime(target: number): void {
+        this.value = target;
+      },
+    },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+}
+
 /** A minimal `AudioBufferLike` for the stub context: carries the duration/sampleRate the
  * buffered-loop math reads; `copyToChannel` is a no-op (nothing renders in Node).
  * @param durationSecs The buffer's duration, seconds.
@@ -82,12 +107,25 @@ export function stubBuffer(durationSecs: number, sampleRate = 48_000, channels =
 
 /** `stubAudioContext`'s return shape: the stub context plus its captured nodes. */
 export interface StubAudioContext extends AudioContextLike {
+  /** How the next `resume()` behaves: `"resolve"` runs the context, `"reject"` refuses (a
+   * browser demanding a gesture), `"pend"` never settles (WebKit before a gesture). */
+  resumeMode: "resolve" | "reject" | "pend";
+  /** How many times `resume()` was called. */
+  resumeCalls: number;
+  /** Change the running state as the browser would, then fire `onstatechange`.
+   * @param next The new state. */
+  setState(next: "suspended" | "running" | "closed" | "interrupted"): void;
+  /** The stub's audio clock, seconds — writable so a test can advance it with the server clock
+   * or freeze it to model a suspended context. */
+  currentTime: number;
   /** Every buffer source the stub created, in creation order (spy targets). */
   sources: BufferSourceNodeLike[];
   /** Every gain node the stub created, in creation order (spy targets). */
   gains: GainNodeLike[];
   /** Every stereo panner the stub created, in creation order (spy targets). */
   panners: PannerNodeLike[];
+  /** Every biquad filter the stub created, in creation order (spy targets). */
+  filters: BiquadFilterNodeLike[];
   /** Every media-element source the stub created, in creation order (spy targets). */
   mediaSources: MediaElementSourceNodeLike[];
 }
@@ -105,17 +143,26 @@ export interface StubAudioContext extends AudioContextLike {
  */
 export function stubAudioContext(): StubAudioContext {
   /** The stub's current running state. */
-  let state: "suspended" | "running" | "closed" = "suspended";
+  let state: "suspended" | "running" | "closed" | "interrupted" = "suspended";
   const sources: BufferSourceNodeLike[] = [];
   const gains: GainNodeLike[] = [];
   const panners: PannerNodeLike[] = [];
+  const filters: BiquadFilterNodeLike[] = [];
   const mediaSources: MediaElementSourceNodeLike[] = [];
-  return {
+  const stub: StubAudioContext = {
     sources,
     gains,
     panners,
+    filters,
     mediaSources,
-    /** The stub's running state (flips to `"running"` on `resume`).
+    resumeMode: "resolve",
+    resumeCalls: 0,
+    setState(next): void {
+      state = next;
+      stub.onstatechange?.(new Event("statechange"));
+    },
+    onstatechange: null,
+    /** The stub's running state (flips to `"running"` on a resolving `resume`).
      * @returns The state.
      * @example
      * ```
@@ -135,6 +182,11 @@ export function stubAudioContext(): StubAudioContext {
     createStereoPanner: () => {
       const node = stubPanner();
       panners.push(node);
+      return node;
+    },
+    createBiquadFilter: () => {
+      const node = stubBiquad();
+      filters.push(node);
       return node;
     },
     createBufferSource: (): BufferSourceNodeLike => {
@@ -165,9 +217,23 @@ export function stubAudioContext(): StubAudioContext {
     },
     decodeAudioData: async () => stubBuffer(1),
     resume: async () => {
-      state = "running";
+      stub.resumeCalls++;
+      if (stub.resumeMode === "pend") return new Promise<void>(() => {});
+      if (stub.resumeMode === "reject") {
+        const error = new Error("resume() requires a user gesture");
+        error.name = "NotAllowedError";
+        throw error;
+      }
+      stub.setState("running");
     },
   };
+  return stub;
+}
+
+/** `stubMediaElement`'s return shape: the element with a writable `paused` flag. */
+export interface StubMediaElement extends MediaElementLike {
+  /** Whether the stub is paused; `play()` clears it and `pause()` sets it. */
+  paused: boolean;
 }
 
 /** A minimal `MediaElementLike` stub for `TrackPlayer` tests.
@@ -178,19 +244,37 @@ export function stubAudioContext(): StubAudioContext {
  * stubMediaElement().canPlayType("audio/ogg"); // "probably"
  * ```
  */
-export function stubMediaElement(): MediaElementLike {
-  return {
+export function stubMediaElement(): StubMediaElement {
+  const el: StubMediaElement = {
     src: "",
     currentTime: 0,
     playbackRate: 1,
     volume: 1,
     loop: false,
-    play: async () => {},
-    pause: () => {},
+    paused: true,
+    play: async () => {
+      el.paused = false;
+    },
+    pause: () => {
+      el.paused = true;
+    },
     load: () => {},
     onended: null,
     canPlayType: () => "probably",
   };
+  return el;
+}
+
+/** A `PlaybackGate` that reports nothing, for tests of a player in isolation.
+ * @returns The gate.
+ * @example
+ * ```ts
+ * import { quietGate } from "../__fixtures__/stubContext";
+ * quietGate().release();
+ * ```
+ */
+export function quietGate(): PlaybackGate {
+  return new PlaybackGate(() => {});
 }
 
 /** A minimal `WasmOpusDecoderLike` stub: reports one second of stereo PCM at 48 kHz.

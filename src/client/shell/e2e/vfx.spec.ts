@@ -1,5 +1,6 @@
 import { test, expect, login, createAccount, newE2EContext, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
+import { latchAttributeMax } from "./attribute-latch";
 import { clickScene } from "./stage-gestures";
 
 // A 1×1 PNG used as token art (same fixture `hex-movement.spec.ts`/`assets.spec.ts` use).
@@ -121,9 +122,14 @@ test("emitter playback and the FX scene tool are visible to both GM and player; 
     await player.getByTestId("pick-confirm").click();
     await expect(player.getByTestId("fx-preview")).toBeVisible({ timeout: 10_000 });
     await player.getByTestId("scene-tool-vfx").click();
+    // The one-shot is counted only while it plays (a 4-frame, 100 ms/frame asset lives ~400 ms),
+    // which a polled `toHaveAttribute("2")` can straddle between two polls; latch the peak on both
+    // stages before firing instead.
+    const playerPeak = await latchAttributeMax(stageHost(player), "data-vfx-count");
+    const gmPeak = await latchAttributeMax(stageHost(gm), "data-vfx-count");
     await clickScene(player, { x: 600, y: 300 });
-    await expect(stageHost(player)).toHaveAttribute("data-vfx-count", "2", { timeout: 15_000 });
-    await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "2", { timeout: 15_000 });
+    await expect.poll(() => playerPeak.max(), { timeout: 15_000 }).toBe(2);
+    await expect.poll(() => gmPeak.max(), { timeout: 15_000 }).toBe(2);
 
     // The one-shot is transient BY DESIGN (removed when its animation completes): let it
     // run out on both stages before the toggle flow, so every later assertion pins a STABLE

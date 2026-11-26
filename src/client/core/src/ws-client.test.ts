@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { WsClient } from "./ws-client";
-import type { MoveStream } from "./ws-client";
+import { WsClient, NotConnectedError, RequestTimeoutError, PathfindError, SessionPausedError } from "./ws-client";
+import type { MoveStream, WsClientHandlers } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
 import type { ClientMsg, ServerMsg, WireOperation } from "./wire";
 import type { Connect } from "./transport";
+import { randomUuid } from "./uuid";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 const noop = { onCommand: () => {} };
@@ -61,6 +62,7 @@ function welcomeFrame(): ServerMsg {
     capability_requirements: [],
     contract_declarations: [],
     schema_declarations: [],
+    online_users: [],
     role_capabilities: { all: [], by_type: {} },
   };
 }
@@ -895,9 +897,47 @@ describe("WsClient", () => {
         type: "path_error",
         request_id: sentFrame2.request_id,
         message: "unreachable",
+        reason: "unreachable",
       }),
     );
     await expect(p2).rejects.toThrow("unreachable");
+    await expect(p2).rejects.toMatchObject({ name: "PathfindError", reason: "unreachable" });
+  });
+
+  it("pathfind rejects with a typed PathfindError carrying each wire reason", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    for (const reason of ["unreachable", "invalid", "exceeded"] as const) {
+      const p = client.pathfind("scene-1", [0, 0], [[1, 1]], 0.5);
+      const frame = JSON.parse(sent.filter((x) => JSON.parse(x).type === "pathfind").at(-1)!);
+      onMessage(JSON.stringify({ type: "path_error", request_id: frame.request_id, message: "text", reason }));
+      const err = await p.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PathfindError);
+      expect((err as PathfindError).reason).toBe(reason);
+    }
+  });
+
+  it("pathfind rejects with RequestTimeoutError when no reply arrives, and NotConnectedError without a transport", async () => {
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const err = await client.pathfind("scene-1", [0, 0], [[1, 1]], 0.5, undefined, { timeoutMs: 1 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RequestTimeoutError);
+    expect(err).not.toBeInstanceOf(NotConnectedError);
+    const idle = new WsClient({ world: "w1", connect: () => Promise.reject(new Error("no")), handlers: noop });
+    await expect(idle.pathfind("scene-1", [0, 0], [[1, 1]], 0.5)).rejects.toBeInstanceOf(NotConnectedError);
   });
 
   it("pathfind sends the token id when given, and omits it when absent", async () => {
@@ -952,8 +992,8 @@ describe("WsClient", () => {
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
         mover_light: [
-          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
         ],
         cost: 2,
         truncated: true,
@@ -967,8 +1007,8 @@ describe("WsClient", () => {
     expect(result.truncated).toBe(true);
     // The mapper must copy the light timeline field for field, camelCased.
     expect(result.moverLight).toEqual([
-      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
     ]);
     expect(result.startServerMs).toBe(1000);
     expect(result.durationMs).toBe(500);
@@ -1227,6 +1267,35 @@ describe("WsClient", () => {
     await expect(p).rejects.toThrow("combat rejected");
   });
 
+  it("a combat_error and a move_error with the paused reason reject with SessionPausedError; others stay plain", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const combat = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    onMessage(JSON.stringify({ type: "combat_error", request_id: "r1", message: "the game is paused", reason: "paused" }));
+    await expect(combat).rejects.toBeInstanceOf(SessionPausedError);
+
+    const move = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    onMessage(JSON.stringify({ type: "move_error", request_id: frame.request_id, message: "the game is paused", reason: "paused" }));
+    await expect(move).rejects.toBeInstanceOf(SessionPausedError);
+
+    const plain = client.combat({ type: "combat_advance", request_id: "r2", combat_id: "c1" });
+    onMessage(JSON.stringify({ type: "combat_error", request_id: "r2", message: "combat rejected", reason: null }));
+    const err = await plain.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SessionPausedError);
+  });
+
   it("combat() times out and clears its entry when neither combat_result nor combat_error arrives", async () => {
     const client = new WsClient({
       world: "w1",
@@ -1315,6 +1384,21 @@ describe("WsClient", () => {
     });
     expect(typeof frame.request_id).toBe("string");
     expect(frame.request_id.length).toBeGreaterThan(0);
+    expect(frame).not.toHaveProperty("system");
+  });
+
+  it("sendChatMessage forwards an opaque system payload verbatim when given", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.sendChatMessage({ channel: "ic", content: "hi", system: { card: { hits: [1, 2] } } }).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "send_message")!);
+    expect(frame.system).toEqual({ card: { hits: [1, 2] } });
   });
 
   it("sendChatMessage forwards actor_owner and audience when given", async () => {
@@ -1389,6 +1473,26 @@ describe("WsClient", () => {
       message_id: "msg-1",
       roll_id: "roll-1",
       ops: [{ kind: "remove_dice", ids: [2] }],
+    });
+    expect(typeof frame.request_id).toBe("string");
+    expect(frame.request_id.length).toBeGreaterThan(0);
+  });
+
+  it("reviseAudience sends a revise_audience frame with a request_id", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.reviseAudience("msg-1", { kind: "whisper", recipients: ["u2"] }).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "revise_audience")!);
+    expect(frame).toMatchObject({
+      type: "revise_audience",
+      message_id: "msg-1",
+      audience: { kind: "whisper", recipients: ["u2"] },
     });
     expect(typeof frame.request_id).toBe("string");
     expect(frame.request_id.length).toBeGreaterThan(0);
@@ -1488,6 +1592,121 @@ describe("WsClient", () => {
       }),
     );
     await expect(p).rejects.toThrow(/too quickly/i);
+  });
+
+  it("toggleDoor sends a toggle_door frame (not an intent) and rejects on a correlated door_toggle_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.toggleDoor("s1", "wall-1", "open");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "toggle_door")!);
+    expect(frame).toMatchObject({
+      type: "toggle_door",
+      scene_id: "s1",
+      wall_id: "wall-1",
+      to: "open",
+    });
+    expect(typeof frame.request_id).toBe("string");
+    // No document-write intent is involved — the door flip is a dedicated correlated request,
+    // never an Operation::Update.
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    onMessage(
+      JSON.stringify({
+        type: "door_toggle_error",
+        request_id: frame.request_id,
+        message: "door rejected",
+      }),
+    );
+    await expect(p).rejects.toThrow(/door rejected/);
+  });
+
+  it("a door_toggle_error for an unknown request id settles nothing", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.toggleDoor("s1", "wall-1", "closed");
+    // An uncorrelated error frame must not reject the in-flight toggle.
+    onMessage(
+      JSON.stringify({
+        type: "door_toggle_error",
+        request_id: randomUuid(),
+        message: "door rejected",
+      }),
+    );
+    let settled: string | null = null;
+    void p.then(
+      () => (settled = "resolved"),
+      () => (settled = "rejected"),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBeNull();
+    // Cleanup: stop rejects the still-pending toggle so the test leaves nothing dangling.
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
+  });
+
+  it("placeEffect sends a place_effect frame carrying only the area and rejects on a correlated place_effect_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }, "tok-1");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "place_effect")!);
+    expect(frame).toMatchObject({
+      type: "place_effect",
+      module: "spells",
+      placement: "fireball",
+      scene_id: "s1",
+      shape: { kind: "circle", points: [0, 0, 3] },
+      caster: "tok-1",
+    });
+    // The frame has no field through which a client could choose what the placement does.
+    expect(Object.keys(frame).sort()).toEqual(
+      ["caster", "module", "placement", "request_id", "scene_id", "shape", "type"].sort(),
+    );
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    onMessage(
+      JSON.stringify({ type: "place_effect_error", request_id: frame.request_id, message: "placement rejected" }),
+    );
+    await expect(p).rejects.toThrow(/placement rejected/);
+  });
+
+  it("placeEffect omits the caster field when none is given", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.placeEffect("spells", "zone", "s1", { kind: "circle", points: [0, 0, 1] });
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "place_effect")!);
+    expect("caster" in frame).toBe(false);
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
   });
 
   describe("Hello / seedWatermark", () => {
@@ -1655,6 +1874,152 @@ describe("WsClient", () => {
     client.audioListenAs(null);
     expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: null });
   });
+
+  it("resetExploredFog sends the fire-and-forget reset_explored_fog frame, scoped and unscoped", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.resetExploredFog("scene-1");
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "reset_explored_fog",
+      scene: "scene-1",
+      user: undefined,
+      level: undefined,
+    });
+    client.resetExploredFog("scene-1", { user: "u1", level: "l1" });
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "reset_explored_fog",
+      scene: "scene-1",
+      user: "u1",
+      level: "l1",
+    });
+  });
+
+  it("an explored_fog_reset server frame invokes onExploredFogReset with every field mapped", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onExploredFogReset: (m) => received.push(m) },
+    });
+    await client.start();
+    onMessage(
+      JSON.stringify({ type: "explored_fog_reset", scene: "scene-1", user: "u1", level: "l1" }),
+    );
+    expect(received).toEqual([{ scene: "scene-1", user: "u1", level: "l1" }]);
+  });
+
+  it("a modules_changed server frame invokes onModulesChanged once", async () => {
+    let onMessage: (d: string) => void = () => {};
+    let calls = 0;
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onModulesChanged: () => (calls += 1) },
+    });
+    await client.start();
+    onMessage(JSON.stringify({ type: "modules_changed" }));
+    expect(calls).toBe(1);
+  });
+
+  it("a presence server frame invokes onPresence with the user and online flag", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: Array<[string, boolean]> = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onPresence: (user, online) => received.push([user, online]) },
+    });
+    await client.start();
+    onMessage(JSON.stringify({ type: "presence", user: "u1", online: true }));
+    onMessage(JSON.stringify({ type: "presence", user: "u1", online: false }));
+    expect(received).toEqual([
+      ["u1", true],
+      ["u1", false],
+    ]);
+  });
+
+  it("a member_profile server frame invokes onMemberProfile with camelCase fields", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onMemberProfile: (p) => received.push(p) },
+    });
+    await client.start();
+    onMessage(
+      JSON.stringify({
+        type: "member_profile",
+        user: "u1",
+        username: "Zara",
+        colour: "#336699",
+        pronouns: null,
+        has_avatar: true,
+      }),
+    );
+    expect(received).toEqual([
+      { user: "u1", username: "Zara", colour: "#336699", pronouns: null, hasAvatar: true },
+    ]);
+  });
+});
+
+describe("WsClient present_note frames", () => {
+  it("a present_note server frame invokes onPresentNote with camelCase fields", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onPresentNote: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(JSON.stringify({ type: "present_note", note_id: "n1", presented_by: "gm-1" }));
+    await flush();
+    expect(received).toEqual([{ noteId: "n1", presentedBy: "gm-1" }]);
+    client.stop();
+  });
+
+  it("presentNote sends a present_note frame and a chat_error rejects it with the reason", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.presentNote("n1");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "present_note")!);
+    expect(frame).toMatchObject({ type: "present_note", note_id: "n1" });
+    expect(typeof frame.request_id).toBe("string");
+    onMessage(JSON.stringify({ type: "chat_error", request_id: frame.request_id, message: "Share this note with players before presenting it." }));
+    await expect(p).rejects.toThrow(/Share this note/);
+  });
 });
 
 describe("WsClient VFX frames", () => {
@@ -1710,5 +2075,226 @@ describe("WsClient VFX frames", () => {
       scale: 2, rotation: 45, duration_ms: 500, sound: "snd1", elevation: 5,
     });
     client.stop();
+  });
+});
+
+describe("WsClient scrolling-text frames", () => {
+  it("a scrolling_text server frame invokes onScrollingText with every field mapped (incl. gm_only → gmOnly)", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onScrollingText: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(
+      JSON.stringify({ type: "scrolling_text", scene: "s1", token: "t1", text: "You feel a chill.", gm_only: true }),
+    );
+    await flush();
+    expect(received).toEqual([{ scene: "s1", token: "t1", text: "You feel a chill.", gmOnly: true }]);
+    client.stop();
+  });
+});
+
+describe("WsClient portal frames", () => {
+  /** Start a client over a recording transport. */
+  async function startPortalClient(handlers: Partial<WsClientHandlers> = {}): Promise<{
+    /** The client under test. */
+    client: WsClient;
+    /** Every raw frame the client sent. */
+    sent: string[];
+    /** Feeds one raw server frame to the client. */
+    deliver: (frame: object) => void;
+  }> {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: { onCommand: () => {}, ...handlers },
+    });
+    await client.start();
+    await flush();
+    return { client, sent, deliver: (frame) => onMessage(JSON.stringify(frame)) };
+  }
+
+  it("a portal_offer frame invokes onPortalOffer with every field mapped (snake_case to camelCase)", async () => {
+    const received: unknown[] = [];
+    const { client, deliver } = await startPortalClient({ onPortalOffer: (m) => received.push(m) });
+    deliver({
+      type: "portal_offer",
+      offer_id: "o1",
+      scene: "s1",
+      token: "t1",
+      prompt: "Where to?",
+      options: [{ index: 0, label: "The Cellar", destination_name: null, available: true }],
+      gm_only: true,
+      owner: "u1",
+    });
+    await flush();
+    expect(received).toEqual([
+      {
+        offerId: "o1",
+        scene: "s1",
+        token: "t1",
+        prompt: "Where to?",
+        options: [{ index: 0, label: "The Cellar", destination_name: null, available: true }],
+        gmOnly: true,
+        owner: "u1",
+      },
+    ]);
+    client.stop();
+  });
+
+  it("choosePortal sends choose_portal with the option index and decline sends a null choice", async () => {
+    const { client, sent } = await startPortalClient();
+    const accept = client.choosePortal("o1", 2);
+    const decline = client.choosePortal("o2", null);
+    const frames = sent.map((s) => JSON.parse(s)).filter((f) => f.type === "choose_portal");
+    expect(frames[0]).toMatchObject({ type: "choose_portal", offer_id: "o1", choice: 2 });
+    expect(frames[1]).toMatchObject({ type: "choose_portal", offer_id: "o2", choice: null });
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    client.stop();
+    await expect(accept).rejects.toThrow();
+    await expect(decline).rejects.toThrow();
+  });
+
+  it("a correlated portal_choice_error rejects the request with the server's text", async () => {
+    const { client, sent, deliver } = await startPortalClient();
+    const p = client.choosePortal("o1", 0);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "choose_portal")!);
+    deliver({ type: "portal_choice_error", request_id: frame.request_id, message: "portal rejected" });
+    await expect(p).rejects.toThrow(/portal rejected/);
+    client.stop();
+  });
+
+  it("a portal_choice_error with reason paused rejects with SessionPausedError", async () => {
+    const { client, sent, deliver } = await startPortalClient();
+    const p = client.choosePortal("o1", 0);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "choose_portal")!);
+    deliver({ type: "portal_choice_error", request_id: frame.request_id, message: "paused", reason: "paused" });
+    await expect(p).rejects.toBeInstanceOf(SessionPausedError);
+    client.stop();
+  });
+
+  it("a portal_choice_error for an unknown request id settles nothing", async () => {
+    const { client, deliver } = await startPortalClient();
+    const p = client.openPortal("t1");
+    deliver({ type: "portal_choice_error", request_id: randomUuid(), message: "portal rejected" });
+    let settled: string | null = null;
+    void p.then(
+      () => (settled = "resolved"),
+      () => (settled = "rejected"),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBeNull();
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
+  });
+
+  it("openPortal sends open_portal naming the token", async () => {
+    const { client, sent } = await startPortalClient();
+    const p = client.openPortal("t9");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "open_portal")!);
+    expect(frame).toMatchObject({ type: "open_portal", token: "t9" });
+    expect(typeof frame.request_id).toBe("string");
+    client.stop();
+    await expect(p).rejects.toThrow();
+  });
+
+  it("door, portal and placement requests reject with NotConnectedError when no transport is open", async () => {
+    const idle = new WsClient({ world: "w1", connect: () => Promise.reject(new Error("no")), handlers: noop });
+    await expect(idle.toggleDoor("s1", "wall-1", "open")).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(idle.choosePortal("o1", 0)).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(idle.openPortal("t1")).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(
+      idle.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }),
+    ).rejects.toBeInstanceOf(NotConnectedError);
+  });
+});
+
+describe("WsClient shared-ruler frames", () => {
+  it("a ruler server frame invokes onRuler with every field mapped", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onRuler: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(
+      JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2], [3, 4]], active: true, origin: "o1" }),
+    );
+    onMessage(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [], active: false, origin: "o2" }));
+    await flush();
+    expect(received).toEqual([
+      { from: "u1", scene: "s1", points: [[1, 2], [3, 4]], active: true, origin: "o1" },
+      { from: "u1", scene: "s1", points: [], active: false, origin: "o2" },
+    ]);
+    client.stop();
+  });
+
+  it("sendRulerUpdate stamps this client's own origin token, distinct per client instance", async () => {
+    const sentA: Array<Record<string, unknown>> = [];
+    const sentB: Array<Record<string, unknown>> = [];
+    const make = (sink: Array<Record<string, unknown>>) =>
+      new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d: string) => sink.push(JSON.parse(d)), close: () => {} }),
+        handlers: { onCommand: () => {} },
+      });
+    const a = make(sentA);
+    const b = make(sentB);
+    await a.start();
+    await b.start();
+    await flush();
+    a.sendRulerUpdate("s1", [[1, 2]], true);
+    a.sendRulerUpdate("s1", [], false);
+    b.sendRulerUpdate("s1", [[3, 4]], true);
+    const rulersA = sentA.filter((m) => m.type === "ruler_update");
+    const rulersB = sentB.filter((m) => m.type === "ruler_update");
+    expect(rulersA.map((m) => m.origin)).toEqual([a.rulerOrigin, a.rulerOrigin]);
+    expect(rulersA[0]).toEqual({ type: "ruler_update", scene: "s1", points: [[1, 2]], active: true, origin: a.rulerOrigin });
+    expect(rulersB[0].origin).toBe(b.rulerOrigin);
+    expect(a.rulerOrigin).not.toBe(b.rulerOrigin);
+    expect(a.rulerOrigin.length).toBeGreaterThan(0);
+    expect(a.rulerOrigin.length).toBeLessThanOrEqual(64);
+    a.stop();
+    b.stop();
+  });
+
+  it("constructs and sends a ruler frame where the native UUID generator is absent (plain-HTTP LAN origin)", async () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+    try {
+      const sent: Array<Record<string, unknown>> = [];
+      const client = new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d: string) => sent.push(JSON.parse(d)), close: () => {} }),
+        handlers: { onCommand: () => {} },
+      });
+      await client.start();
+      await flush();
+      client.sendRulerUpdate("s1", [[1, 2]], true);
+      const frame = sent.find((m) => m.type === "ruler_update")!;
+      expect(frame.origin).toBe(client.rulerOrigin);
+      expect(client.rulerOrigin).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      client.stop();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

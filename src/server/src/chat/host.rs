@@ -1,8 +1,8 @@
-//! The roll host for a message's actor binding: which document a roll's
-//! references resolve against when the send carries an `ActorOwnerRef`. The
-//! precedence rule — a token's embedded actor copy beats its linked actor —
-//! is the one `combat::eval::formula_host` declares for combatants; the two
-//! share the `embedded_actor_copy` extraction so the token→copy step cannot
+//! This module picks the document a roll's references resolve against for an actor binding.
+//!
+//! It applies when the send carries an `ActorOwnerRef`. The precedence rule, that a token's
+//! embedded actor copy beats its linked actor, is the one `combat::eval::formula_host` declares for
+//! combatants. The two share the `embedded_actor_copy` extraction so the token-to-copy step cannot
 //! fork between the combatant walk and the roll binding.
 
 #![deny(missing_docs)]

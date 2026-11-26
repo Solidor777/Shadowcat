@@ -82,6 +82,7 @@ fn png_with_alpha_converts_lossless_and_retains_original() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
 
@@ -133,6 +134,7 @@ fn jpeg_converts_lossy_without_alpha() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "image/webp");
@@ -157,6 +159,7 @@ fn retain_false_writes_no_orig() {
         input.len() as i64,
         false,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert!(p.converted);
@@ -181,6 +184,7 @@ fn animated_gif_is_passthrough_with_note() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "image/gif");
@@ -207,6 +211,7 @@ fn static_webp_is_passthrough_without_note() {
         png.len() as i64,
         false,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     let webp_bytes = std::fs::read(&first).unwrap();
@@ -218,6 +223,7 @@ fn static_webp_is_passthrough_without_note() {
         webp_bytes.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "image/webp");
@@ -240,6 +246,7 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
         svg.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "image/svg+xml");
@@ -256,6 +263,7 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
         garbage.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "image/png");
@@ -276,6 +284,7 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
         pdf.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(p.content_type, "application/pdf");
@@ -308,6 +317,7 @@ fn gif_with_huge_declared_canvas_is_refused_before_any_canvas_allocates() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert!(!p.converted);
@@ -339,6 +349,7 @@ fn png_over_the_axis_bound_is_refused() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert!(!p.converted);
@@ -361,6 +372,7 @@ fn write_derivatives_regenerates_from_canonical() {
         input.len() as i64,
         false,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     let thumb = derivative_path(&staged, Variant::Thumb);
@@ -370,13 +382,13 @@ fn write_derivatives_regenerates_from_canonical() {
     std::fs::rename(&thumb, thumb.with_extension("removed")).unwrap();
     std::fs::rename(&preview, preview.with_extension("removed")).unwrap();
 
-    write_derivatives(&staged).unwrap();
+    write_derivatives(&staged, &test_trash()).unwrap();
     assert_eq!(webp_dims(&thumb), (128, 32));
     assert_eq!(webp_dims(&preview), (512, 128));
 
     // A canonical that does not decode is an error, not a silent no-op.
     let bad = stage(dir.path(), b"not an image at all");
-    assert!(write_derivatives(&bad).is_err());
+    assert!(write_derivatives(&bad, &test_trash()).is_err());
 }
 
 #[test]
@@ -462,7 +474,7 @@ fn generate_grid_sheet_tiles_a_three_frame_gif_with_its_timings() {
     let input = gif_frames_ms(4, 4, &[100, 200, 300]);
     let staged = stage(dir.path(), &input);
 
-    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/gif", &test_trash()).unwrap();
     assert_eq!(meta.count, 3);
     assert_eq!(meta.rows, 2);
     assert_eq!(meta.cols, 2);
@@ -488,6 +500,7 @@ fn a_still_image_produces_no_sheet() {
         input.len() as i64,
         false,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     assert!(p.meta.sheet.is_none());
@@ -502,7 +515,7 @@ fn a_grid_over_the_max_axis_downscales_every_frame_uniformly() {
     let input = gif_frames_ms(1500, 1500, &[100, 100, 100, 100, 100, 100, 100, 100, 100]);
     let staged = stage(dir.path(), &input);
 
-    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/gif", &test_trash()).unwrap();
     assert_eq!((meta.rows, meta.cols, meta.count), (3, 3, 9));
     assert!(meta.width < 1500, "downscaled: {}", meta.width);
     assert!(meta.height < 1500, "downscaled: {}", meta.height);
@@ -528,6 +541,7 @@ fn reprocessing_the_same_animation_regenerates_an_identical_sheet() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     let second = stage(dir.path(), &input);
@@ -537,6 +551,7 @@ fn reprocessing_the_same_animation_regenerates_an_identical_sheet() {
         input.len() as i64,
         true,
         Default::default(),
+        &test_trash(),
     )
     .unwrap();
     let s1 = p1.meta.sheet.expect("first processing derives a sheet");
@@ -550,7 +565,7 @@ fn the_committed_animated_webp_fixture_decodes_through_the_webp_arm() {
     let dir = tempfile::tempdir().unwrap();
     let staged = stage(dir.path(), bytes);
 
-    let meta = generate_grid_sheet(&staged, "image/webp").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/webp", &test_trash()).unwrap();
     assert_eq!(meta.count, 4);
     assert_eq!(meta.rows, 2);
     assert_eq!(meta.cols, 2);
@@ -600,7 +615,7 @@ fn generate_grid_sheet_composites_a_sub_rect_frame_at_its_offset() {
     let dir = tempfile::tempdir().unwrap();
     let staged = stage(dir.path(), bytes);
 
-    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/gif", &test_trash()).unwrap();
     assert_eq!((meta.count, meta.rows, meta.cols), (2, 1, 2));
     assert_eq!((meta.width, meta.height), (8, 8));
 
@@ -640,7 +655,7 @@ fn generate_grid_sheet_clamps_a_zero_delay_frame_to_the_floor() {
     let dir = tempfile::tempdir().unwrap();
     let staged = stage(dir.path(), &gif_frames_ms(4, 4, &[100, 0, 300]));
 
-    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/gif", &test_trash()).unwrap();
     assert_eq!(meta.frame_ms, vec![100, 100, 300]);
 }
 
@@ -652,7 +667,7 @@ fn generate_grid_sheet_never_exceeds_the_max_axis_after_downscale() {
     let input = gif_frames_ms(250, 250, &[100].repeat(257));
     let staged = stage(dir.path(), &input);
 
-    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    let meta = generate_grid_sheet(&staged, "image/gif", &test_trash()).unwrap();
     assert_eq!(meta.cols, 17);
     assert!(
         meta.width * meta.cols <= 4096,
@@ -664,4 +679,49 @@ fn generate_grid_sheet_never_exceeds_the_max_axis_after_downscale() {
         "tiled height {} over the cap",
         meta.height * meta.rows
     );
+}
+
+/// A failed rename trashes the temporary derivative file. Replacing the discard with an outright
+/// removal leaves the trash empty; dropping it leaves the temporary file beside the destination.
+#[test]
+fn a_write_atomic_failure_trashes_its_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // The destination is a non-empty directory, so the final rename cannot succeed.
+    let dest = dir.path().join("derivative.webp");
+    std::fs::create_dir_all(dest.join("inner")).unwrap();
+    std::fs::write(dest.join("inner").join("f"), b"x").unwrap();
+    let trash = crate::trash::Trash::new(
+        dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+
+    assert!(write_atomic(&dest, b"derivative bytes", &trash).is_err());
+
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1);
+    let name = entries[0]
+        .manifest
+        .original_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        name.starts_with("derivative.webp.") && name.ends_with(".tmp"),
+        "unexpected trashed name: {name}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary file left: {leftovers:?}");
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

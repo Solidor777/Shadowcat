@@ -1,14 +1,16 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
   import { createSubscriber } from "svelte/reactivity";
+  import { gainToSliderPosition, sliderPositionToGain } from "@shadowcat/audio";
   import {
     buildPlaylistDoc,
-    listAssets,
+    getAssetMeta,
     AUDIO_STATE_DOC_TYPE,
     PLAYLIST_DOC_TYPE,
     type AudioChannelId,
     type AudioStateEngine,
     type PlayingTrack,
+    type PlaylistEngine,
     type WireAudioOp,
     type WireDocument,
     type WireSearchHit,
@@ -38,24 +40,28 @@
    * spec can assert (it cannot inspect Web Audio internals). */
   const liveCount = $derived((audioState?.playing ?? []).filter((p) => p.pausedAt == null).length);
 
-  // Asset durations for the seek slider's max (the asset listing is the only client surface
-  // carrying durationMs).
+  // Asset durations in seconds for the seek slider's max, each read from its asset's own metadata
+  // the first time an entry for it plays. (A listing fetched once at mount misses an asset created
+  // after the panel opened, and a failed read is retried on the next state change.)
   let durations = $state(new Map<string, number>());
+  const requested = new Set<string>();
+  let mounted = true;
+  $effect(() => () => {
+    mounted = false;
+  });
   $effect(() => {
-    let cancelled = false;
-    void listAssets(ctx.world)
-      .then((assets) => {
-        if (cancelled) return;
-        durations = new Map(
-          assets
-            .filter((a) => a.duration_ms != null)
-            .map((a) => [a.id, Number(a.duration_ms)]),
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    for (const p of audioState?.playing ?? []) {
+      if (requested.has(p.asset)) continue;
+      requested.add(p.asset);
+      void getAssetMeta(p.asset)
+        .then((asset) => {
+          if (!mounted || asset.duration_ms == null) return;
+          durations = new Map(durations).set(p.asset, Number(asset.duration_ms) / 1000);
+        })
+        .catch(() => {
+          requested.delete(p.asset);
+        });
+    }
   });
 
   // Playlists live search — the ActorsPanel $effect shape (cancel guard, handle capture,
@@ -220,8 +226,9 @@
           step="0.05"
           data-testid={`channel-gain-${id}`}
           aria-label={t("audio.channelGainFor", { channel: t(CHANNEL_LABEL[id]) })}
-          value={ctx.audio.channels[id].gain}
-          onchange={(e) => ctx.audio.setChannel(id, { gain: Number((e.currentTarget as HTMLInputElement).value) })}
+          value={gainToSliderPosition(ctx.audio.channels[id].gain)}
+          onchange={(e) =>
+            ctx.audio.setChannel(id, { gain: sliderPositionToGain(Number((e.currentTarget as HTMLInputElement).value)) })}
         />
       </label>
       <button
@@ -289,7 +296,11 @@
       <li data-testid="playlist-row" data-playlist-id={hit.id}>
         <span>{hit.name ?? hit.id}</span>
         {#if isGm}
-          <button type="button" data-testid="playlist-play" onclick={() => play(hit.id)}>{t("audio.play")}</button>
+          {#if (hit.engine as PlaylistEngine | undefined)?.mode === "simultaneous"}
+            <button type="button" data-testid="playlist-play-all" onclick={() => play(hit.id)}>{t("audio.playAll")}</button>
+          {:else}
+            <button type="button" data-testid="playlist-play" onclick={() => play(hit.id)}>{t("audio.play")}</button>
+          {/if}
         {/if}
         {#if ctx.canDelete(hit)}
           <button type="button" data-testid="playlist-delete" onclick={() => deletePlaylist(hit)}>{t("audio.delete")}</button>

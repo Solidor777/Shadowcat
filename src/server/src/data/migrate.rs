@@ -1,15 +1,18 @@
+//! This module holds the document schema-version coercion `migrate` and `CURRENT_SCHEMA_VERSION`.
+//!
+//! No migration steps are registered, so `migrate` returns every document unchanged. The SQL schema
+//! migrations run in `SqliteRepository::connect`.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::data::document::Document;
 
-/// The schema version current builds emit. No migrations exist pre-ship;
-/// `migrate` is the machinery only and is a no-op at this version.
+/// The schema version current builds emit.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// Coerce a document to the current schema version. No migration steps are
-/// registered pre-ship, so every document passes through unchanged; version
-/// dispatch toward `CURRENT_SCHEMA_VERSION` is added with the first real step.
+/// registered, so every document passes through unchanged.
 ///
 /// # Examples
 ///
@@ -35,13 +38,13 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 ///     updated_at: 0,
 /// };
 /// let migrated = migrate(doc.clone());
-/// assert_eq!(migrated, doc); // no registered steps yet: unchanged
+/// assert_eq!(migrated, doc); // no registered steps: unchanged
 /// ```
 pub fn migrate(doc: Document) -> Document {
     if doc.schema_version >= CURRENT_SCHEMA_VERSION {
         return doc;
     }
-    // No registered steps yet.
+    // No migration steps are registered.
     doc
 }
 

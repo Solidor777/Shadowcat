@@ -1,8 +1,8 @@
-//! Document rows: the `documents` / `documents_fts_gm` / `documents_fts_public`
-//! half of `SqliteRepository` — row load/upsert/delete with FTS reindex,
-//! parent placement and move-cycle checks, and the commit-time `OpSnapshot`
-//! builder — in a sibling `impl` block so `sqlite.rs` stays under the
-//! file-size limit.
+//! This module is the `documents` / `documents_fts_gm` / `documents_fts_public` half of
+//! `SqliteRepository`, in a sibling `impl` block.
+//!
+//! It covers row load/upsert/delete with FTS reindex, parent placement and move-cycle checks, and
+//! the commit-time `OpSnapshot` builder.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -198,9 +198,8 @@ impl SqliteRepository {
                 let mut overrides_full = Vec::new();
                 crate::data::permission::collect_overrides(doc, "", &mut overrides_full)
                     .map_err(|e| DataError::OpFailed(e.to_string()))?;
-                let touches_perms = changes
-                    .iter()
-                    .any(|c| crate::data::permission::touches_permissions(&c.path));
+                let touches_perms =
+                    crate::data::permission::retracts_hidden(&doc.doc_type, changes);
                 let retraction_hidden_at_commit = if touches_perms {
                     Some(overrides_full.clone())
                 } else {
@@ -277,7 +276,8 @@ impl SqliteRepository {
     /// a combat (batch-aware), an `asset_folder` parent must be a
     /// same-scope folder (`check_asset_folder_parent`, batch-aware), and a
     /// `note` parent must be a same-scope note (`check_note_parent`,
-    /// batch-aware). A parent this same batch Creates is not in the database
+    /// batch-aware), and a `table`/`table_folder` parent must be a same-scope
+    /// table folder (`check_table_folder_parent`, batch-aware). A parent this same batch Creates is not in the database
     /// yet — it resolves through the batch maps, and its own Create was
     /// scope-checked; a parent that exists nowhere yet is left to the
     /// self-FK at apply time, so batched parent+child creates still pass.
@@ -290,11 +290,14 @@ impl SqliteRepository {
         batch_folders: &std::collections::HashMap<Uuid, Document>,
         batch_combats: &std::collections::HashSet<Uuid>,
     ) -> Result<(), DataError> {
-        if doc.doc_type == COMBATANT_DOC_TYPE || doc.doc_type == COMBAT_HISTORY_DOC_TYPE {
+        if doc.doc_type == COMBATANT_DOC_TYPE
+            || doc.doc_type == COMBAT_HISTORY_DOC_TYPE
+            || doc.doc_type == COMBATANT_GROUP_DOC_TYPE
+        {
             // `validate_containment` already guarantees `parent_id` is
-            // `Some` for a combatant/combat-history document.
+            // `Some` for a combatant/combat-history/combatant-group document.
             let pid = doc.parent_id.expect(
-                "validate_containment requires a combatant/combat-history doc to carry a parent_id",
+                "validate_containment requires a combatant/combat-history/combatant-group doc to carry a parent_id",
             );
             let stored_parent = if batch_combats.contains(&pid) {
                 None
@@ -323,6 +326,7 @@ impl SqliteRepository {
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
         Self::check_note_parent(&mut *tx, doc, batch_folders).await?;
+        Self::check_table_folder_parent(&mut *tx, doc, batch_folders).await?;
         Ok(())
     }
 
@@ -330,7 +334,7 @@ impl SqliteRepository {
     /// ancestor chain upward from `new_parent`, resolving each hop against
     /// this batch's not-yet-applied Moves first (`batch_moves` — the
     /// prospective parent wins over the stored one, since the walk must see
-    /// the tree the batch will leave, and Phase 2 applies nothing until
+    /// the tree the batch will leave, and the apply pass applies nothing until
     /// every op has validated), then this batch's not-yet-inserted Creates
     /// (`batch_folders`), then the stored tree — refusing if `moved` appears
     /// anywhere in the chain (self-parent included).
@@ -469,11 +473,17 @@ impl SqliteRepository {
     /// self-reference or cycle: a single `INSERT` whose `parent_id` equals its
     /// own `id` satisfies the self-FK and commits, so without this guard a
     /// `WHERE parent_id = root` row referencing `root` would recurse forever.
+    ///
+    /// `kept` holds ids that survive the delete (the tables a table-folder
+    /// delete moves out): the walk neither reports nor descends into them,
+    /// since their own subtree travels with them.
     pub(super) async fn descendants_first(
         tx: &mut sqlx::SqliteConnection,
         root: Uuid,
+        kept: &std::collections::HashSet<Uuid>,
     ) -> Result<Vec<Uuid>, DataError> {
-        let mut seen = std::collections::HashSet::from([root]);
+        let mut seen = kept.clone();
+        seen.insert(root);
         let mut out = Vec::new();
         Self::collect_descendants(tx, root, &mut seen, &mut out).await?;
         Ok(out)
@@ -579,7 +589,7 @@ impl SqliteRepository {
         sqlx::query(
             "INSERT INTO documents_fts_gm (content_all, doc_id, world_id, doc_type) VALUES (?, ?, ?, ?)",
         )
-        .bind(crate::data::search::index_content(doc))
+        .bind(crate::data::search::index_content_gm(doc))
         .bind(doc.id.to_string())
         .bind(world_id)
         .bind(&doc.doc_type)

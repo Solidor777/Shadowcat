@@ -1,9 +1,9 @@
-//! Every combat formula evaluation, in one place: which document a
-//! combatant's formulas read (`formula_host`), and the derivations consumers
-//! act on (`resolved_resource`, `lifecycle_flags`, `duration_amount`).
-//! Consumers never re-derive the host join or call the formula engine
-//! directly — a second copy of either decision is how a preview and an
-//! execution drift apart.
+//! This module holds every combat formula evaluation.
+//!
+//! It resolves which document a combatant's formulas read (`formula_host`) and provides the
+//! derivations consumers act on (`resolved_resource`, `lifecycle_flags`, `duration_amount`).
+//! Consumers never re-derive the host join or call the formula engine directly — a second copy of
+//! either decision is how a preview and an execution drift apart.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

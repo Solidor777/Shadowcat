@@ -1,10 +1,10 @@
-//! The pure `audio-state` transport engine: every `AudioOp` reduces to a fresh
-//! `AudioStateEngine`, deterministically, with no I/O — the same posture
-//! `combat::transition`'s pure functions take, so it runs identically under
-//! `apply_intent` and any future replay/simulation path. `AudioOp::Next`'s
-//! elapsed-duration gate is NOT here (see `transport::handle_transport`'s own
-//! doc for why) — this function performs the advance unconditionally once
-//! called.
+//! The pure `audio-state` transport engine: every `AudioOp` reduces to a fresh `AudioStateEngine`.
+//!
+//! The reduction is deterministic and performs no I/O, the same posture `combat::transition`'s pure
+//! functions take, so the caller pre-fetches the playlist and commits the result itself. The
+//! elapsed-duration gate on `AudioOp::TrackEnded` is NOT here (it lives in
+//! `transport::handle_transport_locked`): once `apply` is called, it performs the advance
+//! unconditionally.
 
 use std::fmt;
 
@@ -37,6 +37,9 @@ pub enum AudioError {
     Cap,
     /// A gain value was non-finite.
     InvalidGain,
+    /// `AudioOp::Play` named a single `track_index` of a `PlaylistMode::Simultaneous` playlist,
+    /// which only plays as a whole; a single track is what `PlaylistMode::Soundboard` is for.
+    NotSingleTrack,
 }
 
 impl fmt::Display for AudioError {
@@ -47,6 +50,7 @@ impl fmt::Display for AudioError {
             AudioError::EmptyPlaylist => "that playlist has no tracks",
             AudioError::Cap => "too many tracks are already playing",
             AudioError::InvalidGain => "gain must be a finite number",
+            AudioError::NotSingleTrack => "that playlist plays all its tracks together",
         })
     }
 }
@@ -117,6 +121,10 @@ fn resolve_track_index(
         return None;
     }
     match mode {
+        // Neither mode has a next track: a Simultaneous layer or a Soundboard one-shot that
+        // ends, or is skipped, is stopped. A fresh Soundboard play with no explicit track
+        // lands on track 0 through the caller's `unwrap_or(0)`.
+        PlaylistMode::Simultaneous | PlaylistMode::Soundboard => None,
         PlaylistMode::Single => Some(current.unwrap_or(0).min(len as u32 - 1)),
         PlaylistMode::Sequential | PlaylistMode::LoopAll => {
             let next = match current {
@@ -160,10 +168,9 @@ fn resolve_track_index(
 }
 
 /// Apply one `AudioOp` to `state`, returning the fresh post-image or a refusal. Pure and
-/// I/O-free: `playlist_lookup` resolves a playlist id to its (already-fetched) engine body —
-/// the CALLER (`transport::handle_transport`) does the async DB read before calling this, since
-/// a `Play`/`Next`/`Prev` never needs more than the one playlist the op itself names or the
-/// advancing entry's own `playlist` field.
+/// I/O-free: `playlist_lookup` resolves a playlist id to its already-fetched engine body. The
+/// caller reads the playlist before calling this: `transport::handle_transport_locked` through
+/// `transport::prefetch_playlist`, and `transport::on_active_scene` inline.
 ///
 /// # Examples
 ///
@@ -203,13 +210,52 @@ pub fn apply(
             if next.playing.len() >= MAX_PLAYING_TRACKS {
                 return Err(AudioError::Cap);
             }
-            let (resolved_asset, resolved_channel, resolved_gain, resolved_loop, resolved_index) =
-                match playlist {
-                    Some(pid) => {
-                        let pl = playlist_lookup(*pid).ok_or(AudioError::UnknownPlaylist)?;
-                        if pl.tracks.is_empty() {
-                            return Err(AudioError::EmptyPlaylist);
+            let resolved_playlist = match playlist {
+                Some(pid) => {
+                    let pl = playlist_lookup(*pid).ok_or(AudioError::UnknownPlaylist)?;
+                    if pl.tracks.is_empty() {
+                        return Err(AudioError::EmptyPlaylist);
+                    }
+                    Some(pl)
+                }
+                None => None,
+            };
+            // A Simultaneous playlist starts every track as its own entry. The cap is checked
+            // for the whole set before any entry is pushed: a play either starts every layer or
+            // is refused, never leaving some layers silently missing. The `asset` override is
+            // ignored because each layer plays its own track's asset.
+            if let (Some(pid), Some(pl)) = (playlist, &resolved_playlist) {
+                if pl.mode == PlaylistMode::Simultaneous {
+                    if track_index.is_some() {
+                        return Err(AudioError::NotSingleTrack);
+                    }
+                    if next.playing.len() + pl.tracks.len() > MAX_PLAYING_TRACKS {
+                        return Err(AudioError::Cap);
+                    }
+                    for (idx, track) in pl.tracks.iter().enumerate() {
+                        let gain = gain.unwrap_or(track.gain);
+                        if !gain.is_finite() {
+                            return Err(AudioError::InvalidGain);
                         }
+                        next.playing.push(PlayingTrack {
+                            id: Uuid::new_v4(),
+                            playlist: Some(*pid),
+                            track_index: idx as u32,
+                            asset: track.asset.clone(),
+                            channel: channel.unwrap_or(pl.channel),
+                            gain,
+                            loop_: loop_.unwrap_or(track.loop_),
+                            started_at: now,
+                            paused_at: None,
+                            session_paused: false,
+                        });
+                    }
+                    return Ok(next);
+                }
+            }
+            let (resolved_asset, resolved_channel, resolved_gain, resolved_loop, resolved_index) =
+                match resolved_playlist {
+                    Some(pl) => {
                         // A fresh Shuffle play (no explicit track_index) advances the world's
                         // shuffle_seed first, so the order does not repeat identically forever;
                         // the committed seed still drives every client's walk identically.
@@ -255,6 +301,7 @@ pub fn apply(
                 loop_: resolved_loop,
                 started_at: now,
                 paused_at: None,
+                session_paused: false,
             });
         }
         AudioOp::Pause { id } => {
@@ -273,6 +320,7 @@ pub fn apply(
                 .iter_mut()
                 .find(|t| t.id == *id)
                 .ok_or(AudioError::UnknownId)?;
+            track.session_paused = false;
             if let Some(paused_at) = track.paused_at.take() {
                 // Shift started_at forward by the paused duration, so the resumed position
                 // continues exactly where it paused rather than jumping.
@@ -341,6 +389,7 @@ pub fn apply(
                         loop_: track.loop_,
                         started_at: now,
                         paused_at: None,
+                        session_paused: false,
                     };
                 }
             }
@@ -358,6 +407,56 @@ pub fn apply(
         }
     }
     Ok(next)
+}
+
+/// `state` with every playing track paused at `now`, the session pause's audio half, each newly
+/// paused track marked `session_paused`. A track that is already paused (by hand) keeps its
+/// original `paused_at` and stays unmarked, so `resume_all` leaves it paused.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::pause_all;
+/// use shadowcat::data::engine::AudioStateEngine;
+///
+/// let state = AudioStateEngine::default();
+/// assert!(pause_all(&state, 10.0).playing.is_empty());
+/// ```
+pub fn pause_all(state: &AudioStateEngine, now: f64) -> AudioStateEngine {
+    let mut next = state.clone();
+    for t in &mut next.playing {
+        if t.paused_at.is_none() {
+            t.paused_at = Some(now);
+            t.session_paused = true;
+        }
+    }
+    next
+}
+
+/// `state` with every `session_paused` track resumed at `now`, each track's `started_at` shifted
+/// forward by the time it was paused (the `AudioOp::Resume` rule), so every position continues
+/// where it stopped. A track the GM paused by hand is not `session_paused` and stays paused.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::resume_all;
+/// use shadowcat::data::engine::AudioStateEngine;
+///
+/// let state = AudioStateEngine::default();
+/// assert!(resume_all(&state, 10.0).playing.is_empty());
+/// ```
+pub fn resume_all(state: &AudioStateEngine, now: f64) -> AudioStateEngine {
+    let mut next = state.clone();
+    for t in &mut next.playing {
+        if t.session_paused {
+            t.session_paused = false;
+            if let Some(paused_at) = t.paused_at.take() {
+                t.started_at += now - paused_at;
+            }
+        }
+    }
+    next
 }
 
 #[cfg(test)]

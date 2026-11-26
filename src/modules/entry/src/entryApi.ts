@@ -1,3 +1,4 @@
+import { apiPath, ServerConfigSchema, TlsStatusSchema } from "@shadowcat/core";
 import type { ServerConfig, WorldEntry } from "@shadowcat/types";
 
 /**
@@ -7,7 +8,7 @@ import type { ServerConfig, WorldEntry } from "@shadowcat/types";
  * @example
  * ```
  * // module-private; not part of the public API
- * const cfg = await getJson<ServerConfig>("/api/config");
+ * const cfg = await getJson<unknown>("/api/config");
  * ```
  */
 async function getJson<T>(url: string): Promise<T> {
@@ -40,19 +41,49 @@ async function postJson(url: string, body: unknown): Promise<Response> {
   });
 }
 
+/** The parts of `GET /api/config` the entry flow reads. */
+interface PublicConfig {
+  /** Whether an administrator exists (Setup is unavailable once true). */
+  initialized: boolean;
+  /** The published TLS block, or `null` when absent or malformed. */
+  tls: ServerConfig["tls"] | null;
+  /** The server's tour switch; `true` unless a body that satisfies `ServerConfigSchema` says `false`. */
+  onboardingEnabled: boolean;
+}
+
+/** `GET /api/config` before validation: each field is checked on its own. */
+interface RawPublicConfig {
+  /** Expected to be a boolean. */
+  initialized?: unknown;
+  /** Expected to satisfy `TlsStatusSchema`. */
+  tls?: unknown;
+}
+
 /**
- * Fetch the server's public configuration.
- * @returns The server config. Field semantics are defined by the generated
- * `ServerConfig` type (from the Rust
- * source) — not restated here.
+ * Fetch the server's public configuration. `initialized` is parsed on its own: it decides whether
+ * the Setup form is reachable, so a missing or malformed `tls` block must never hide it. A `tls`
+ * block that does not parse yields `null`, which only suppresses the HTTPS notice. The tour switch
+ * is read through the shared `ServerConfigSchema`; a body that does not satisfy it leaves tours on.
+ * @returns `initialized`, the `tls` block (`null` when absent or malformed) and `onboardingEnabled`.
+ * Field semantics are defined by the generated `ServerConfig` type (from the Rust source) — not
+ * restated here.
  * @example
  * ```
  * // module-private; not part of the public API
  * const cfg = await getConfig();
  * ```
  */
-export function getConfig(): Promise<ServerConfig> {
-  return getJson<ServerConfig>("/api/config");
+export async function getConfig(): Promise<PublicConfig> {
+  const body = await getJson<RawPublicConfig>(apiPath("/api/config"));
+  if (typeof body.initialized !== "boolean") throw new Error("/api/config: initialized is not a boolean");
+  const initialized = body.initialized;
+  const tls = TlsStatusSchema.safeParse(body.tls);
+  const full = ServerConfigSchema.safeParse(body);
+  return {
+    initialized,
+    tls: tls.success ? tls.data : null,
+    onboardingEnabled: full.success ? full.data.onboarding_enabled : true,
+  };
 }
 
 /**
@@ -69,7 +100,7 @@ export async function getMe(): Promise<{
   /** The authenticated caller's user id. */
   id: string;
 } | null> {
-  const res = await fetch("/api/me", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/me"), { headers: { accept: "application/json" } });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
   return (await res.json()) as {
@@ -91,7 +122,7 @@ export async function getMe(): Promise<{
  * ```
  */
 export async function login(username: string, password: string): Promise<boolean> {
-  const res = await postJson("/api/login", { username, password });
+  const res = await postJson(apiPath("/api/login"), { username, password });
   return res.ok;
 }
 
@@ -128,7 +159,7 @@ export async function setup(
 }> {
   const body: Record<string, string> = { username, password };
   if (token) body.token = token;
-  const res = await postJson("/api/setup", body);
+  const res = await postJson(apiPath("/api/setup"), body);
   return { ok: res.ok, status: res.status };
 }
 
@@ -144,7 +175,7 @@ export async function setup(
  * ```
  */
 export function listWorlds(): Promise<WorldEntry[]> {
-  return getJson<WorldEntry[]>("/api/worlds");
+  return getJson<WorldEntry[]>(apiPath("/api/worlds"));
 }
 
 /**
@@ -162,7 +193,7 @@ export function listWorlds(): Promise<WorldEntry[]> {
  * ```
  */
 export async function deleteWorld(id: string): Promise<void> {
-  const res = await fetch(`/api/worlds/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/worlds/${encodeURIComponent(id)}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`/api/worlds/${id} → ${res.status}`);
 }
 
@@ -179,7 +210,7 @@ export async function deleteWorld(id: string): Promise<void> {
  * ```
  */
 export async function createWorld(name: string): Promise<WorldEntry> {
-  const res = await postJson("/api/worlds", { name });
+  const res = await postJson(apiPath("/api/worlds"), { name });
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);
   return (await res.json()) as WorldEntry;
 }
@@ -211,7 +242,7 @@ export async function acceptInvite(code: string): Promise<WorldEntry | null> {
   // The code goes in the BODY: a URL is recorded by browser history, `Referer`,
   // proxy access logs, and the server's request-trace span, none of which a
   // live bearer credential may reach.
-  const res = await postJson("/api/invites/accept", { code });
+  const res = await postJson(apiPath("/api/invites/accept"), { code });
   if (!res.ok) return null;
   return (await res.json()) as WorldEntry;
 }

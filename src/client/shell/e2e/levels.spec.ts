@@ -95,7 +95,7 @@ async function uploadAsset(page: Page, filename: string, expectedCount: number):
 
 /** Opens the scene browser, opens the single default scene's `LevelsEditor`, authors two floors
  * ("Ground" [0,10) with `ground-bg.png`, "Upper" [10,20) with `upper-bg.png`), and returns their
- * server-assigned ids. `LevelsEditor.addLevel` generates a `crypto.randomUUID()` id with no
+ * server-assigned ids. `LevelsEditor.addLevel` generates a `randomUuid()` id with no
  * authorable override, so the ids are read back off each row's own `data-level-id` attribute
  * rather than assumed.
  * @param gm The GM's page.
@@ -307,4 +307,94 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
   } finally {
     await playerCtx.close();
   }
+});
+
+// Compound-region authoring via the ToolRail part-list gesture: arm the gesture, drag an
+// additive shape, arm the next part, drag it too, mark the second part a hole, then commit —
+// the resulting region document's `shape` is the compound wire form (`RegionGeometry`'s
+// array of `{shape, hole}` parts) with the second part's `hole: true`, proven through the
+// stage's `data-region-shapes` observability attribute (the `data-wall-segments` precedent).
+// The plain single-drag flow persists a region immediately on release — exercised by the
+// teleport test above.
+test("compound region authoring: stage an additive part and a hole part, then commit", async ({
+  page,
+  account,
+}) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Compound Region World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = stageHost(page);
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await page.getByTestId("tool-region").click();
+  // Arm the compound gesture, then drag the first (additive) part; the drag stages the part
+  // instead of persisting — no region document exists until the whole list commits.
+  await page.getByTestId("region-part-add").click();
+  await dragScene(page, { x: 150, y: 150 }, { x: 350, y: 350 });
+  await expect(page.getByTestId("region-part-hole")).toHaveCount(1);
+  // Arm the next part and drag it; mark the second part the hole.
+  await page.getByTestId("region-part-add").click();
+  await dragScene(page, { x: 200, y: 200 }, { x: 300, y: 300 });
+  const holeBoxes = page.getByTestId("region-part-hole");
+  await expect(holeBoxes).toHaveCount(2);
+  await holeBoxes.nth(1).check();
+
+  await page.getByTestId("region-create-commit").click();
+
+  // One region doc in the compound wire form: additive rect + hole rect (authored order).
+  await expect(host).toHaveAttribute("data-region-shapes", /:rect\+!rect/, { timeout: 15_000 });
+  // The gesture reset: the part list cleared, so the rail shows no staged rows.
+  await expect(page.getByTestId("region-part-hole")).toHaveCount(0);
+});
+
+// Region trigger: `TriggerEffect::ScrollingText` reaches the client. Single (GM-only) session —
+// a GM bypasses every movement gate, so dragging their own placed token through the trigger
+// region needs no ownership handoff, restriction-mode change, or second browser context. Asserts
+// on the CLIENT-VISIBLE effect (the `Stage` overlay-observability attribute
+// `onScrollingText` sets, per `EmoteView`'s reuse for this effect), never on an i18n string.
+const ST_START = { x: 210, y: 310 };
+const ST_REGION_A = { x: 350, y: 260 };
+const ST_REGION_B = { x: 450, y: 360 }; // a 100x100 box
+const ST_WALK_TARGET = { x: 400, y: 310 }; // inside the region box
+const ST_TEXT = "You feel a chill.";
+
+test("region trigger: a ScrollingText overlay reaches the client on enter", async ({ page, account }) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill(`Scrolling Text World ${Date.now().toString(36)}`);
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = stageHost(page);
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await disableSnap(page);
+  await uploadAsset(page, "st-token.png", 1);
+
+  await page.getByTestId("tool-place").click();
+  const pick = page.getByTestId("picker-asset").first();
+  await expect(pick).toBeVisible({ timeout: 10_000 });
+  await pick.click();
+  await clickScene(page, ST_START);
+  await expect(host).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
+
+  // Author a ScrollingText region trigger covering a cell the token will walk through.
+  await page.getByTestId("tool-region").click();
+  await page.getByTestId("region-trigger-add").click();
+  await page.getByTestId("region-trigger-effect").selectOption("scrolling_text");
+  await page.getByTestId("region-trigger-scrolling-text").fill(ST_TEXT);
+  await dragScene(page, ST_REGION_A, ST_REGION_B);
+
+  // Walk the token into the region: the "enter" trigger fires, broadcasting
+  // `ServerMsg::ScrollingText`; `Stage`'s `onScrollingText` handler plays it through
+  // `EmoteView.addEmote` — the same floating-overlay mechanism a player-fired emote uses — and
+  // records the fired text on the stage host for e2e observability.
+  await page.getByTestId("tool-select").click();
+  await dragScene(page, ST_START, ST_WALK_TARGET);
+
+  // Escapes every regex-special character in ST_TEXT (not just the first "."), so this
+  // assertion stays correct if ST_TEXT ever gains additional special characters.
+  const stTextPattern = ST_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await expect(host).toHaveAttribute("data-last-scrolling-text", new RegExp(stTextPattern), {
+    timeout: 20_000,
+  });
 });

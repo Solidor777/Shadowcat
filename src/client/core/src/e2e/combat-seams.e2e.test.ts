@@ -7,6 +7,7 @@
 // infinite-lifespan event included), the player's from the combat document's endpoints alone --
 // while the player's "combat" channel frame and pathfind reply reflect the server's visibility
 // and movement-budget rules.
+import { randomUuid } from "../uuid";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient, type WireWelcome } from "../ws-client";
@@ -131,7 +132,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
       bounds: { width: 1000, height: 1000 },
       // Unrestricted: no vision/lighting is authored, so a player's default `Visible` movement
       // restriction would see (and therefore route through) nothing at all.
-      vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null },
+      vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null, fogPooling: null },
       combat: { movementResource: "movement", interpretation: "per_cell", enforcement: "warn" },
     },
     sceneId,
@@ -147,7 +148,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
       },
     ],
   };
-  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" }, actor_id: null, overrides: null, face: null, elevation: null }, playerTokenId);
+  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, playerTokenId);
   tokenDoc.owner = player;
 
   const combatEngine: CombatEngine = {
@@ -160,7 +161,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const playerCombatantEngine: CombatantEngine = {
     kind: { type: "actor", token_id: playerTokenId, actor_id: null },
     initiative: 10,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false, group: null,
     resources: { movement: { current: 30 } },
   };
   const playerCombatantDoc = buildCombatantDoc(world, combatId, playerCombatantEngine, { owner: player, id: playerCombatantId });
@@ -168,7 +169,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const gmCombatantEngine: CombatantEngine = {
     kind: { type: "event", lifespan: null, message: null },
     initiative: 5,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   const gmCombatantDoc = buildCombatantDoc(world, combatId, gmCombatantEngine, { id: gmCombatantId, name: "lair" });
@@ -176,7 +177,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const hiddenCombatantEngine: CombatantEngine = {
     kind: { type: "event", lifespan: null, message: null },
     initiative: 1,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   const hiddenCombatantDoc = buildCombatantDoc(world, combatId, hiddenCombatantEngine, { id: hiddenCombatantId, hidden: true, name: "secret" });
@@ -184,13 +185,13 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   // Scene + registry update first: the registry write must be accepted before the combatants
   // that reference `movement` are created, so a genuine rejection surfaces immediately.
   gmRejects.length = 0;
-  gmClient.send({ type: "intent", intent_id: crypto.randomUUID(), ops: [{ op: "create", doc: sceneDoc }, registryUpdate] });
+  gmClient.send({ type: "intent", intent_id: randomUuid(), ops: [{ op: "create", doc: sceneDoc }, registryUpdate] });
   await waitFor(() => gmH.store.get(sceneId) !== undefined || gmRejects.length > 0);
   if (gmRejects.length > 0) throw new Error(`scene/registry rejected: ${JSON.stringify(gmRejects)}`);
 
   const creates: WireDocument[] = [tokenDoc, combatDoc, playerCombatantDoc, gmCombatantDoc, hiddenCombatantDoc];
   gmRejects.length = 0;
-  gmClient.send({ type: "intent", intent_id: crypto.randomUUID(), ops: creates.map((doc) => ({ op: "create" as const, doc })) });
+  gmClient.send({ type: "intent", intent_id: randomUuid(), ops: creates.map((doc) => ({ op: "create" as const, doc })) });
   await waitFor(() => gmH.store.get(combatId) !== undefined || gmRejects.length > 0);
   if (gmRejects.length > 0) throw new Error(`combat setup rejected: ${JSON.stringify(gmRejects)}`);
   await waitFor(() => playerH.store.get(combatId) !== undefined);

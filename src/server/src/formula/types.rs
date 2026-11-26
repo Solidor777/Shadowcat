@@ -1,6 +1,8 @@
-//! Failure values, the value type and the DoS caps of the formula language.
-//! Twin of the client package's `types.ts`; the tag spellings and cap values
-//! are asserted equal by the conformance corpus and by `types/tests.rs`.
+//! This module declares the failure values, the value type and the DoS caps of the formula
+//! language.
+//!
+//! It is the twin of the client package's `types` module. The conformance corpus and the `types`
+//! test module pin the tag spellings, and the `types` test module also asserts the four cap values.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -53,7 +55,9 @@ pub enum FormulaErrorKind {
     /// tag parity with the client, which reserves it the same way). Neither
     /// implementation's evaluator produces it; `graph::resolve_all` uses it
     /// for its internal restart placeholder, which never reaches a caller
-    /// (`graph/tests.rs` pins that).
+    /// (the graph test
+    /// `the_restart_placeholder_never_reaches_a_caller_even_when_a_node_returns_it_verbatim`
+    /// pins that).
     RefError,
     /// A resolver returned a malformed value.
     ResolverError,
@@ -125,7 +129,7 @@ pub(crate) fn js_number(n: f64) -> String {
 }
 
 /// Gates an arithmetic result: a finite value passes through; anything else
-/// becomes a `NonFinite` error, so no infinity or NaN leaves the library.
+/// becomes a `NonFinite` error.
 pub(crate) fn finite(n: f64) -> FormulaValue {
     if n.is_finite() {
         Ok(n)

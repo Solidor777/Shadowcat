@@ -1,5 +1,8 @@
 import {
+  randomUuid,
   WsClient,
+  NotConnectedError,
+  SessionPausedError,
   OptimisticClient,
   DocumentStore,
   ContributionRegistry,
@@ -7,6 +10,7 @@ import {
   type AssetChangedNotice,
   ModuleRegistry,
   HookBus,
+  KeybindingsController,
   ServiceRegistry,
   MiddlewareChain,
   reconcileTopology,
@@ -23,6 +27,9 @@ import {
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
+  parseBars,
+  EMPTY_BARS,
+  type BarsLookup,
   parseAudibility,
   sceneAudibility,
   EMPTY_AUDIBILITY,
@@ -47,13 +54,17 @@ import {
   type WireCapabilityRequirement,
   type ChatSendOptions,
   type WireRecalcOp,
+  type WireAudience,
   type DrawTableOptions,
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
   type MoveStream,
   type VfxNotice,
+  type PortalOfferNotice,
+  type PresentNoteNotice,
   type VfxPlayRequest,
+  type ResetExploredFogOptions,
   type SubscriptionHandle,
   type WireSearchHit,
   type ClientMsg,
@@ -64,6 +75,7 @@ import {
   listInstalledModules,
   getEnabledModules,
   listWorldMembers,
+  avatarUrl,
   AUDIO_STATE_DOC_TYPE,
   PLAYLIST_DOC_TYPE,
   resolveNextTrackAsset,
@@ -72,14 +84,20 @@ import {
   type AudioStateEngine,
   type PlaylistEngine,
   type HookFaultPayload,
+  type ModuleActivationOutcome,
+  type ModuleLoadFailure,
+  type ModuleStatusEntry,
+  type RulerNotice,
+  UserModuleSettings,
+  apiPath,
 } from "@shadowcat/core";
-import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
-import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
-import type { HooksEmitApi } from "@shadowcat/ui-kit";
+import type { DoorState, WorldRole, InstalledModuleInfo, RegionShape, RejectReason } from "@shadowcat/types";
+import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
+import type { HooksEmitApi, MemberProfile } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
-import { getViewedLevel, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
+import { getKeybindings, getSessionState, getViewedLevel, setKeybindings, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
 import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
@@ -127,6 +145,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** Terminal join refusal: the server refused this session's join before its first `welcome`
+   * (the world does not exist, or this user is not a member). The WsClient has already stopped
+   * — the shell tells the user and routes them out of the world. */
+  onJoinRefused?: (code: "world_not_found" | "forbidden") => void;
   /** Called after every rejected intent, with the server's reason and any player-presentable
    * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
    * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
@@ -136,6 +158,24 @@ export interface WorldSessionOpts {
    * player-presentable reason (fire-and-forget frame — there is no correlated reply to
    * reject instead). The shell surfaces it as a toast. */
   onAudioError?: (reason: string) => void;
+  /** Called for every module problem: a load failure (`ModuleLoadResult.failed`) or a
+   * non-`"activated"` `ModuleActivationOutcome`, from the first-party and external activation
+   * passes and `reconcileInstalledModules`. `id` is the install folder id for an external module
+   * and the registry id for a first-party one; `detail` is the failure message, or `null` for a
+   * skipped module. Fired for the GM only, and once per change of a module's problem. The shell
+   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
+  onModuleStatus?: (
+    id: string,
+    status: "skipped-deps-unmet" | "failed" | "load-failed",
+    detail: string | null,
+  ) => void;
+  /** Called on each connection failure before the session's first `welcome` (see
+   * `WsClientHandlers.onConnectFailure`), with the running count. The shell turns a run of them
+   * into a first-connect hint; a headless caller may leave it unset. */
+  onConnectFailure?: (consecutive: number) => void;
+  /** Called on every `welcome` this session receives: the first connect and each reconnect. The
+   * shell uses it to re-read the server's TLS status when an earlier read failed. */
+  onWelcome?: () => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -215,6 +255,11 @@ export class WorldSession {
   readonly actorSelection = new ActorSelection();
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */
   readonly tokenSelection = new TokenSelection();
+  /** Whether this session's user broadcasts their measure-tool drags (the shared live ruler's
+   * toggle). Owned here because the session owns the user identity: it is constructed with the
+   * session's immutable `selfId`, so it reads and persists under that user's storage key. The
+   * `ToolRail` toggle writes it and the measure tool reads it through AppContext. */
+  readonly shareRuler: ShareRulerPreference;
   /** `onAssetChanged` subscriber set. */
   #assetListeners = new Set<(msg: AssetChangedNotice) => void>();
   /** `onPing` subscriber set. */
@@ -243,17 +288,36 @@ export class WorldSession {
       emote: string;
     }) => void
   >();
+  /** `onRuler` subscriber set. */
+  #rulerListeners = new Set<(msg: RulerNotice) => void>();
   /** `onVfx` subscriber set. */
   #vfxListeners = new Set<(msg: VfxNotice) => void>();
+  /** `onPresentNote` subscriber set. */
+  #presentNoteListeners = new Set<(msg: PresentNoteNotice) => void>();
+  /** `onPortalOffer` subscriber set. */
+  #portalOfferListeners = new Set<(msg: PortalOfferNotice) => void>();
+  /** `onScrollingText` subscriber set. */
+  #scrollingTextListeners = new Set<
+    (msg: {
+      /** The token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+    }) => void
+  >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
     (msg: {
       /** The token that moved. */
       tokenId: string;
+      /** The `gesture` the request was issued with, when it had one. */
+      gesture?: object;
       /** The derived outcome; see `moveRequest`'s doc for how `executed`/`truncated`
        * are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
+      /** `true` on a `rejected` outcome the whole-session pause caused. */
+      paused?: boolean;
     }) => void
   >();
   /** Live `subscribeScene` records, keyed by a locally-generated subscription id. */
@@ -291,6 +355,13 @@ export class WorldSession {
   /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #footprintsSub: SceneSubscription | null = null;
+  /** The server's resolved token nameplates and bars, replaced wholesale by each `"bars"` frame.
+   * `$state` so the canvas re-projects the moment a frame lands; `EMPTY_BARS` until the first
+   * frame, under which no nameplate or bar draws. */
+  #bars = $state<BarsLookup>(EMPTY_BARS);
+  /** Handle for the session-owned `"bars"` subscription; dropped in `leave()` so a second
+   * `enter()` does not stack a duplicate record. */
+  #barsSub: SceneSubscription | null = null;
   /** The per-device mixer + one-shot/loop engine (`AppContext.audio`'s backing); constructed
    * once here (its wire-facing closures read `#ws` lazily, so a pre-`enter()` read is a safe
    * no-op) and disposed in `leave()`. */
@@ -320,6 +391,18 @@ export class WorldSession {
    * so the reference captured into AppContext at mount stays valid and consumers
    * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
+  /** userId → display profile (colour, pronouns, avatar URL) from the same roster read as
+   * `members`; only members with something set have an entry. Mutated in place like `members`. */
+  readonly memberProfiles = new SvelteMap<string, MemberProfile>();
+  /** userId → whether that member currently has a live connection, set from the server's
+   * `presence` transition frames and re-seeded from each Welcome's `online_users` snapshot.
+   * Mutated in place like `members`, so the reference captured into AppContext at mount stays
+   * valid. Once the roster read lands every member has an entry; before it, an absent key
+   * means unknown, not offline. */
+  readonly presence = new SvelteMap<string, boolean>();
+  /** Counter appended to a live-updated avatar URL (`avatarUrl`'s `version`) so an image
+   * element re-requests bytes whose URL did not change. */
+  #profileVersion = 0;
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
    * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
@@ -337,6 +420,10 @@ export class WorldSession {
   /** The live transport, constructed fresh in `enter()` and dropped in `leave()`;
    * `null` before the first `enter()` and after `leave()`. */
   #ws: WsClient | null = null;
+  /** Set by `leave()` and never cleared: a session is single-use per world entry, so an
+   * `enter()` that is still awaiting when `leave()` runs, or that starts afterwards, builds no
+   * socket, subscription or store seed. */
+  #left = false;
   /** The optimistic (predicted) document view backing `documents`. */
   #optimistic: OptimisticClient;
   /** Intents predicted while reconnecting (transport down but the client is still
@@ -378,6 +465,14 @@ export class WorldSession {
     return this.#footprints;
   }
 
+  /** The server's resolved token nameplates and bars. The values and the decision of who receives
+   * them are the server's, read off the `"bars"` derived channel; the client evaluates no
+   * formula and applies no visibility rule of its own.
+   * @returns The current lookup; `EMPTY_BARS` before the first frame. */
+  get bars(): BarsLookup {
+    return this.#bars;
+  }
+
   /** The per-device audio seam (`AppContext.audio`). `AudioEngine` implements `AudioApi`
    * directly for everything but `setChannel`/`duck.setDepth`: those two additionally persist to
    * this device's `shadowcat.audio` mirror — a `localStorage` dependency `AudioEngine` itself
@@ -402,6 +497,10 @@ export class WorldSession {
         }
       },
       unlock: () => engine.unlock(),
+      get needsGesture() {
+        subscribeAudio();
+        return engine.needsGesture;
+      },
       context: () => engine.context(),
       get duck() {
         const duck = engine.duck;
@@ -563,7 +662,7 @@ export class WorldSession {
     },
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.subscribeSearch(query, opts, onUpdate);
   }
 
@@ -673,6 +772,12 @@ export class WorldSession {
    * `ModuleRegistry`, which does not expose its `Deps`) so `defineCombatHooks` can declare
    * against it before any module registers a listener. */
   #hooks: HookBus;
+  /** The session's keybindings controller: owns the window keydown listener, every module's
+   * bindings, and the account's overrides (loaded from `sessionState` at construction and
+   * written back on every change). Disposed in `leave()`. */
+  #keybindings: KeybindingsController;
+  /** Unsubscribes the `sessionState` write-back from `#keybindings`; called in `leave()`. */
+  #keybindingsUnsub: () => void;
   /** The shared service registry every module's `services` wrapper delegates to; also where
    * `#combat` is provided under `COMBAT_SERVICE` for module lookup. */
   #services: ServiceRegistry;
@@ -717,6 +822,11 @@ export class WorldSession {
    * unload (reconcile) and in bulk on `leave()` — a link left behind would
    * keep a previous world's module styles applied app-wide. */
   #moduleStyleLinks = new Map<string, HTMLLinkElement>();
+  /** The last known problem per module, keyed on the install folder id for an external module
+   * and the registry id for a first-party one. A module with no entry has no known problem; a
+   * later successful activation or a successful reload removes its entry. Reactive, so the
+   * module manager reads it through `AppContext.moduleStatus` and re-renders as passes land. */
+  readonly moduleStatus = new SvelteMap<string, ModuleStatusEntry>();
 
   /** Construct a session bound to one connection factory + default module set; call
    * `enter(worldId)` to open the world connection.
@@ -730,6 +840,7 @@ export class WorldSession {
    * ```
    */
   constructor(private readonly opts: WorldSessionOpts) {
+    this.shareRuler = new ShareRulerPreference(opts.selfId, typeof localStorage === "undefined" ? undefined : localStorage);
     this.#logger = opts.logger ?? consoleLogger();
     this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
     this.#hooks = new HookBus(this.#logger);
@@ -746,7 +857,7 @@ export class WorldSession {
     this.#combat = new CombatController({
       documents: this.#optimistic,
       dispatchIntent: (ops) => this.dispatchIntent(ops),
-      sendCombat: (m) => (this.#ws ? this.#ws.combat(m) : Promise.reject(new Error("not connected"))),
+      sendCombat: (m) => (this.#ws ? this.#ws.combat(m) : Promise.reject(new NotConnectedError())),
       selfId: opts.selfId,
       role: () => (this.role === "gm" ? "gm" : this.role ? "player" : null),
       canEdit: (doc, path) => this.canEdit(doc, path),
@@ -781,6 +892,19 @@ export class WorldSession {
       duckDepth: mirror?.duckDepth ?? DEFAULT_DUCK_DEPTH,
       raf: (cb) => requestAnimationFrame(cb),
       caf: (handle) => cancelAnimationFrame(handle),
+      timer: {
+        setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle),
+        setInterval: (cb, ms) => window.setInterval(cb, ms),
+        clearInterval: (handle) => window.clearInterval(handle),
+      },
+      visibility: {
+        isVisible: () => document.visibilityState === "visible",
+        subscribe: (cb) => {
+          document.addEventListener("visibilitychange", cb);
+          return () => document.removeEventListener("visibilitychange", cb);
+        },
+      },
       spatial: () => performanceController.current.spatialAudio,
     });
     setMediaElementFactory(() => document.createElement("audio"));
@@ -789,7 +913,13 @@ export class WorldSession {
         this.#audioEngine.setChannel(id as AudioChannelId, state);
       }
     }
+    this.#keybindings = new KeybindingsController(this.#hooks);
+    this.#keybindings.loadOverrides(getKeybindings());
+    this.#keybindingsUnsub = this.#keybindings.subscribe(() =>
+      setKeybindings(this.#keybindings.serializeOverrides()),
+    );
     this.#modules = new ModuleRegistry({
+      keybindings: this.#keybindings,
       hooks: this.#hooks,
       services: this.#services,
       middleware: new MiddlewareChain(),
@@ -798,6 +928,8 @@ export class WorldSession {
       logger: this.#logger,
       contributions: this.contributions,
       i18n,
+      dispatchIntent: (ops) => this.dispatchIntent(ops),
+      userSettings: new UserModuleSettings(getSessionState().modules),
     });
   }
 
@@ -832,7 +964,7 @@ export class WorldSession {
    * ```
    */
   dispatchIntent(ops: WireOperation[]): boolean {
-    const intentId = crypto.randomUUID();
+    const intentId = randomUuid();
     if (this.#ws?.connected) {
       this.#optimistic.applyIntent(intentId, ops);
       this.#ws.send({ type: "intent", intent_id: intentId, ops });
@@ -939,6 +1071,101 @@ export class WorldSession {
     return () => this.#emoteListeners.delete(cb);
   }
 
+  /** Subscribe to relayed shared rulers; returns an unsubscribe. The server relays every ruler
+   * to every connection, so a frame this connection itself sent is dropped here (it draws its
+   * own local preview) while the same user's frames from another connection are delivered. Only
+   * frames for the scene this client is viewing (`viewedSceneId`) reach the callback, with
+   * `points` unclipped.
+   * @param cb Called with the measuring user, scene, vertices, active flag, and sending
+   * connection's origin token of each update.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function showRuler(user: string, points: [number, number][]): void;
+   * const off = session.onRuler(({ from, points, active }) => active && showRuler(from, points));
+   * off();
+   * ```
+   */
+  onRuler(cb: (msg: RulerNotice) => void): () => void {
+    this.#rulerListeners.add(cb);
+    return () => this.#rulerListeners.delete(cb);
+  }
+
+  /** Subscribe to region-triggered scrolling-text overlays; returns an unsubscribe. Fired only
+   * by the server (a region's own `TriggerEffect::ScrollingText`) — there is no client `send`
+   * counterpart, unlike `onEmote`/`sendEmote`.
+   * @param cb Called with the token and text of each overlay.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function renderScrollingText(token: string, text: string): void;
+   * const off = session.onScrollingText(({ token, text }) => renderScrollingText(token, text));
+   * off();
+   * ```
+   */
+  onScrollingText(
+    cb: (msg: {
+      /** The token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+    }) => void,
+  ): () => void {
+    this.#scrollingTextListeners.add(cb);
+    return () => this.#scrollingTextListeners.delete(cb);
+  }
+
+  /** Subscribe to portal offers the server addressed to this connection; returns an
+   * unsubscribe. No scene filter: the server decides who receives an offer, and a token's
+   * owner must see it whichever scene they are viewing.
+   * @param cb Called with each offer.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const off = session.onPortalOffer(({ offerId, options }) => console.log(offerId, options.length));
+   * off();
+   * ```
+   */
+  onPortalOffer(cb: (msg: PortalOfferNotice) => void): () => void {
+    this.#portalOfferListeners.add(cb);
+    return () => this.#portalOfferListeners.delete(cb);
+  }
+
+  /** Answer a portal offer: pick destination `choice` or decline with `null`. Thin delegate to
+   * `WsClient.choosePortal`; rejects immediately when there is no live transport.
+   * @param offerId The offer being answered.
+   * @param choice The chosen option's `index`, or `null` to decline.
+   * @returns Resolves (void) once the answer is accepted; rejects with the server's reason
+   * otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.choosePortal("offer-1", 0);
+   * ```
+   */
+  choosePortal(offerId: string, choice: number | null): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.choosePortal(offerId, choice);
+  }
+
+  /** Ask the server to re-issue the portal offer for `token`. Thin delegate to
+   * `WsClient.openPortal`; rejects immediately when there is no live transport.
+   * @param token The token standing in a portal-choice region.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.openPortal("token-1");
+   * ```
+   */
+  openPortal(token: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.openPortal(token);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -977,6 +1204,47 @@ export class WorldSession {
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
+  /** Broadcast this user's live ruler on `scene` to the other members. Takes an explicit
+   * `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target) so a stop frame reaches the
+   * scene the ruler was started on even after the view has moved. No-op when disconnected. The
+   * server re-authorizes scene READ and bounds the point count, the coordinates and the send
+   * rate. A list over `RULER_LIMITS.maxPoints` vertices, or a non-finite coordinate (JSON
+   * carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is answered
+   * with a generic `error` to this connection; a finite coordinate beyond
+   * `RULER_LIMITS.maxCoord`, an unreadable scene, an over-budget rate or an over-long `origin`
+   * is dropped silently. Every connection in the room receives `points` unclipped.
+   * @param scene The scene the ruler is measured on.
+   * @param points The route preview's vertices in scene coordinates, start through goal.
+   * @param active `false` ends this user's ruler for observers.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.sendRulerUpdate("scene-1", [[0, 0], [70, 70]], true);
+   * session.sendRulerUpdate("scene-1", [], false);
+   * ```
+   */
+  sendRulerUpdate(scene: string, points: [number, number][], active: boolean): void {
+    this.#ws?.sendRulerUpdate(scene, points, active);
+  }
+
+  /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+   * and/or one `level`. No-op when disconnected. The server re-authorizes `WorldRole.Gm`
+   * and refuses a non-GM sender or a scene outside this world generically, so this is
+   * client-advisory only — every connection's next `"vision"` push (this one included)
+   * reflects the cleared memory once the server's `explored_fog_reset` broadcast arrives.
+   * @param scene The scene whose explored memory is reset.
+   * @param opts Optionally narrow the reset to one `user` and/or one `level`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const sceneId: string;
+   * session.resetExploredFog(sceneId);
+   * ```
+   */
+  resetExploredFog(scene: string, opts?: ResetExploredFogOptions): void {
+    this.#ws?.resetExploredFog(scene, opts);
+  }
+
   /** Subscribe to relayed VFX one-shots (incl. our own echo); returns an unsubscribe.
    * @param cb Called with each one-shot's scene, position, asset, sending user, and id.
    * @returns A function that removes this listener.
@@ -991,6 +1259,37 @@ export class WorldSession {
   onVfx(cb: (msg: VfxNotice) => void): () => void {
     this.#vfxListeners.add(cb);
     return () => this.#vfxListeners.delete(cb);
+  }
+
+  /** Subscribe to relayed "the GM is presenting this note" signals (incl. our own echo);
+   * returns an unsubscribe.
+   * @param cb Called with each presented note id and the presenting GM.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const off = session.onPresentNote((m) => console.log(m.noteId));
+   * off();
+   * ```
+   */
+  onPresentNote(cb: (msg: PresentNoteNotice) => void): () => void {
+    this.#presentNoteListeners.add(cb);
+    return () => this.#presentNoteListeners.delete(cb);
+  }
+
+  /** GM-only: ask the server to present a shared note to every connected client. Thin
+   * delegate to `WsClient.presentNote`; rejects immediately when there is no live transport.
+   * @param noteId The `note` document to present.
+   * @returns Resolves once accepted; rejects with the server's reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.presentNote("note-1");
+   * ```
+   */
+  presentNote(noteId: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.presentNote(noteId);
   }
 
   /** Broadcast a one-shot VFX playback request. No-op when disconnected. The server
@@ -1038,7 +1337,7 @@ export class WorldSession {
     footprintRadius: number,
     token?: string,
   ): Promise<PathResult> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.pathfind(scene, start, waypoints, footprintRadius, token);
   }
 
@@ -1049,6 +1348,8 @@ export class WorldSession {
    * @param scene The scene the token moves on.
    * @param tokenId The token to move.
    * @param path The requested waypoints, in order.
+   * @param gesture Optional identity shared by every request one user gesture issues; echoed on the
+   * published outcome so the single consumer coalesces a multi-token gesture's notices.
    * @returns The broadcast `MoveStream` confirming the move (see `onMoveOutcome` for a
    * derived executed/truncated/rejected signal).
    * @example
@@ -1063,8 +1364,12 @@ export class WorldSession {
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ): Promise<MoveStream> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) {
+      for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected" });
+      return Promise.reject(new NotConnectedError());
+    }
     const p = this.#ws.moveRequest(scene, tokenId, path);
     // An observability signal derived from THIS SAME promise without altering its
     // resolution for the caller. Derived from geometry, NOT from the frame's `truncated`
@@ -1085,15 +1390,16 @@ export class WorldSession {
     p.then(
       (stream) => {
         const executed = goal !== null && stream.stop[0] === goal[0] && stream.stop[1] === goal[1];
-        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: executed ? "executed" : "truncated" });
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: executed ? "executed" : "truncated" });
       },
       // "rejected" covers every way this promise can fail to resolve with a MoveStream: a
       // genuine server `MoveError`, the 10s correlated-request timeout, or a transport
       // disconnect — not exclusively "the server refused the move". Fail-safe by construction:
       // a legal move whose confirmation is merely lost/delayed surfaces as "rejected", never
       // as a false "executed".
-      () => {
-        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: "rejected" });
+      (reason: unknown) => {
+        const paused = reason instanceof SessionPausedError;
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected", ...(paused ? { paused } : {}) });
       },
     );
     return p;
@@ -1101,7 +1407,9 @@ export class WorldSession {
 
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) —
    * a read-only observability signal, not a broadcast of every scene viewer's moves (that's
-   * `onMoveStream`, consumed internally for animation). Returns an unsubscribe.
+   * `onMoveStream`, consumed internally for animation). The `Stage` module is the single
+   * consumer that raises the player-visible notice from a `rejected` outcome. Returns an
+   * unsubscribe.
    * @param cb Called with the moved token and its derived outcome.
    * @returns A function that removes this listener.
    * @example
@@ -1116,9 +1424,13 @@ export class WorldSession {
     cb: (msg: {
       /** The token that moved. */
       tokenId: string;
+      /** The `gesture` the request was issued with, when it had one. */
+      gesture?: object;
       /** The derived outcome — see `moveRequest`'s doc for how `executed`/
        * `truncated` are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
+      /** `true` on a `rejected` outcome the whole-session pause caused. */
+      paused?: boolean;
     }) => void,
   ): () => void {
     this.#moveOutcomeListeners.add(cb);
@@ -1140,7 +1452,7 @@ export class WorldSession {
    * ```
    */
   sendChatMessage(opts: ChatSendOptions): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.sendChatMessage(opts);
   }
 
@@ -1157,7 +1469,7 @@ export class WorldSession {
    * ```
    */
   editChatMessage(messageId: string, content: string): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.editChatMessage(messageId, content);
   }
 
@@ -1173,8 +1485,51 @@ export class WorldSession {
    * ```
    */
   deleteChatMessage(messageId: string): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.deleteChatMessage(messageId);
+  }
+
+  /** Request a door toggle on the named wall. Thin delegate to `WsClient.toggleDoor`; rejects
+   * immediately when there is no live transport. Resolution is silence-based like the chat
+   * ops (the server confirms via the broadcast Event echo of the wall's update; only a
+   * rejection replies, as a correlated `door_toggle_error`).
+   * @param sceneId The scene the wall is on (checked server-side against the wall's own
+   * parent, never trusted to select).
+   * @param wallId The wall whose door state flips.
+   * @param to The target state (`closed`/`open`; `locked` is GM-only).
+   * @returns Resolves (void) once the toggle is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.toggleDoor("s1", "wall-1", "open");
+   * ```
+   */
+  toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.toggleDoor(sceneId, wallId, to);
+  }
+
+  /** Request a module-placed effect over an area. Thin delegate to `WsClient.placeEffect`;
+   * rejects immediately when there is no live transport. Resolution is silence-based like
+   * `toggleDoor`: the broadcast Event of the region create confirms success and only a
+   * rejection replies (`place_effect_error`).
+   * @param module The installed module's folder id that declares the placement.
+   * @param placement The placement declaration id within that module.
+   * @param sceneId The scene the region is created on.
+   * @param shape The area the player chose, scene units.
+   * @param caster The caster token id, required when the declaration's `who` is `caster_owner`.
+   * @returns Resolves (void) once the placement is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }, "tok-1");
+   * ```
+   */
+  placeEffect(module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.placeEffect(module, placement, sceneId, shape, caster);
   }
 
   /** GM-only roll correction. Resolves/rejects with the correlated outcome.
@@ -1190,8 +1545,24 @@ export class WorldSession {
    * ```
    */
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.recalcRoll(messageId, rollId, ops);
+  }
+
+  /** GM-only reveal or conceal of a stored message. Resolves/rejects with the correlated outcome.
+   * @param messageId The message whose audience changes.
+   * @param audience The replacement readership.
+   * @returns Same silence-based resolution as `sendChatMessage` -- resolves when the error window
+   * elapses with no correlated `chat_error`, rejects on one or on disconnect.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.reviseAudience("msg-1", { kind: "gm_only" });
+   * ```
+   */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.reviseAudience(messageId, audience);
   }
 
   /** Send a merge intent (`merge_pull`/`merge_push`/`merge_revert`). Thin delegate to
@@ -1205,7 +1576,7 @@ export class WorldSession {
    * ```
    * declare const session: WorldSession;
    * declare const childId: string;
-   * await session.mergeIntent({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId });
+   * await session.mergeIntent({ type: "merge_revert", request_id: randomUuid(), child_id: childId });
    * ```
    */
   mergeIntent(
@@ -1218,7 +1589,7 @@ export class WorldSession {
     >,
     opts: WsTimeoutOptions = {},
   ): Promise<WireMergeOutcome> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.merge(msg, opts);
   }
 
@@ -1232,7 +1603,7 @@ export class WorldSession {
    * ```
    */
   drawTable(opts: DrawTableOptions): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.drawTable(opts);
   }
 
@@ -1256,7 +1627,7 @@ export class WorldSession {
     onUpdate: (f: SceneFrame) => void,
     opts: SubscribeSceneOpts = {},
   ): SceneSubscription {
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const rec = { channel, onUpdate, asUser: opts.asUser, level: opts.level, handle: null as SceneSubscription | null, gen: 0 };
     this.#sceneSubs.set(id, rec);
     this.#establishScene(id, rec);
@@ -1329,16 +1700,29 @@ export class WorldSession {
    * ```
    */
   async enter(worldId: string): Promise<void> {
+    if (this.#left) {
+      this.#logger.warn("enter ignored: this session has been left; construct a new WorldSession");
+      return;
+    }
     this.world = worldId;
     this.state = "connecting";
-    let snapshotSeq: number | null = null;
+    let snapshot: Awaited<ReturnType<typeof getWorldSnapshot>> | undefined;
     try {
-      const snapshot = await getWorldSnapshot(worldId);
-      this.store.seedDocuments(snapshot.documents);
-      this.#optimistic.seedDocuments(snapshot.documents);
-      snapshotSeq = snapshot.seq;
+      snapshot = await getWorldSnapshot(worldId);
     } catch (e) {
       this.#logger.warn("world snapshot bootstrap failed; falling back to full replay", e);
+    }
+    // `leave()` ran during the snapshot fetch: build no socket or subscription and seed no store.
+    if (this.#left) return;
+    let snapshotSeq: number | null = null;
+    if (snapshot) {
+      try {
+        this.store.seedDocuments(snapshot.documents);
+        this.#optimistic.seedDocuments(snapshot.documents);
+        snapshotSeq = snapshot.seq;
+      } catch (e) {
+        this.#logger.warn("world snapshot bootstrap failed; falling back to full replay", e);
+      }
     }
     this.#ws = new WsClient({
       world: worldId,
@@ -1370,6 +1754,7 @@ export class WorldSession {
           this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
+          this.opts.onWelcome?.();
           void this.#onWelcome(w);
         },
         // After resync, authoritative state is current and the optimistic view has
@@ -1377,6 +1762,7 @@ export class WorldSession {
         onResyncComplete: () => this.#flushOfflineQueue(),
         onError: (e) => this.#logger.error("world session ws error", e),
         onEvicted: () => this.opts.onEvicted?.(),
+        onJoinRefused: (code) => this.opts.onJoinRefused?.(code),
         onAssetChanged: (msg) => {
           // Bump the resolver first so a notified panel re-resolves the new URL.
           this.assets.onAssetChanged(msg);
@@ -1397,13 +1783,61 @@ export class WorldSession {
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
         },
+        onPortalOffer: (msg) => {
+          for (const cb of this.#portalOfferListeners) cb(msg);
+        },
+        onScrollingText: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a
+          // scrolling-text overlay broadcasts room-wide (or GM-only) and must render only for
+          // recipients currently viewing that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#scrollingTextListeners) cb(msg);
+        },
+        onRuler: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a ruler
+          // broadcasts room-wide and must render only for recipients currently viewing that
+          // scene (a GM roaming scene B must not surface scene A's ruler on B's grid).
+          if (msg.scene !== this.viewedSceneId) return;
+          // The drop keys on the origin token, not on `msg.from`: the originating connection
+          // draws its own local preview, while another connection of the same user has none and
+          // must render the relayed ruler.
+          if (msg.origin === this.#ws?.rulerOrigin) return;
+          for (const cb of this.#rulerListeners) cb(msg);
+        },
+        // Every connection, the saving GM's own included, re-runs the same reconcile the save
+        // path calls directly; `reconcileInstalledModules`'s diff against the loaded set makes
+        // the repeat a no-op.
+        onModulesChanged: () => {
+          void this.reconcileInstalledModules();
+        },
+        onPresence: (user, online) => this.presence.set(user, online),
+        // The frame carries the roster's own projection, so it lands in `members` and
+        // `memberProfiles` exactly as a roster read does: a member with nothing set has no
+        // profile entry. A member seated mid-session is new to `members`; its presence is
+        // offline until its own `presence` frame says otherwise, and an existing entry is kept.
+        // The version query busts the image cache, as the avatar URL is the same after a
+        // replacement.
+        onMemberProfile: (p) => {
+          this.members.set(p.user, p.username);
+          if (!this.presence.has(p.user)) this.presence.set(p.user, false);
+          const avatar = avatarUrl(this.world ?? "", p.user, p.hasAvatar, ++this.#profileVersion);
+          if (p.colour || p.pronouns || avatar) {
+            this.memberProfiles.set(p.user, { colour: p.colour, pronouns: p.pronouns, avatar });
+          } else {
+            this.memberProfiles.delete(p.user);
+          }
+        },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
+        onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {
           // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a vfx
           // one-shot broadcasts room-wide and must render only for recipients currently
           // viewing that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#vfxListeners) cb(msg);
+        },
+        onPresentNote: (msg) => {
+          for (const cb of this.#presentNoteListeners) cb(msg);
         },
       },
     });
@@ -1440,6 +1874,10 @@ export class WorldSession {
     this.#footprintsSub = this.subscribeScene("footprints", (f) => {
       this.#footprints = parseFootprints(f.payload);
     });
+    // Same lifecycle as `#footprintsSub`: the per-recipient redacted nameplates and bars.
+    this.#barsSub = this.subscribeScene("bars", (f) => {
+      this.#bars = parseBars(f.payload);
+    });
     // Same lifecycle as `#footprintsSub`: server-resolved per-recipient combat numbers, never
     // client-derived.
     this.#combatSub = this.subscribeScene("combat", (f) => {
@@ -1470,6 +1908,8 @@ export class WorldSession {
       }
     }
     await this.#ws.start();
+    // `leave()` ran during `start()` and already stopped the client; it owns the final state.
+    if (this.#left) return;
     this.state = "open";
   }
 
@@ -1524,6 +1964,11 @@ export class WorldSession {
       this.#requirements = w.capability_requirements;
       this.#roleCaps = w.role_capabilities;
       this.#serverVersion = w.server_version;
+      // Replace the presence map with this Welcome's snapshot, synchronously and before any
+      // await: a `presence` transition frame arrives after this Welcome in socket order, so it
+      // applies on top of the snapshot, and a reconnect drops entries the old connection left.
+      this.presence.clear();
+      for (const user of w.online_users) this.presence.set(user, true);
       // Snapshot BEFORE any await below: a scene subscription added while this
       // Welcome's async chain is still in flight (module activation / external-module
       // load / member fetch) already self-establishes via `subscribeScene`'s own
@@ -1550,7 +1995,7 @@ export class WorldSession {
         }
         this.#activated = true;
         try {
-          await this.#modules.activate();
+          this.#reportModuleStatus((await this.#modules.activate()).outcomes, [], []);
           await this.#loadExternalModules(w.world, w.server_version);
         } catch (e) {
           this.#activated = false;
@@ -1571,7 +2016,21 @@ export class WorldSession {
         // Mutate in place (not reassign) so the AppContext-captured reference
         // stays valid; reconnect re-populates the same Map.
         this.members.clear();
-        for (const m of list) this.members.set(m.user, m.username);
+        this.memberProfiles.clear();
+        for (const m of list) {
+          this.members.set(m.user, m.username);
+          const avatar = avatarUrl(w.world, m.user, m.has_avatar);
+          if (m.colour || m.pronouns || avatar) {
+            this.memberProfiles.set(m.user, {
+              colour: m.colour ?? null,
+              pronouns: m.pronouns ?? null,
+              avatar,
+            });
+          }
+          // The snapshot is complete, so a member it did not list is offline. A `presence`
+          // frame that landed during the roster await already has an entry and is kept.
+          if (!this.presence.has(m.user)) this.presence.set(m.user, false);
+        }
       } catch (e) {
         this.#logger.warn("member list fetch failed", e);
       }
@@ -1645,7 +2104,9 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      if (result.loaded.length > 0) await this.#modules.activate();
+      const outcomes =
+        result.loaded.length > 0 ? (await this.#modules.activate()).outcomes : [];
+      this.#reportModuleStatus(outcomes, result.failed, resolved);
       // Styles follow activation, never precede it, and only a module that
       // actually activated gets a link: a per-module activation failure logs
       // and skips without rejecting (see `ModuleRegistry.activate`), so
@@ -1659,6 +2120,54 @@ export class WorldSession {
       );
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
+    }
+  }
+
+  /** Folds one load/activation pass into `moduleStatus` and forwards each problem to
+   * `opts.onModuleStatus`. Both failure classes (a load failure and an activation skip or
+   * failure) go through this one function so the persistent map and the toast callback cannot
+   * disagree. An `"activated"` outcome clears that module's earlier entry. An external module is
+   * keyed on its install folder id (`#externalModuleIds`' key space, the one the module manager
+   * lists by); a first-party module has no folder id and keeps its registry id.
+   * @param outcomes The pass's `ModuleActivationOutcome`s, keyed by registry (manifest) id.
+   * @param failed The pass's `ModuleLoadResult.failed` entries, keyed by manifest id.
+   * @param resolved The entries handed to `loadModules`, used to map a failed manifest id back
+   * to its folder id; empty for a first-party pass.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * // called after every ModuleRegistry.activate() and loadModules() pass; not part of the public API
+   * session.#reportModuleStatus([{ id: "example", status: "activated" }], [], []);
+   * ```
+   */
+  #reportModuleStatus(
+    outcomes: ModuleActivationOutcome[],
+    failed: ModuleLoadFailure[],
+    resolved: ResolvedModuleEntry[],
+  ): void {
+    const folderByManifestId = new Map<string, string>();
+    for (const [folderId, manifestId] of this.#externalModuleIds) {
+      folderByManifestId.set(manifestId, folderId);
+    }
+    for (const r of resolved) folderByManifestId.set(r.manifest.id, r.folderId);
+    const record = (entry: ModuleStatusEntry): void => {
+      const key = folderByManifestId.get(entry.id) ?? entry.id;
+      const prior = this.moduleStatus.get(key);
+      this.moduleStatus.set(key, { ...entry, id: key });
+      // `ModuleRegistry.activate` re-reports every module that stays inactive on each pass, so
+      // only a change in a module's problem is announced. Only the GM can act on a module
+      // failure; a player's map still fills for readers of `moduleStatus`.
+      if (prior?.status === entry.status && prior.error === entry.error) return;
+      if (this.role !== "gm") return;
+      this.opts.onModuleStatus?.(key, entry.status, entry.error ?? null);
+    };
+    for (const f of failed) record({ id: f.id, status: "load-failed", error: f.error });
+    for (const o of outcomes) {
+      if (o.status === "activated") {
+        this.moduleStatus.delete(folderByManifestId.get(o.id) ?? o.id);
+      } else {
+        record({ id: o.id, status: o.status, ...(o.error === undefined ? {} : { error: o.error }) });
+      }
     }
   }
 
@@ -1700,7 +2209,9 @@ export class WorldSession {
       resolved.push({
         folderId: id,
         manifest: info.manifest as ModuleManifest,
-        entry: info.entry_url,
+        // The server sends the entry as a root-relative `/modules/<id>/...`; the import must carry
+        // the route prefix like every other same-origin request.
+        entry: apiPath(info.entry_url),
       });
     }
     return resolved;
@@ -1793,13 +2304,26 @@ export class WorldSession {
     this.#moduleStyleLinks.delete(manifestId);
   }
 
+  /** The manifests of every module active in this session, first-party and external.
+   * @returns One manifest per active module, from `ModuleRegistry.activeManifests`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const manifests = session.activeModuleManifests();
+   * ```
+   */
+  activeModuleManifests(): ModuleManifest[] {
+    return this.#modules.activeManifests();
+  }
+
   /** Re-fetches this world's enabled external-module set and reconciles the running session
    * against it: unloads (cascade) any currently-loaded external module no longer enabled, and
    * loads + activates any newly-enabled one. First-party modules (`opts.modules`) are never
    * touched — this is deliberately scoped to external/community modules only, mirroring the
    * `ModuleManager.svelte` GM UI's own scope. Per-entry contained: one module's load/unload
    * failure is logged and does not abort the others. A no-op if called before `#onWelcome` has
-   * ever run (`world`/`#serverVersion` unset).
+   * ever run (`world`/`#serverVersion` unset). Safe to repeat: a second pass over an unchanged
+   * enabled set finds nothing to diff.
    * @returns Resolves once every diffed module has been attempted; never rejects.
    * @example
    * ```
@@ -1821,6 +2345,7 @@ export class WorldSession {
         try {
           await this.#modules.unload(manifestId, { cascade: true });
           this.#externalModuleIds.delete(folderId);
+          this.moduleStatus.delete(folderId);
           this.#removeModuleStyle(manifestId);
         } catch (e) {
           this.#logger.warn(`external module ${manifestId} failed to unload during reconcile`, e);
@@ -1840,7 +2365,9 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load during reconcile: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      if (result.loaded.length > 0) await this.#modules.activate();
+      const outcomes =
+        result.loaded.length > 0 ? (await this.#modules.activate()).outcomes : [];
+      this.#reportModuleStatus(outcomes, result.failed, resolved);
       // Styles follow activation, never precede it, and only a module that
       // actually activated gets a link: a per-module activation failure logs
       // and skips without rejecting (see `ModuleRegistry.activate`), so
@@ -1861,7 +2388,9 @@ export class WorldSession {
    * `state`/`role`/`world`/`#gmViewedScene`. Does not clear `store`/`documents`, module
    * registrations, or the `#activated`/`#modulesAdded` latches — the shell's own usage
    * (`App`'s `leaveWorld`) discards this instance and constructs a fresh
-   * `WorldSession` for the next `enter()` rather than reusing this one.
+   * `WorldSession` for the next `enter()` rather than reusing this one. Safe at any time: an
+   * `enter()` still awaiting its snapshot or its socket start returns without building or
+   * opening anything, and a later `enter()` is a logged no-op.
    * @example
    * ```
    * declare const session: WorldSession;
@@ -1869,9 +2398,13 @@ export class WorldSession {
    * ```
    */
   leave(): void {
+    this.#left = true;
     this.#footprintsSub?.unsubscribe();
     this.#footprintsSub = null;
     this.#footprints = EMPTY_FOOTPRINTS;
+    this.#barsSub?.unsubscribe();
+    this.#barsSub = null;
+    this.#bars = EMPTY_BARS;
     this.#combatSub?.unsubscribe();
     this.#combatSub = null;
     this.#combat.setResolved(EMPTY_COMBATS);
@@ -1881,6 +2414,8 @@ export class WorldSession {
     this.#audioUnsub?.();
     this.#audioUnsub = null;
     this.#audioEngine.dispose();
+    this.#keybindingsUnsub();
+    this.#keybindings.dispose();
     for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
       this.#removeModuleStyle(manifestId);
     }

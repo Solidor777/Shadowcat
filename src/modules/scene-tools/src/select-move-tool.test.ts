@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildTokenDoc, buildSceneDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
+import { noticeOncePerGesture, DocumentStore, AssetResolver, RequestTimeoutError, PathfindError, buildTokenDoc, buildSceneDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { ToolController, makeSelectMoveTool, type ToolContext } from "./controller.svelte";
@@ -19,7 +19,7 @@ function setup() {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t1") }],
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "t1") }],
   });
   const drags: (string | null)[] = [];
   const overlays: unknown[][] = [];
@@ -42,8 +42,8 @@ function setupTwo() {
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok2") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok2") },
     ],
   });
   const bridge = new SceneInteractionBridge();
@@ -134,6 +134,17 @@ function harness(opts: {
   role: "gm" | "player";
   tokens: { id: string; x: number; y: number }[];
   moveRequestRejects?: boolean;
+  /** `moveRequest` throws synchronously instead of returning a promise. */
+  moveRequestThrows?: boolean;
+  /** How the route request resolves: rejects, or answers with a route that never leaves the start
+   * (`emptyBlocked` flags it truncated; `emptyPlain` is a zero-displacement route). */
+  pathfindMode?: "rejects" | "emptyBlocked" | "emptyPlain";
+  /** The rejection value `pathfindMode: "rejects"` throws; defaults to the server's `unreachable`. */
+  pathfindError?: () => unknown;
+  /** Only these token ids' route requests reject; the rest resolve normally. */
+  routeRejectsFor?: string[];
+  /** The session pause freezes this user's token movement (`ToolContext.movesFrozen`). */
+  movesFrozen?: boolean;
 }) {
   const docs = new DocumentStore();
   docs.applyCommand({
@@ -142,13 +153,14 @@ function harness(opts: {
       { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
       ...opts.tokens.map((t) => ({
         op: "create" as const,
-        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, t.id),
+        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, t.id),
       })),
     ],
   });
 
   const dispatchedOps: WireOperation[] = [];
   const moveRequests: { scene: string; token: string; goal: [number, number] }[] = [];
+  const gestures: (object | undefined)[] = [];
   const previewOverlayCalls: unknown[][] = [];
   let t = 0;
 
@@ -157,13 +169,20 @@ function harness(opts: {
 
   const sel = new TokenSelection();
 
-  const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints) => {
+  const notices: { message: string; level: string | undefined }[] = [];
+  const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints, _footprint, token) => {
+    if (token !== undefined && opts.routeRejectsFor?.includes(token)) throw (opts.pathfindError ?? (() => new PathfindError("unreachable", "unreachable")))();
+    if (opts.pathfindMode === "rejects") throw (opts.pathfindError ?? (() => new PathfindError("unreachable", "unreachable")))();
+    if (opts.pathfindMode === "emptyBlocked") return { path: [start], cost: 0, arrested: false, truncated: true, budgetCells: 0 };
+    if (opts.pathfindMode === "emptyPlain") return { path: [start], cost: 0, arrested: false, truncated: false, budgetCells: null };
     const goal = waypoints.at(-1)!;
     return { path: [start, goal], cost: 1, arrested: false, truncated: false, budgetCells: null };
   };
-  const moveRequest: ToolContext["moveRequest"] = (scene, token, path): Promise<MoveStream> => {
+  const moveRequest: ToolContext["moveRequest"] = (scene, token, path, gesture): Promise<MoveStream> => {
     const goal = path.at(-1)!;
     moveRequests.push({ scene, token, goal });
+    gestures.push(gesture);
+    if (opts.moveRequestThrows) throw new Error("transport seam threw");
     if (opts.moveRequestRejects) return Promise.reject(new Error("refused"));
     return Promise.resolve({
       requestId: "r1", tokenId: token, mover: "u1", scene, startServerMs: 0,
@@ -183,6 +202,8 @@ function harness(opts: {
     tokenSelection: sel,
     pathfind,
     moveRequest,
+    notify: (message, level) => notices.push({ message, level }),
+    movesFrozen: () => opts.movesFrozen ?? false,
   };
   const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
 
@@ -213,6 +234,8 @@ function harness(opts: {
     get dispatchedOps(): WireOperation[] { return dispatchedOps; },
     get moveRequests(): { scene: string; token: string; goal: [number, number] }[] { return moveRequests; },
     get previewOverlayCalls(): unknown[][] { return previewOverlayCalls; },
+    get gestures(): (object | undefined)[] { return gestures; },
+    get notices(): { message: string; level: string | undefined }[] { return notices; },
     documents: docs,
   };
 }
@@ -226,6 +249,16 @@ test("a non-GM drag issues exactly one moveRequest per selected token, on releas
     { scene: "s1", token: "t2", goal: [200, 0] },
   ]);
   expect(h.dispatchedOps).toEqual([]);
+});
+
+test("a drag while the session pause freezes movement sends nothing, raises the paused notice once and clears the preview", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], movesFrozen: true });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests).toEqual([]);
+  expect(h.dispatchedOps).toEqual([]);
+  expect(h.notices).toEqual([{ message: "intent.rejected.paused", level: "warning" }]);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
 });
 
 test("a GM drag issues one batched update and zero move requests", async () => {
@@ -258,6 +291,101 @@ test("a refused player move surfaces feedback rather than failing silently", asy
   expect((h.documents.get("t1")!.engine as { x: number }).x).toBe(0); // never moved locally
 });
 
+test("a rejected drag route request raises the no-route notice and drops the preview", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects" });
+  h.select(["t1"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests).toEqual([]);
+  expect(h.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
+});
+
+
+test("a drag route failure is worded by `routeFailureKey`: a typed rejection reaches its own notice", async () => {
+  const typed = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects", pathfindError: () => new PathfindError("boom", "invalid") });
+  typed.select(["t1"]);
+  await typed.drag({ dx: 100, dy: 0 });
+  expect(typed.notices).toEqual([{ message: "tools.moveInvalid", level: "warning" }]);
+  expect(typed.previewOverlayCalls.at(-1)).toEqual([]);
+  const textOnly = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects", pathfindError: () => new Error("not connected") });
+  textOnly.select(["t1"]);
+  await textOnly.drag({ dx: 100, dy: 0 });
+  expect(textOnly.notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a drag whose tokens fail differently has ONE notice owner: the tool's notice and the host's rejection share the gesture", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], routeRejectsFor: ["t1"] });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  // t1's route failed and the tool spoke for the gesture; t2's request went out under the same gesture.
+  expect(h.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  expect(h.gestures).toHaveLength(1);
+  const hostNotices: string[] = [];
+  expect(noticeOncePerGesture(h.gestures[0], () => hostNotices.push("tools.moveRejected"))).toBe(false);
+  expect(hostNotices).toEqual([]);
+});
+
+test("a multi-token drag whose route requests all time out raises one timeout notice", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], pathfindMode: "rejects", pathfindError: () => new RequestTimeoutError("pathfind request timeout") });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.notices).toEqual([{ message: "tools.moveTimeout", level: "warning" }]);
+});
+
+test("a multi-token drag whose route requests all fail raises one notice, not one per token", async () => {
+  const rejected = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }, { id: "t3", x: 200, y: 0 }], pathfindMode: "rejects" });
+  rejected.select(["t1", "t2", "t3"]);
+  await rejected.drag({ dx: 100, dy: 0 });
+  expect(rejected.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  const blocked = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], pathfindMode: "emptyBlocked" });
+  blocked.select(["t1", "t2"]);
+  await blocked.drag({ dx: 100, dy: 0 });
+  expect(blocked.notices).toEqual([{ message: "tools.moveBlocked", level: "warning" }]);
+});
+
+test("every moveRequest of one drag shares one gesture identity; the next drag gets a fresh one", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }] });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.gestures).toHaveLength(2);
+  expect(h.gestures[0]).toBeDefined();
+  expect(h.gestures[1]).toBe(h.gestures[0]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.gestures).toHaveLength(4);
+  expect(h.gestures[2]).not.toBe(h.gestures[0]);
+});
+
+test("a synchronous throw from moveRequest is caught: preview dropped and one notice", async () => {
+  // An unhandled rejection also fails the whole vitest run, so the assertions below pin the
+  // recovery (preview dropped, exactly one notice) that the catch path provides.
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], moveRequestThrows: true });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  await flush();
+  expect(h.moveRequests).toHaveLength(2);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
+  expect(h.notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a route that never leaves the start raises the blocked notice only when the server truncated it", async () => {
+  const blocked = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "emptyBlocked" });
+  blocked.select(["t1"]);
+  await blocked.drag({ dx: 100, dy: 0 });
+  expect(blocked.notices).toEqual([{ message: "tools.moveBlocked", level: "warning" }]);
+  const plain = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "emptyPlain" });
+  plain.select(["t1"]);
+  await plain.drag({ dx: 100, dy: 0 });
+  expect(plain.notices).toEqual([]);
+});
+
+test("a rejected moveRequest raises no notice from the tool: the host's move-outcome consumer owns it", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], moveRequestRejects: true });
+  h.select(["t1"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests.length).toBe(1);
+  expect(h.notices).toEqual([]);
+});
+
 test("a GM click on a light marker selects it for editing; a wall click selects the wall", () => {
   const docs = new DocumentStore();
   docs.applyCommand({
@@ -269,7 +397,7 @@ test("a GM click on a light marker selects it for editing; a wall click selects 
         doc: buildLightDoc("w1", "s1", {
           x: 500, y: 500,
           elevation: null,
-          emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+          emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
         }, "light-1"),
       },
       {
@@ -331,4 +459,127 @@ test("a non-GM click on a wall or light opens NO editor selection", () => {
   const tool = makeSelectMoveTool(ctx, controller);
   expect(tool.onPointerDown({ x: 200, y: 700 }, noShift)).toBe(false);
   expect(controller.editingEntity).toBeNull();
+});
+
+// --- Door click-to-toggle (`ClientMsg::ToggleDoor` via `ctx.toggleDoor`, never an Update op) ---
+
+/** A ToolContext driving the select/move tool over one scene with one door wall (segment
+ * (0,700)-(400,700)) and optionally one token owned by the clicker ("u1"), plus recording
+ * stubs for the `toggleDoor` seam and `notify` toasts. The wall sits at y=700: a token at
+ * (100,650) is 50 world units from it (in reach: ≤ 1.5 × the 100-unit cell); a token at
+ * (100,100) is 600 units out (beyond reach). */
+function doorHarness(opts: {
+  role: "gm" | "player";
+  door: "closed" | "open" | "locked" | null;
+  tokenAt?: { x: number; y: number };
+  toggleDoorRejects?: boolean;
+}) {
+  const docs = new DocumentStore();
+  const ops: WireOperation[] = [
+    { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
+    {
+      op: "create",
+      doc: buildSceneEntityDoc("w1", "s1", "wall", {
+        seg: { x1: 0, y1: 700, x2: 400, y2: 700 },
+        blocksSight: true, blocksMove: true, blocksLight: true,
+        ...(opts.door ? { door: opts.door } : {}),
+      }, "wall-1"),
+    },
+  ];
+  if (opts.tokenAt) {
+    const tok = buildTokenDoc("w1", "s1", {
+      x: opts.tokenAt.x, y: opts.tokenAt.y, w: 100, h: 100, rotation: 0,
+      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
+    }, "tok1");
+    tok.owner = "u1";
+    ops.push({ op: "create", doc: tok });
+  }
+  docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
+
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({}));
+  const toggles: { scene: string; wall: string; to: string }[] = [];
+  const notes: string[] = [];
+  const dispatched: WireOperation[] = [];
+  const ctx: ToolContext = {
+    scene: bridge,
+    dispatchIntent: (o) => dispatched.push(...o),
+    documents: docs,
+    assets: new AssetResolver(),
+    world: "w1",
+    role: opts.role,
+    sendPing: () => {},
+    t: (k) => k,
+    tokenSelection: new TokenSelection(),
+    selfId: "u1",
+    toggleDoor: (scene, wall, to) => {
+      toggles.push({ scene, wall, to });
+      return opts.toggleDoorRejects ? Promise.reject(new Error("door rejected")) : Promise.resolve();
+    },
+    notify: (m) => {
+      notes.push(m);
+    },
+  };
+  const controller = new ToolController(ctx);
+  const tool = makeSelectMoveTool(ctx, controller);
+  return { tool, toggles, notes, dispatched, controller };
+}
+
+test("a non-GM click on a closed door sends a ToggleDoor through the seam (never an Update intent)", () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 650 } });
+  expect(h.tool.onPointerDown({ x: 300, y: 700 }, noShift)).toBe(false);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "open" }]);
+  expect(h.dispatched).toEqual([]); // no document write — a dedicated correlated request
+  expect(h.controller.editingEntity).toBeNull(); // the editor pick stays GM-only
+});
+
+test("a non-GM click on an open door toggles it closed", () => {
+  const h = doorHarness({ role: "player", door: "open", tokenAt: { x: 100, y: 650 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "closed" }]);
+});
+
+test("a rejected door toggle surfaces as a notify toast, never silently swallowed", async () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 650 }, toggleDoorRejects: true });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toHaveLength(1); // the request WAS sent
+  await flush(); // the rejection lands asynchronously
+  expect(h.notes).toEqual(["tools.doorToggleNotVisible"]);
+});
+
+test("clicking a locked door sends nothing (any role) and toasts the locked hint", () => {
+  const h = doorHarness({ role: "player", door: "locked", tokenAt: { x: 100, y: 650 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.dispatched).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorLocked"]);
+});
+
+test("a non-GM with no owned token within reach sends nothing and toasts out-of-reach", () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 100 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorToggleOutOfReach"]);
+});
+
+test("a non-GM with no token at all sends nothing and toasts out-of-reach", () => {
+  const h = doorHarness({ role: "player", door: "closed" });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorToggleOutOfReach"]);
+});
+
+test("a GM click on a door toggles it (no advisory pre-check) AND selects the wall for editing", () => {
+  const h = doorHarness({ role: "gm", door: "closed" });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "open" }]);
+  expect(h.controller.editingEntity).toEqual({ kind: "wall", id: "wall-1" });
+});
+
+test("a click on a doorless wall sends no toggle (a GM still gets the editor pick)", () => {
+  const h = doorHarness({ role: "gm", door: null });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual([]);
+  expect(h.controller.editingEntity).toEqual({ kind: "wall", id: "wall-1" });
 });

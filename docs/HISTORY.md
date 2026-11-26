@@ -3778,3 +3778,194 @@ Delivered:
 - **Docs**: `docs/TODO.md` gains the two owner-approval sections; `docs/design/ARCHITECTURE.md`
   §4 marks photometric lighting and advanced vision modes as built; `docs/PLAN.md` Phase 4
   points at the compendium ruling; the hosting guide documents `behind_tls_proxy` and `log_dir`.
+
+## Built-in HTTPS — phase 2a ✅
+Design and rationale: [`design/built-in-https.md`](design/built-in-https.md); operator guide:
+`docs/site/guides/hosting.md`. ACME issuance is the unbuilt remainder (`PLAN.md`).
+
+- **Server**: one port serves plain HTTP and TLS (`tls::listener::SniffListener`, first byte
+  `0x16`, one 10 s deadline over sniff and handshake, global cap 1024 and a per-peer cap of 32
+  keyed by `peer_key` (canonical IPv4, IPv6 masked to /64) with trusted-proxy peers exempt, the
+  snapshot taken after the ClientHello arrives (`sniff_and_hello`, then `finish`: two stages, so a
+  test lands a hot swap between them without a hook in the production path), an accept-error pause
+  (`http::conn_serve::on_accept_error`), port released on drop); the serve loop is owned by
+  `http::conn_serve::serve_router` (`axum::serve` installs no hyper timer): ALPN picks the HTTP
+  version (plain connections are HTTP/1.1 only; no h2c), hyper's `http1`/`http2` builders are used
+  directly (the auto builder's version read has no timer), a 30 s HTTP/1 header-read timeout also
+  closes idle keep-alive connections, an `h2` preface is read under that bound, and HTTP/2
+  keep-alive pings run at 30 s / 20 s, an HTTP/2 connection with no request in flight for 60 s is
+  closed (`ConnLease` per request and per response body, moved by `ws_handler` into the session task
+  so a live WebSocket counts), live connections are capped globally and per `peer_key` from hand-off
+  until the connection task and every lease end (`http::peer_slots::PeerSlots`, shared with the
+  accept-time caps; the trusted-proxy exemption travels as `ConnMeta::cap_exempt`); a source that
+  ends drains like a shutdown (`serve_router`'s `on_drain` hook runs `WsState::trigger_shutdown`
+  first, the drain has one deadline, `ConnLimits::drain_timeout`; connections past it have their IO
+  failed, then any task still running is aborted and reported) and `http::serve` returns an error; every
+  WebSocket send is bounded (`ws::bounded_sink::BoundedSink`); the connection caps are fitted to the
+  process's open-file limit (`fd_budget`);
+  `LazyConfigAcceptor` split into `hello_phase`/`finish_phase` over an immutable `Snapshot` held
+  in `CertResolver` (`CertResolver::update` derives and installs under one write lock;
+  `Snapshot::select` runs once per connection); certificate sources (operator PEM with 60 s
+  reload, persisted ECDSA P-256 self-signed, in-memory fallback, `tls = "off"`) and the
+  degradation ladder with the boot-error boundary in `Config::validate_tls` (called by the
+  serving, `--tls-regenerate` and `test_server` entry points, not by `Config::load`); the
+  self-signed SANs omit the machine hostname and its `.local` form unless
+  `tls_advertise_hostname` is set (a persisted certificate that disagrees regenerates), and
+  certificate fingerprints and operator-PEM SAN coverage are logged; explicit ring provider; `http::scheme::{classify, request_scheme,
+  hsts_max_age, into_service}` and `ConnMeta` as the single scheme/serving shape; per-scheme
+  session cookies (`sc_sid` / `__Host-sc_sid`) with the `__Host-` removal normaliser; opt-in HSTS
+  gated on the client-facing scheme and the selected certificate; `/ws` routed for GET and
+  CONNECT (RFC 8441) with `axum`'s `http2` feature enabled; retired `behind_tls_proxy` key
+  fails boot with the full migration text, `trusted_proxies` is a `Vec<IpAddr>` parsed at
+  extraction (a bad entry fails boot naming it), `public_url` must be an `https://` origin
+  (`config::https_origin_of`), `behind_proxy` + empty `trusted_proxies` warns; `TlsStatus` in `GET /api/config`
+  and the admin-only `GET /api/admin/tls` (fingerprints); `--tls-regenerate`; key file protected before any secret byte is written (Windows protected
+  owner-only DACL / Unix 0600; only directories the code creates are restricted; a protection
+  failure aborts the write); audio-monitor origin allow-list for `https://` pages;
+  `SqliteRepository::connect` creates a missing database file (a first-run failure that
+  pre-dated this work, now logged); `test_server` refuses a wildcard `--bind`.
+- **Client**: `ServerConfigSchema` Zod mirror with a drift test; `@shadowcat/core` `https-access`
+  decisions; the dismissible per-origin HTTPS notice on the entry view; `AppContext.tls`;
+  `WsClient` `onConnectFailure` and the plain-HTTP hint after three failed first connects on a
+  self-signed `https:` page (confirmed by a same-origin `/api/me` probe); microphone and
+  OS-monitor messages; the `tls` read retries with backoff.
+- **Dependencies**: rustls (ring only), tokio-rustls, rcgen, x509-parser, netdev, ring,
+  tower-cookies, gethostname, time; all MIT / Apache-2.0 / ISC / Zlib family, `webpki-roots`
+  (CDLA-Permissive-2.0) reachable only through a dev dependency. Release binary +901,632 bytes
+  (+3.8 %, 23,452,672 to 24,354,304) against the 60 MiB budget.
+  `hyper`, `hyper-util` and `tower` (`util`) became direct dependencies (already in the graph).
+  `pnpm lint:crypto-backend` fails if a second TLS backend enters `Cargo.lock` (its
+  `FORBIDDEN_CRATES` is the one list).
+- **Verification**: 4,370 Rust tests and doctests (`cargo test --all`, 0 failed); `tls_policy`, `tls_listener`, `tls_http`,
+  `tls_cli`, `first_run` integration suites; Playwright projects for Chromium, Firefox and WebKit
+  against the machine's real non-loopback address (secure context and cookie attributes,
+  mixed-scheme sessions and logout, the untrusted-certificate baseline, `wss` and HTTP/2, plain
+  HTTP on the TLS port, loopback `ws://` from an https page) and six HTTPS-upgrade projects, run
+  by the `ui-e2e-https` CI job on an ubuntu, windows and macos matrix (`ui-e2e` runs the loopback
+  project); outcomes that differ by engine and OS are asserted per (project, platform) and only
+  the Windows cells are measured; on CI a cell with no measurement (and a CGNAT or public address)
+  fails with the observed value, so the first CI run on Linux and macOS produces those
+  measurements, which are then recorded in the tables.
+  Mutation witnesses, each verified landed, red, and restored byte-identical: unified cookie
+  names, inverted sniffer dispatch, HSTS gate ignoring the selected certificate, the scheme decider
+  trusting an untrusted `X-Forwarded-Proto`, `.connect` route removed, `finish_phase` re-selecting,
+  test harness reverted to `SocketAddr` (the first attempt at that witness was green on the
+  TLS-off branch and exposed a test gap that is now closed), and for the listener and serving
+  hardening: a lost `update`, the header-read timeout removed, an identity `peer_key`, the snapshot
+  taken before the hello, a non-canonical trusted-proxy match, the key-file protection ignored, a
+  stale `<key>.tmp`, hostname-always SANs, origins hidden, a dropped `persist_error`.
+- **Measured browser facts** (recorded in the hosting guide's table): all three engines negotiate
+  `h2` and complete the `wss` welcome; WebKit refuses loopback `ws://` from an https page; Firefox
+  HTTPS-Only exempts private addresses, Chromium's HTTPS-First Mode does not: its upgraded
+  navigation is blocked (`ERR_BLOCKED_BY_CLIENT`) and the page it then shows is empty to
+  automation (the certificate interstitial of a direct `https://` navigation is clicked through); real iOS Safari and Android Chrome remain unverified (`TODO.md`).
+
+## Options batch and built-in HTTPS round-6 leftovers ✅
+One parallel campaign on branch `options-batch`, built in separate worktrees and merged in waves.
+It closed the built-in HTTPS phase 2a leftovers and built every item of the comparative-survey
+options batch that the owner approved ("everything, options too"), plus the designs the owner
+walked through first. Design records: [`design/module-placed-effects.md`](design/module-placed-effects.md)
+and [`design/upnp.md`](design/upnp.md); the user and author pages are under `docs/site/`. CI runs
+once, at the end of the campaign; the items that only CI or a device can confirm are listed in
+`TODO.md` ("Needs the final CI pass or a physical device"). Delivered:
+
+- **HTTPS round-6 leftovers**: the client session lifecycle and a typed join refusal (the server
+  drains the client's inbound frames before it drops a refused socket, so the typed frame is not
+  lost to a reset); the gate corpus (`repoFiles` is the one repository file list, `lint:walk-sites`
+  inventories every remaining directory walk, a git failure exits 2 in every corpus gate); e2e
+  hygiene (the click-bypass guard, the per-OS outcome tables, a WebKit-on-Linux long-audio
+  allowance); long-audio media (canonical audio and video slices by media type for ranged
+  requests, a full `200` without `Range`, the upgrade swap taking the write barrier); the audio
+  engine's resume and gesture handling; the h2 send buffer at 160 KiB with a median buffer-ratio
+  criterion and a blocking `CUT_OVERSHOOT_MAX`; the egress tests' lump premise
+  (`LUMP_GAP_BOUND`, `last_progress_at`); and `SHADOWCAT_E2E_PORT_BASE`, which moves every
+  browser-test port so two worktrees run e2e side by side.
+- **Trash and backups**: every production delete goes through `Trash` (`trash.rs`; retention
+  `Days`/`Never`/`Disabled`, default 30 days; a Rust arm of the no-delete gate), an admin trash
+  manager (`GET /api/admin/trash`, empty, delete one), TLS key temp files truncated before they
+  are trashed; in-app backups (`BackupKind` manual, pre-restore, scheduled; list, delete, prune,
+  retention by `backup_keep_last` and `backup_keep_days`; restore stages a marker, stops the
+  server, and applies at the next start with a mandatory pre-restore backup; a failed restore
+  writes `restore-failed.json`, shown as a banner the admin can dismiss) and the `BackupManager`
+  settings section. Backup scheduling stays in Phase 4.
+- **Built-in port forwarding**: `portmap` (NAT-PMP, PCP, UPnP IGD with a bounded SOAP scanner and
+  a trusted-endpoint check), the admin `GET`/`PUT /api/admin/portmap`, the `port_forward` config
+  key that locks the setting, default off, and the admin settings section.
+- **Hosting**: `Config.route_prefix` for subpath reverse proxies (the page base, `apiPath`,
+  `wsUrl`, the relative import map, whole-segment prefix stripping) with `lint:route-prefix` and a
+  `route-prefix` Playwright project; `onboarding_enabled` served through `GET /api/config`.
+- **Vision, lighting and scenes**: facing-limited vision (`FacingVision{arc, near}`, a per-scene
+  switch, a `free`/`own_turn` rotation rule enforced by `scene::rotation_gate`, GM-only lock);
+  cone lights with a darkness-activation window and follow-token rotation; volumetric
+  sense-blocking regions (`RegionEngine.occludes`; fog depth stays deferred); proximity sense
+  tiers on walls (`WallEngine.proximity`); token-attached regions (`RegionEngine.anchor`, dormant
+  when the carrier is gone, a dormant-region list in the region tool); multi-destination portals
+  (`PortalChoice`, `ChoosePortal`, `PortalOffer`); scene padding (`SceneEngine.padding`); a GM
+  template-to-region conversion; structured vision treatments (`RenderHint`,
+  `VISION_TREATMENT_CONTRACT`); edge snapping and camera pan-to; one dash mechanism
+  (`ShapeNodeSpec.stroke.dash`); the client frame depth and size caps (`parse_client_msg`).
+- **Tokens, actors and combat**: token bars and nameplates (`bars` derived channel, four bars,
+  display modes), quick edit and token delete (the effective owner holds `core:delete`), a
+  per-token disposition and `identity_hidden`, overlay conditions (dead and unconscious seed
+  `overlay: true`), art transform with anchor, scale, tint and facing, auto-rotate with a lock, a
+  sense-revealed marker, random-variant art pools, combatant groups, `defeated`, effect origin
+  with a configurable expiry note and an effects list on the actor sheet and the combat tracker.
+  A session pause freezes token moves and combat controls, not doors, scene edits, chat, dice,
+  pings or sheets; audio pauses only when the GM asks.
+- **Modules**: module-declared placeable effect areas with expiry and caster range, authorised
+  server-side under `WriteOrigin::ModulePlacement`; module-scoped settings (the twelfth config
+  singleton), manifest `conflicts` with a pre-save satisfiability check, load and activation
+  status in the module manager, `ServerMsg::ModulesChanged`, a keybindings framework and
+  `registerSetting`, and guided tours (`shadowcat.tour`, the `onboarding` module, the Welcome
+  screen).
+- **Chat, dice, tables and notes**: the module `system` payload and card extensions, audience
+  commands (`/gmroll`, `/publicroll`, `/gm`, `/players`, `/reply`, `/ooc`, `/ic`), blind and
+  self rolls with the two GM settings, a GM audience revision, roll flavour and live-resolved
+  document-link labels, `[[secret:...]]` per-recipient segments, chat history recall, chat
+  bubbles over tokens, `mn`/`mx` clamps, even/odd success, `best(a, b)`, a bare dice count, natural
+  min/max highlighting; table folders, typed note pages, heading TOC and anchors, per-user note
+  sharing and "present to players".
+- **Accounts, presence and audio**: self-service password change (throttled per account),
+  profile colour, pronouns and avatar, live presence, a member seated mid-session (a GM seat or an
+  accepted invite) announced to that world's live connections through `ServerMsg::MemberProfile`
+  (now carrying `username`) so the roster shows them without a reconnect, simultaneous and soundboard playlist modes,
+  muffled occluded audio, a perceptual volume curve, favourites and a list mode in the asset
+  browser.
+- **Client shell**: an Escape coordinator and confirm and prompt dialogs, one pointer-event drag
+  controller (touch long-press, axes, sort-key reorder), a touch-first context menu, progress
+  notifications, and the `DocFolderTree` shared by assets and tables.
+- **Gates**: `lint:route-prefix`, `lint:walk-sites` and `check:svelte-runtime` are in the
+  `.claude/CLAUDE.md` gate table beside the earlier gates.
+- **Live player list**: `Welcome.online_users` seeds the online set from `Room::presence_online`, and `ServerMsg::MemberProfile` (colour, pronouns, whether an avatar exists) is broadcast to every live room of each world the member is seated in when the profile or avatar changes, so a late joiner sees correct dots and a profile edit shows without a reconnect.
+- **Scene-creation tour**: the `scene-browser` module contributes `scene-browser.intro` (GM audience, replay only, four steps; the actions step is skipped while no scene exists) and the `data-tour` anchors it points at.
+- **Vision fixture module**: `vision-kind-fixture` under `src/client/shell/e2e-support/fixture-modules/` registers a custom treatment on `VISION_TREATMENT_CONTRACT`; the Playwright loopback server discovers it through `SHADOWCAT_MODULES_DIR`, and it stays out of `dist/` and the release binary.
+- **Portal jumps and the trash**: a committed teleport removes the token's `ActiveStream` entry from `Room::moving`, so a portal jump ends the token's move stream (`Room::execute_move` registers the stream before it fires region triggers); the trash "empty all" confirmation shows the entry count and uses `settings.trash.emptyConfirmMore` ("or more") while another page remains; streamed proximity-wall vision has a test; an effect's origin shows an embedded item's name.
+- **Public-peer certificate**: a peer outside the loopback, private, link-local and unique-local ranges (`PeerScope::Public`) receives a second self-signed certificate (`selfsigned-public-cert.pem`) that lists no interface address, only `localhost`, loopback, `tls_hostnames` and the router's external address when `PortMapRuntime::public_address` knows it; `--tls-regenerate` replaces both certificates. The peer-address audit found no other leak: player addresses stay server-side (throttle keys, peer slots, debug logs) and appear in no wire frame, document or backup.
+- **Game settings and onboarding e2e**: the game settings panel shows a vision treatment a module registers while the panel is open (it reads `ContributionRegistry` through a `createSubscriber` bridge); the `onboarding` Playwright project runs `onboarding.spec.ts` against a server with no seeded admin and onboarding on, and a note-present spec covers `present_note`.
+- **Browser-test follow-ups**: a server on an in-memory database kept its data for only 30 minutes,
+  because sqlx reaps a pool connection after its idle and lifetime limits and an in-memory database
+  dies with its last connection; `connect_pool_with_options` now sets both limits to `None`, and
+  the read-only pool, which shares that database through the shared-cache name, relies on the
+  writer staying open. Modal dialogs stack above floating windows: dockview stacks its n-th
+  floating group at 999 + 2n, so `--z-popover` is 50000, above that range and below the drag ghost
+  at 99999. The topbar presence roster shows a member's pronouns after the name. New browser specs:
+  `drag-reorder`, `portal-choice` (three accounts), `module-placement` (with the `placement-fixture`
+  module), `template-region`, `note-permissions`, `note-media`, `live-modules` (with the
+  `live-module-fixture` module), `profile-live`, a scene tools tour offer pin in `onboarding`, and
+  `backups-restore`, a real backup-and-restore round trip on a server the spec starts itself
+  (`e2e-support/server-process.ts`), whose data folder sits under Playwright's per-test output
+  directory so it is cleared every run.
+
+## Final review fix pass ✅
+
+- **Scope**: one review of the whole campaign branch, then fix lanes (each merged into `options-batch-next`, each commit through `pnpm gate:commit`), then re-check rounds on the lanes' diffs until each finding was fixed and re-read.
+- **Server operations**: a pre-restore backup skips the retention prune (a restore cannot trash its own target); the trash-nesting check resolves `..` and folds case on Windows and macOS only (`nesting_form`); undo renames are logged; the trash staging sweep ages directories by modification time; `StreamedFilePermits::acquire(user)` gives each user a quarter of the permit pool, with a pinned refusal when other users hold the whole pool; `test_server` runs with trash `Disabled`.
+- **TLS and port forwarding**: `PeerScope::of(ip, shared_address)` makes a loopback or trusted-proxy peer Public, so tunnel players never read the host's interface addresses; the host machine's own browser gets a third, localhost-only certificate (`selfsigned-host-cert.pem`); the port-mapping slot clears only after the router delete returns; `PortMapRuntime::external_source` feeds `TlsRuntime::set_external_source`; `is_public_address` canonicalises mapped addresses.
+- **Scene, combat and movement**: an expiry note no longer names a hidden host, a linked actor or an unreadable source; `Room::execute_move` enforces `DiagonalRule::Orthogonal` for non-GM walks on a square grid and computes the committed bearing once for the stream and the commit; crossing a sound-blocking region outline sets gain 0; `region_field_if` skips non-ambient regions before rasterizing.
+- **Documents, permissions and token art**: `permission::retracts_hidden` is the one decision for an Update that changes what a recipient may hold, so an `identity_hidden` flip retracts or re-sends identity pointers to connected players; `TokenVisual::RandomVariant` resolves at token Create and Update, `TokenVisual::Image.drawn` marks server-drawn art, and a pool save redraws only absent or drawn overrides.
+- **Chat and dice**: an image inside a secret queues no fetch; rolls nested in secrets are covered by edit and recalculation; `MAX_NESTING_DEPTH` is 32 and `MAX_EXPR_JSON_DEPTH` is 88, so every accepted roll reads back under serde_json's 128-level limit; `SegmentList` blocks fragment navigation.
+- **Realtime and audio**: `audio::transport::on_session_pause` compares the held state before and after a write, so toggling "pause audio" mid-pause acts at once; `OpenPortal` and `ChoosePortal` spend the shared message bucket; a module placement needs scene READ for a non-GM.
+- **Client**: `trapFocus` restores the opener's focus on release and `rememberFocus` serves non-trapping overlays; `EscapeCoordinator` ignores IME-composing Escape; `isDrawableConeAngle` is the one cone-angle guard; door, portal and place-effect requests reject `NotConnectedError` offline; folder-tree controls are 44px.
+- **Scene tools, stage and shell**: `server-bounds.json` is the fixture the client bounds and the server both test against; `ToolController.release` ends tool state when the rail unmounts; the compact tool strip keeps each button at its natural width and scrolls; the topbar fits a 360 px phone; the tour offer reads Take Tour, Not Now and Disable Tutorials; a note PDF opens as a link; the asset query accepts a capped `ids` filter, so favourites mode fetches only the favourites; the ducking settings follow a replaced controller prop.
+- **Tooling**: `pnpm lint:allowances` scans `svelte-ignore` (never approvable) and every annotation in the tree was removed by fixing the code (`untrack()` seeds); the plain-HTTP LAN end-to-end server binds the LAN address and its project skips when the host has none.
+- **Tracking and rules**: the `svelte-ignore` gate-gap entry moved from `OPEN_BUGS.md` to `CLOSED_BUGS.md`; `.claude/CLAUDE.md` states what `lint:file-size` scans, lists `svelte-ignore` as never approvable, and states the audio-fixture byte-equality condition and tool needs; the client bounds fixture is named on the scene-tools module page; the third certificate is named where prose said "both".

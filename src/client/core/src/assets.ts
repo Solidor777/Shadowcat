@@ -1,4 +1,5 @@
 import type { Asset } from "@shadowcat/types";
+import { apiPath } from "./base-path";
 
 /** Op carried by an out-of-band AssetChanged frame. `created` and `moved` (name / folder /
  * tags) change what a LISTING shows, never what a URL serves; `replaced` and `deleted` change
@@ -41,6 +42,10 @@ export interface AssetChangedNotice {
   version: number;
 }
 
+/** The `version` a stored asset holds until its first replace; the server's `Asset.version`
+ * starts here. */
+const INITIAL_ASSET_VERSION = 1;
+
 /** Callback for `AssetResolver.onListingInvalidated`. */
 export type ListingInvalidatedHandler = (uuid: string, op: AssetOp) => void;
 
@@ -79,7 +84,7 @@ export class AssetResolver {
 
   /** Resolves an asset uuid to a serve URL, cache-busted by the current `rev`
    * so a replace forces a fresh request (and thus ETag revalidation); a
-   * deleted uuid resolves to `placeholder()`. With `variant`, the URL names a
+   * deleted uuid resolves to `placeholder()`; a uuid at its initial version carries no `v`. With `variant`, the URL names a
    * derivative (`?variant=thumb|preview`) — same ETag basis as the canonical,
    * so the same `rev` busts it.
    * @param uuid The asset's stable uuid.
@@ -98,8 +103,10 @@ export class AssetResolver {
     const rev = this.revs.get(uuid);
     const params: string[] = [];
     if (variant !== undefined) params.push(`variant=${variant}`);
-    if (rev !== undefined) params.push(`v=${rev}`);
-    return params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`;
+    // The initial version names the same bytes as an unversioned URL, so a listing that reports
+    // it after an image was requested must not change the URL and re-request the image.
+    if (rev !== undefined && rev !== INITIAL_ASSET_VERSION) params.push(`v=${rev}`);
+    return apiPath(params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`);
   }
 
   /** Resolves an audio asset to its playback URL set: BOTH Opus derivatives plus the

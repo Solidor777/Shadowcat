@@ -1,3 +1,8 @@
+//! This module defines `Command`, `Operation`, `FieldChange` and `WriteOrigin`.
+//!
+//! `set_pointer`, `remove_pointer` and `apply_field_change` apply a JSON-pointer mutation to a
+//! `serde_json::Value`; other modules call them as well.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -23,7 +28,7 @@ use crate::data::DataError;
 /// is `Null`); it is NOT byte-identical under double `invert` because `old: Null`
 /// cannot distinguish "was absent" from "was explicitly null", so a set-creating-a-
 /// key is not re-derived as a removal. `invert` has no live caller (undo/redo is
-/// not wired), so this asymmetry is inert today.
+/// not wired), so this asymmetry is inert.
 ///
 /// # Examples
 ///
@@ -196,7 +201,7 @@ impl Operation {
     ///
     /// Operates on the wire `Operation` only — `StoredCommand`/`CommandSnapshot` (server-internal
     /// commit-time redaction state) do not exist at this layer and are not this function's
-    /// concern; a future undo/redo feature that resurrects a `StoredCommand`'s `command` via
+    /// concern; a caller that resurrects a `StoredCommand`'s `command` via
     /// `invert` must derive a FRESH snapshot for the inverted write, never carry the original's
     /// forward.
     ///
@@ -336,7 +341,10 @@ impl Command {
 /// transport handler, never derivable from any wire frame — skips the same
 /// per-op capability gates (the handler enforces GM-only before constructing
 /// an op) and is the ONLY origin permitted to `Update` the `audio-state`
-/// singleton (its Create/Delete stay reserved to `ConfigSeed`).
+/// singleton (its Create/Delete stay reserved to `ConfigSeed`). `DoorToggle`
+/// — set ONLY by `ws::room::Room::toggle_door`, never derivable from any wire
+/// frame — skips the same per-op capability gates (the handler enforces reach +
+/// visibility, or GM standing, before constructing the op).
 ///
 /// # Examples
 ///
@@ -390,6 +398,20 @@ pub enum WriteOrigin {
     /// `WriteOrigin::ConfigSeed` (the world-seed path creates it once; the transport handler
     /// never creates or deletes one, only updates the existing singleton).
     AudioTransport,
+    /// Server-authored door-toggle write: per-op capability gates are skipped (the
+    /// `ClientMsg::ToggleDoor` handler, `ws::room::Room::toggle_door`, already enforces
+    /// reach + visibility on the requesting token — or GM standing — before ever
+    /// constructing the op); scope, size, engine, containment, singleton, schema and OCC
+    /// checks all run; never derivable from a wire frame.
+    DoorToggle,
+    /// Server-authored module-placement write: per-op capability gates are skipped (the
+    /// `ClientMsg::PlaceEffect` handler, `ws::room::Room::place_effect`, already derived the
+    /// effect set from a module manifest declaration and vetted the sender against that
+    /// declaration's `who` before ever constructing the op); scope, size, engine,
+    /// containment, singleton, schema and OCC checks all run; never derivable from a wire
+    /// frame. It creates one `region` document per placement, and deletes a placed region whose
+    /// declared duration has passed (`ws::room::Room::expire_due_placements`).
+    ModulePlacement,
 }
 
 impl WriteOrigin {
@@ -405,6 +427,8 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::CombatTransition.is_server_authored());
     /// assert!(WriteOrigin::TemplateMerge.is_server_authored());
     /// assert!(WriteOrigin::AudioTransport.is_server_authored());
+    /// assert!(WriteOrigin::DoorToggle.is_server_authored());
+    /// assert!(WriteOrigin::ModulePlacement.is_server_authored());
     /// ```
     pub fn is_server_authored(&self) -> bool {
         matches!(
@@ -415,6 +439,8 @@ impl WriteOrigin {
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
+                | WriteOrigin::DoorToggle
+                | WriteOrigin::ModulePlacement
         )
     }
 
@@ -436,6 +462,8 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::ConfigSeed.skips_capability_gates());
     /// assert!(WriteOrigin::TemplateMerge.skips_capability_gates());
     /// assert!(WriteOrigin::AudioTransport.skips_capability_gates());
+    /// assert!(WriteOrigin::DoorToggle.skips_capability_gates());
+    /// assert!(WriteOrigin::ModulePlacement.skips_capability_gates());
     /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
     /// ```
     pub fn skips_capability_gates(&self) -> bool {
@@ -446,6 +474,8 @@ impl WriteOrigin {
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
+                | WriteOrigin::DoorToggle
+                | WriteOrigin::ModulePlacement
         )
     }
 }
@@ -677,7 +707,7 @@ pub(crate) const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
 
 /// Structural equality for stored-vs-written JSON value comparisons where a client
 /// round-trip may have shifted the `Number` variant: `SqliteRepository::apply_intent`'s
-/// Phase-1 OCC pre-image check (`actual` vs `FieldChange.old`) and
+/// validation pass's OCC pre-image check (`actual` vs `FieldChange.old`) and
 /// `permission::carried_light_touched`'s ancestor-write subtree comparison. `serde_json::Value::Number`
 /// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
 /// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to

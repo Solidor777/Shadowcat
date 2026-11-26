@@ -3,6 +3,9 @@
 // Svelte <Surface> adapter) renders them. Same subscribe/snapshot reactivity as
 // DocumentStore — no framework runtime here; `component` is opaque to core.
 
+import type { ChatMessageEngine } from "./chat-docs";
+import { TOUR_CONTRACT, isTourAnchorId, validateTourMeta } from "./tour";
+import type { TourMeta } from "./tour";
 import type { WireDocument } from "./wire";
 
 /** One provider or many for a surface contract. `"singleton"` enforcement (a collision demotes
@@ -109,6 +112,61 @@ export interface SceneToolMeta {
   onSceneClick(x: number, y: number): void;
 }
 
+/** The paint a vision treatment resolves a cell to: a declarative, closed shape the render layer
+ * paints with the same two techniques the built-in `colorWash` and `outline` render hints use,
+ * so a registered treatment needs no rendering mechanism of its own and `@shadowcat/core` stays
+ * free of any renderer dependency. */
+export type VisionTreatmentPaint =
+  | {
+      /** No paint: the cell shows only its band darkening and tint. */
+      shape: "none";
+    }
+  | {
+      /** A tinted fill over the cell polygon. */
+      shape: "fill";
+      /** Packed `0xRRGGBB` fill color. */
+      color: number;
+      /** Fill opacity in `[0, 1]`. */
+      opacity: number;
+    }
+  | {
+      /** A stroke-only outline of the cell polygon. */
+      shape: "outline";
+      /** Packed `0xRRGGBB` stroke color. */
+      color: number;
+    };
+
+/** Metadata for a `VISION_TREATMENT_CONTRACT` contribution: the resolver for one `Custom` render
+ * hint treatment name. The render layer receives only the cell's already-decided corner
+ * geometry, so a treatment cannot be handed anything the fog and lit-mask gates have not already
+ * cleared for the recipient. */
+export interface VisionTreatmentMeta {
+  /** The treatment name a `Custom` render hint's `treatment` field selects. */
+  kind: string;
+  /** Resolve a cell's paint.
+   * @param params The `Custom` hint's opaque `params` payload, uninterpreted by the engine.
+   * @param cell The cell's scene-coordinate corner polygon.
+   * @returns The paint for the cell. */
+  resolve(params: unknown, cell: VisionTreatmentCell): VisionTreatmentPaint;
+}
+
+/** The only cell data a vision treatment receives: geometry the fog and lit-mask gates have
+ * already decided is visible to the recipient. */
+export interface VisionTreatmentCell {
+  /** The cell's corners in scene coordinates. */
+  corners: {
+    /** Scene x-coordinate. */
+    x: number;
+    /** Scene y-coordinate. */
+    y: number;
+  }[];
+}
+
+/** Contract id modules contribute a vision treatment under (`shadowcat.vision-treatment`,
+ * multi). Each contribution carries a `visionTreatment` and `component: null`; the render layer
+ * looks a `Custom` render hint's `treatment` up by `VisionTreatmentMeta.kind`. */
+export const VISION_TREATMENT_CONTRACT = "shadowcat.vision-treatment";
+
 /** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family.
  * `priority` selects among competing providers (higher wins; the always-registered
  * generic fallback registers at `-Infinity`). `match` is an optional per-document
@@ -130,12 +188,39 @@ export interface SettingsSectionMeta {
   /** i18n key for the section's heading, resolved by the host (`Settings.svelte`) at render
    * (locale-reactive). */
   labelKey: string;
+  /** When `true`, the host renders the section (heading included) only for a server admin; any
+   * other viewer sees neither. Advisory like every client gate: the section's own routes are
+   * re-checked server-side. */
+  serverAdminOnly?: boolean;
 }
 
 /** Contract id modules contribute a settings section under (`shadowcat.settings-section`,
  * multi). Rendered by `Settings.svelte` after its built-in content, each under its
  * `settingsSection.labelKey` heading. */
 export const SETTINGS_SECTION_CONTRACT = "shadowcat.settings-section";
+
+/** Metadata for the `shadowcat.chat-card-extension` contract family: a component the message
+ * card renders after its own built-in content for every message whose opaque `system` payload
+ * the provider recognizes. `priority` and `match` follow `SheetMeta`'s selection vocabulary. */
+export interface ChatCardExtensionMeta {
+  /** Render order among the extensions matching one message; higher renders first. Ties fall
+   * back to the registering module id, then the contribution id (deterministic across load
+   * order). */
+  priority: number;
+  /** Optional per-message predicate over the message's opaque `system` payload and parsed
+   * `engine` body; a provider whose `match` returns `false` renders nothing for that message.
+   * Absent means the provider renders for every message.
+   * @param system The message document's `system` band, uninterpreted.
+   * @param message The message's parsed `engine` body.
+   * @returns Whether this extension renders for the message. */
+  match?: (system: unknown, message: ChatMessageEngine) => boolean;
+}
+
+/** Contract id modules contribute a chat-card extension under (`shadowcat.chat-card-extension`,
+ * multi). Rendered by the message card after its own built-in content; each extension component
+ * receives the message's opaque `system` payload as `system` and its parsed `engine` body as
+ * `message`. */
+export const CHAT_CARD_EXTENSION_CONTRACT = "shadowcat.chat-card-extension";
 
 /** One piece of UI a module contributes into a named surface contract. */
 export interface Contribution {
@@ -167,6 +252,16 @@ export interface Contribution {
   settingsSection?: SettingsSectionMeta;
   /** Scene-tool metadata, present iff `contract` is `SCENE_TOOL_CONTRACT`. */
   sceneTool?: SceneToolMeta;
+  /** Vision-treatment metadata, present iff `contract` is `VISION_TREATMENT_CONTRACT`. */
+  visionTreatment?: VisionTreatmentMeta;
+  /** Chat-card extension metadata, present iff `contract` is `CHAT_CARD_EXTENSION_CONTRACT`. */
+  chatCardExtension?: ChatCardExtensionMeta;
+  /** Tour definition, present iff `contract` is `TOUR_CONTRACT`; validated by `contribute`. */
+  tour?: TourMeta;
+  /** When set, `<Surface>` wraps this contribution's rendered output in an element carrying
+   * `data-tour="<tourAnchor>"`, so a tour step can target it. Must satisfy `isTourAnchorId`;
+   * `contribute` rejects any other value. */
+  tourAnchor?: string;
   /** How this contribution relates to the host theme: `"host"` (default)
    * consumes the active theme's tokens like every engine surface; `"isolated"`
    * wraps the content in the theme-isolation class, which re-declares every
@@ -214,6 +309,8 @@ export class ContributionRegistry {
    * `entriesFor`'s module-id tie-break) is omitted for a host-registered (non-module)
    * contribution.
    * @returns A dispose function that removes this contribution and notifies subscribers.
+   * @throws When `c.contract` is `TOUR_CONTRACT` and `c.tour` is absent or invalid, or when
+   * `c.tourAnchor` is not a legal anchor id.
    * @example
    * ```ts
    * import { ContributionRegistry } from "@shadowcat/core";
@@ -227,6 +324,10 @@ export class ContributionRegistry {
    * ```
    */
   contribute(c: Contribution, opts: ContributeOptions = {}): () => void {
+    if (c.contract === TOUR_CONTRACT) validateTourMeta(c.tour);
+    if (c.tourAnchor !== undefined && !isTourAnchorId(c.tourAnchor)) {
+      throw new Error(`invalid tour anchor: ${JSON.stringify(c.tourAnchor)}`);
+    }
     const entry: Entry = { c, module: opts.module, seq: this.seqCounter++ };
     this.entries.push(entry);
     this.emit();

@@ -169,6 +169,7 @@ fn manual_raws(values: &[i32]) -> RawRoll {
             crit_success: false,
             crit_fail: false,
             kind: None,
+            best_of_branch: None,
             expertise: 0,
             label: None,
             symbols: vec![],
@@ -658,4 +659,115 @@ fn triumph_symbol_crit_adds_success_and_positive_counter_end_to_end() {
     assert_eq!(out.successes, Some(2));
     assert_eq!(out.positive_counter, 1);
     assert_eq!(out.crit_successes, 1);
+}
+
+/// Raws whose kept records carry the given values on d10s.
+fn raws_with_values(values: &[i32]) -> RawRoll {
+    use crate::dice::outcome::RawDie;
+    let mut raws = RawRoll::default();
+    for (i, &v) in values.iter().enumerate() {
+        let id = i as DieId;
+        raws.dice.push(RawDie {
+            id,
+            kind: DieKind::Numeric { min: 1, max: 10 },
+            natural: v,
+        });
+        raws.records.push(DieRecord {
+            label: None,
+            kind: None,
+            best_of_branch: None,
+            id,
+            group_index: 0,
+            natural: v,
+            value: v,
+            kept: true,
+            exploded: false,
+            rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
+            expertise: 0,
+            symbols: vec![],
+            ordered: true,
+        });
+    }
+    raws.next_id = values.len() as DieId;
+    raws
+}
+
+/// Success only at 5+, crit success at 10 adding `i32::MAX`, crit fail at 2 or below losing
+/// `i32::MAX`.
+fn extreme_crit_cfg(expertise: u32) -> SuccessConfig {
+    use crate::dice::spec::{CritFail, CritSuccess, CritTrigger};
+    SuccessConfig {
+        success: SuccessRule::Numeric {
+            comp: Comparator::Gte,
+            target: 5,
+        },
+        required_successes: None,
+        tiers: vec![],
+        crit_success: Some(CritSuccess {
+            trigger: CritTrigger::AtLeast(10),
+            extra_successes: i32::MAX,
+            positive_counter: 0,
+        }),
+        crit_fail: Some(CritFail {
+            trigger: CritTrigger::AtLeast(2),
+            lost: i32::MAX,
+            negative_counter: 0,
+            allow_negative: false,
+        }),
+        expertise,
+    }
+}
+
+#[test]
+fn per_die_net_is_exact_through_notation() {
+    use crate::dice::notation::{parse, ModeKind, ParseContext};
+    let ctx = ParseContext {
+        mode: ModeKind::SuccessCount,
+        direction: Direction::HighWins,
+    };
+    let spec = parse("1d10cs>=1xs1:2147483647xf10:2147483647!", ctx).unwrap();
+    let mut rng = NoiseRng::from_seed(7);
+    let raws = roll(&spec, &mut rng);
+    // base +1, crit extra +MAX, crit lost -MAX on every face: the exact net is 1.
+    assert_eq!(evaluate(&spec, &raws).successes, Some(1));
+}
+
+#[test]
+fn pooled_net_is_independent_of_die_order() {
+    let spec = pool(3);
+    let cfg = extreme_crit_cfg(0);
+    // Two dice at +i32::MAX and one at -i32::MAX: the exact sum is i32::MAX in either order.
+    for values in [[10, 10, 1], [1, 10, 10], [10, 1, 10]] {
+        let out = evaluate_success(&spec, &cfg, &raws_with_values(&values));
+        assert_eq!(out.successes, Some(i32::MAX), "order {values:?}");
+    }
+}
+
+#[test]
+fn parity_rule_counts_even_and_odd_successes_including_negative_values() {
+    use crate::dice::spec::Parity;
+    let spec = pool(4);
+    let values = [4, 3, 6, -3];
+    let count = |parity| {
+        let cfg = SuccessConfig {
+            success: SuccessRule::Parity(parity),
+            ..cfg_of(&spec).clone()
+        };
+        evaluate_success(&spec, &cfg, &raws_with_values(&values)).successes
+    };
+    assert_eq!(count(Parity::Even), Some(2), "4 and 6");
+    assert_eq!(count(Parity::Odd), Some(2), "3 and -3");
+}
+
+#[test]
+fn expertise_decides_on_the_exact_pooled_net() {
+    let spec = pool(4);
+    let cfg = extreme_crit_cfg(1);
+    // The exact pooled net is positive, so the point is spent on the 4 (one short of 5).
+    let out = evaluate_success(&spec, &cfg, &raws_with_values(&[4, 10, 10, 1]));
+    assert_eq!(out.successes, Some(i32::MAX));
+    assert_eq!(out.records[0].value, 5);
+    assert_eq!(out.records[0].expertise, 1);
 }

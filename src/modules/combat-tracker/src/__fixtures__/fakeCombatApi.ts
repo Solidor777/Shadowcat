@@ -142,6 +142,9 @@ export function fakeCombatApi(
       const order = (combat?.engine as CombatOrderShape | undefined)?.order ?? [];
       return order.map((id) => documents.get(id)).filter((d): d is NonNullable<typeof d> => !!d);
     },
+    groups(combatId: string) {
+      return documents.query("combatant-group").filter((d) => d.parent_id === combatId);
+    },
     turnOf(combatId: string) {
       const combat = documents.get(combatId);
       const turn = (combat?.engine as CombatTurnShape | undefined)?.turn;
@@ -223,6 +226,16 @@ export function fakeCombatApi(
     },
     setInitiative(combatantId: string, initiative: number | null, tiebreak?: number) {
       record("setInitiative", [combatantId, initiative, tiebreak]);
+    },
+    setDefeated(combatantId: string, defeated: boolean) {
+      record("setDefeated", [combatantId, defeated]);
+    },
+    createGroup(combatId: string, name: string, color?: string) {
+      record("createGroup", [combatId, name, color]);
+      return "new-group";
+    },
+    setGroup(combatantId: string, groupId: string | null) {
+      record("setGroup", [combatantId, groupId]);
     },
   };
   return api;

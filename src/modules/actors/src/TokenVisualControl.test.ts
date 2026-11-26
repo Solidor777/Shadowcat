@@ -28,7 +28,7 @@ function tokenEngine(linked: boolean, overrides: TokenEngine["overrides"] = null
     h: 100,
     rotation: 0,
     visual: null,
-    elevation: null,
+    elevation: null, lock_rotation: false, identity_hidden: false,
     actor_id: linked ? "act1" : null,
     overrides,
     face: null,
@@ -99,7 +99,7 @@ describe("TokenVisualControl", () => {
   it("apply reads the RAW stored override as the OCC pre-image", async () => {
     const dispatchIntent = vi.fn();
     const existing: TokenVisual = { kind: "image", asset: "ov1" };
-    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null , light: null, movement: null };
+    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null, disposition: null , light: null, movement: null };
     render(TokenVisualControl, {
       context: setAppContextForTest({ documents: storeWith(actorDoc(), buildTokenDoc("w1", "scene1", tokenEngine(true, overrides), "tok1")), dispatchIntent, canEdit: () => true, assets }),
       props: { tokenId: "tok1" },
@@ -117,7 +117,7 @@ describe("TokenVisualControl", () => {
   it("clear dispatches /engine/overrides/visual writing null with the raw stored override as `old`", async () => {
     const dispatchIntent = vi.fn();
     const existing: TokenVisual = { kind: "image", asset: "ov1" };
-    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null , light: null, movement: null };
+    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null, disposition: null , light: null, movement: null };
     render(TokenVisualControl, {
       context: setAppContextForTest({ documents: storeWith(actorDoc(), buildTokenDoc("w1", "scene1", tokenEngine(true, overrides), "tok1")), dispatchIntent, canEdit: () => true, assets }),
       props: { tokenId: "tok1" },

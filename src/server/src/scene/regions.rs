@@ -1,7 +1,10 @@
-//! Region primitive: vector-shaped zones that weight, block, or arrest grid movement.
-//! Pure geometry — no ECS, no I/O (mirrors the `scene::movement` module's invariant). Consumed by
-//! `SceneEcs::region_field` (hydration + visibility filtering) and `scene::pathfinding` /
-//! `scene::move_exec` (the two enforcement points).
+//! Regions are vector-shaped zones that weight, block, or arrest grid movement, or edit their
+//! cells' ambient light.
+//!
+//! The module is pure geometry — no ECS, no I/O, like `scene::movement`. It is consumed by
+//! `SceneEcs::region_field` (hydration + visibility filtering), `scene::pathfinding` and
+//! `scene::move_exec` (movement enforcement), and `LightingInputs::cell_light` (the ambient-light
+//! adjustment, read through the field's `ambient` facet only — never the movement one).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -10,10 +13,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
 
-use crate::data::engine::{RegionTrigger, TriggerEvent};
+use crate::data::engine::{AmbientLightMode, AmbientLightOverride, RegionTrigger, TriggerEvent};
 
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
+
+/// One raw `(behavior, cost, cost_by_tag)` contribution to a cell's composition, pre-fold.
+/// `cost_by_tag` is meaningful only for `RegionBehavior::Terrain` and empty for any other
+/// behavior or an untagged terrain region.
+type RegionContribution = (RegionBehavior, f64, BTreeMap<String, f64>);
+
+/// One terrain region's `(flat cost, cost_by_tag)` pair, as recorded in
+/// `RegionField::tag_cost` for a cell where at least one overlapping terrain region authors a
+/// non-empty `cost_by_tag`.
+type TerrainTagCost = (f64, BTreeMap<String, f64>);
 
 /// Authored region geometry (vector-shape vocabulary: rect/circle/polygon).
 #[derive(Clone, Debug, PartialEq)]
@@ -55,6 +68,43 @@ pub(crate) enum RegionBehavior {
     Impassable,
     /// Entering a cell stops the move there (trap/hazard semantics).
     Arrest,
+    /// Ambient-light edit: adjusts the covered cells' composed illumination
+    /// (`compose_ambient` → `LightingInputs::cell_light`'s final per-cell
+    /// adjustment). Movement-only readers (`compose`, `terrain_multiplier`,
+    /// `is_impassable`, `is_arrest`) never see this variant — it carries no
+    /// movement effect.
+    AmbientLight(AmbientLightOverride),
+}
+
+/// The per-cell composed ambient-light adjustment, folded from every
+/// overlapping enabled `ambient_light` region by `compose_ambient` and applied
+/// LAST over `LightingInputs::cell_light`'s base composition (placed/carried
+/// lights plus the environment ambient — under `all_bright` included, where
+/// the base is the flat maximum).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AmbientAdjustment {
+    /// Replace the composed illumination outright (an `Override` region; the
+    /// darker of two overlapping `Override`s).
+    Override(f64),
+    /// Net signed delta over the composed base (`Darken` negative,
+    /// `Brighten` positive) — overlapping deltas SUM, never take a max:
+    /// darken/brighten are additive perturbations to a baseline, not a
+    /// ceiling on it, so a second overlapping darken must genuinely deepen
+    /// the dark.
+    Delta(f64),
+}
+
+impl AmbientAdjustment {
+    /// Apply the adjustment to a composed base illumination, clamped to the
+    /// `[0, 1]` illumination scale. `Override` clamps its own level read-side
+    /// (ingress validation already enforces `[0, 1]`; the clamp here keeps a
+    /// fixture or a pre-validation stored document inside the scale).
+    pub(crate) fn apply(&self, base: f64) -> f64 {
+        match *self {
+            AmbientAdjustment::Override(level) => level.clamp(0.0, 1.0),
+            AmbientAdjustment::Delta(delta) => (base + delta).clamp(0.0, 1.0),
+        }
+    }
 }
 
 /// Per-cell composed effect after precedence + MAX overlap resolution.
@@ -73,30 +123,23 @@ pub(crate) enum RegionEffect {
 /// `pathfinding::MAX_FOOTPRINT_CELLS`'s fail-closed discipline.
 pub(crate) const MAX_REGION_CELLS: i64 = 100_000;
 
-/// Rasterize `shape` to the grid cells whose CENTER falls inside it. Fails closed (`None`) on a
-/// degenerate shape (non-finite coords, non-positive circle radius, polygon with `< 3` vertices)
-/// or an over-cap AABB — never returns a partial or silently-empty result that a caller could
-/// mistake for "shape covers no cells".
-pub(crate) fn rasterize(
-    shape: &RegionShape,
-    cell: f64,
-    grid: &dyn crate::scene::grid_shape::GridShape,
-) -> Option<Vec<Cell>> {
-    if !cell.is_finite() || cell <= 0.0 {
-        return None;
-    }
-    let (minx, miny, maxx, maxy) = match shape {
+/// The axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of `shape` in scene units, the
+/// one derivation both `rasterize`'s candidate enumeration and `occluder_outline`'s over-cap
+/// rectangle read. `None` on a degenerate shape: non-finite coordinates, a non-positive circle
+/// radius or a polygon with fewer than three vertices.
+fn shape_bounds(shape: &RegionShape) -> Option<(f64, f64, f64, f64)> {
+    match shape {
         RegionShape::Rect { x0, y0, x1, y1 } => {
             if ![*x0, *y0, *x1, *y1].iter().all(|v| v.is_finite()) {
                 return None;
             }
-            (x0.min(*x1), y0.min(*y1), x0.max(*x1), y0.max(*y1))
+            Some((x0.min(*x1), y0.min(*y1), x0.max(*x1), y0.max(*y1)))
         }
         RegionShape::Circle { cx, cy, r } => {
             if !cx.is_finite() || !cy.is_finite() || !r.is_finite() || *r <= 0.0 {
                 return None;
             }
-            (cx - r, cy - r, cx + r, cy + r)
+            Some((cx - r, cy - r, cx + r, cy + r))
         }
         RegionShape::Polygon { points } => {
             if points.len() < 3 || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
@@ -109,9 +152,24 @@ pub(crate) fn rasterize(
                 maxx = maxx.max(*x);
                 maxy = maxy.max(*y);
             }
-            (minx, miny, maxx, maxy)
+            Some((minx, miny, maxx, maxy))
         }
-    };
+    }
+}
+
+/// Rasterize `shape` to the grid cells whose CENTER falls inside it. Fails closed (`None`) on a
+/// degenerate shape (non-finite coords, non-positive circle radius, polygon with `< 3` vertices)
+/// or an over-cap AABB — never returns a partial or silently-empty result that a caller could
+/// mistake for "shape covers no cells".
+pub(crate) fn rasterize(
+    shape: &RegionShape,
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Option<Vec<Cell>> {
+    if !cell.is_finite() || cell <= 0.0 {
+        return None;
+    }
+    let (minx, miny, maxx, maxy) = shape_bounds(shape)?;
     // `Cell = (i32, i32)`: an extreme finite coordinate must fail closed to `None` (reject), never
     // alias onto a real cell. This pre-check is RETAINED rather than delegated to `cells_in_bounds`:
     // that primitive's `f64 as i32` cast SATURATES to `i32::MAX/MIN` on a large-but-small-span
@@ -148,6 +206,53 @@ pub(crate) fn rasterize(
         }
     }
     Some(out)
+}
+
+/// Rasterize a region's normalized `(shape, hole)` part list into the COMPOSED cell set: the
+/// union of every additive (`hole: false`) part's cells, minus every hole part's cells. This is
+/// the one composition rule both region consumers read — `RegionFieldBuilder::add_parts` (the
+/// composed `RegionField`) and `SceneEcs::build_trigger_region` (the trigger identity rows) —
+/// so a token standing in a hole counts as outside the region for movement AND for triggers
+/// alike. Each part rasterizes through `rasterize` itself, so every part's own AABB is
+/// individually capped by the existing `MAX_REGION_CELLS` guard (bounding the WORK done before
+/// subtraction), and ANY part failing closed fails the WHOLE region to `None` — never a
+/// partially-composed set (a silently-dropped hole could silently make an impassable region
+/// passable in a spot the GM thought was excluded). The FINAL composed count is additionally
+/// capped at `MAX_REGION_CELLS` POST-subtraction: many individually-in-cap additive parts must
+/// not sum past the per-region bound (a huge additive shape with a huge hole that nets a small
+/// final area is NOT rejected — the cap applies to the result, not to any intermediate).
+/// Cells keep first-seen order across the additive parts (a single additive part therefore
+/// yields byte-identical output to `rasterize` alone).
+pub(crate) fn rasterize_compound(
+    parts: &[(RegionShape, bool)],
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Option<Vec<Cell>> {
+    let mut union: Vec<Cell> = Vec::new();
+    let mut membership: BTreeSet<Cell> = BTreeSet::new();
+    for (shape, hole) in parts {
+        if *hole {
+            continue;
+        }
+        for c in rasterize(shape, cell, grid)? {
+            if membership.insert(c) {
+                union.push(c);
+            }
+        }
+    }
+    for (shape, hole) in parts {
+        if !*hole {
+            continue;
+        }
+        for c in rasterize(shape, cell, grid)? {
+            membership.remove(&c);
+        }
+    }
+    union.retain(|c| membership.contains(c));
+    if union.len() as i64 > MAX_REGION_CELLS {
+        return None;
+    }
+    Some(union)
 }
 
 /// Whether point `p` (a cell center) lies inside `shape`. Rect/circle edges
@@ -191,36 +296,96 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
 /// Compose zero or more (behavior, cost) contributions for ONE cell into a single effect:
 /// precedence `Impassable > Arrest > Terrain`; overlapping Terrain costs take the MAX
 /// (not summed — difficulty is not cumulative). `None` when nothing contributes.
-pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionEffect> {
+/// `AmbientLight` contributions produce NO movement effect here — the ambient facet of the
+/// same cell is `compose_ambient`'s, and a cell may carry both (a darkened difficult-terrain
+/// cell is a coherent authoring); the two facets are folded from the SAME contribution list
+/// by `RegionFieldBuilder::build`.
+pub(crate) fn compose(contributions: &[RegionContribution]) -> Option<RegionEffect> {
     if contributions
         .iter()
-        .any(|(b, _)| *b == RegionBehavior::Impassable)
+        .any(|(b, _, _)| *b == RegionBehavior::Impassable)
     {
         return Some(RegionEffect::Impassable);
     }
     if contributions
         .iter()
-        .any(|(b, _)| *b == RegionBehavior::Arrest)
+        .any(|(b, _, _)| *b == RegionBehavior::Arrest)
     {
         return Some(RegionEffect::Arrest);
     }
     contributions
         .iter()
-        .filter(|(b, _)| *b == RegionBehavior::Terrain)
-        .map(|(_, cost)| *cost)
+        .filter(|(b, _, _)| *b == RegionBehavior::Terrain)
+        .map(|(_, cost, _)| *cost)
         .fold(None, |acc: Option<f64>, c| {
             Some(acc.map_or(c, |a| a.max(c)))
         })
         .map(RegionEffect::Terrain)
 }
 
+/// The ambient facet of one cell's composition: fold every `AmbientLight` contribution into the
+/// ONE adjustment `LightingInputs::cell_light` applies after its base composition. Precedence:
+/// any `Override` wins outright over `Darken`/`Brighten` (matching `Impassable > Arrest >
+/// Terrain`'s "strongest wins" shape), two `Override`s resolve to the DARKER level (the
+/// fail-closed under-reveal convention this subsystem applies to every ambiguous case), and
+/// overlapping `Darken`/`Brighten` deltas SUM. `None` when no ambient-light region covers the
+/// cell (or the deltas net to exactly zero — identical to no adjustment, kept out of the field
+/// map so the `cell_light` fast path stays a plain emptiness test). Read-side fail-closed
+/// guards (ingress `RegionEngine::validate` already rejects them, a stored/fixture value is
+/// still not trusted): a non-finite level contributes nothing, a negative `Darken`/`Brighten`
+/// level clamps to 0, and an `Override` level clamps into `[0, 1]` at `AmbientAdjustment::apply`.
+pub(crate) fn compose_ambient(contributions: &[RegionContribution]) -> Option<AmbientAdjustment> {
+    let mut override_level: Option<f64> = None;
+    let mut delta = 0.0_f64;
+    for (behavior, _, _) in contributions {
+        let RegionBehavior::AmbientLight(ambient) = behavior else {
+            continue;
+        };
+        if !ambient.level.is_finite() {
+            continue;
+        }
+        match ambient.mode {
+            AmbientLightMode::Override => {
+                override_level =
+                    Some(override_level.map_or(ambient.level, |acc: f64| acc.min(ambient.level)));
+            }
+            AmbientLightMode::Darken => delta -= ambient.level.max(0.0),
+            AmbientLightMode::Brighten => delta += ambient.level.max(0.0),
+        }
+    }
+    if let Some(level) = override_level {
+        return Some(AmbientAdjustment::Override(level));
+    }
+    if delta != 0.0 {
+        return Some(AmbientAdjustment::Delta(delta));
+    }
+    None
+}
+
 /// The composed per-cell region effect for one scene, already resolved to either a single
 /// requester's visibility (the router's per-requester field) or the full authoritative set
-/// (the GM's field / `move_exec`'s field). Built by `RegionFieldBuilder`.
+/// (the GM's field / `move_exec`'s field — and `LightingInputs::cell_light`'s, whose ambient
+/// adjustment ALWAYS reads the authoritative field, so a `gm_only` region's light edit applies
+/// to every viewer). Built by `RegionFieldBuilder`.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RegionField {
-    /// Composed effect per covered cell; absent cell = no region effect.
+    /// Composed movement effect per covered cell; absent cell = no movement effect.
     cells: BTreeMap<Cell, RegionEffect>,
+    /// Composed ambient-light adjustment per covered cell (`compose_ambient`); absent cell =
+    /// no ambient edit. Orthogonal to `cells` — a cell may carry a movement effect, an ambient
+    /// adjustment, both, or neither.
+    ambient: BTreeMap<Cell, AmbientAdjustment>,
+    /// Per-cell terrain contributions carrying a per-tag cost override: `(flat cost,
+    /// cost_by_tag)` for every terrain region overlapping the cell, present ONLY for a cell
+    /// where at least one overlapping terrain region authors a non-empty `cost_by_tag` — most
+    /// scenes author none, so this map is empty in the common case. Every terrain contribution
+    /// for such a cell is recorded (not just the tag-bearing ones), because
+    /// `resolved_terrain_multiplier` must fold ALL of them through the same overlapping-
+    /// regions-take-the-MAX rule `cells`' flat-only composition already applies. Read only by
+    /// `resolved_terrain_multiplier`; `cells`/`terrain_multiplier` stay flat-cost-only and
+    /// unaware of tags, so a caller with no movement tags to resolve can keep using the cheap
+    /// flat path.
+    tag_cost: BTreeMap<Cell, Vec<TerrainTagCost>>,
 }
 
 impl RegionField {
@@ -230,7 +395,7 @@ impl RegionField {
     ///
     /// ```text
     /// let mut b = RegionField::builder();
-    /// b.add(&shape, RegionBehavior::Terrain, 2.0, cell, grid);
+    /// b.add_parts(&[(shape, false)], RegionBehavior::Terrain, 2.0, &BTreeMap::new(), cell, grid);
     /// let field = b.build();
     /// ```
     pub(crate) fn builder() -> RegionFieldBuilder {
@@ -255,6 +420,51 @@ impl RegionField {
         }
     }
 
+    /// The effective terrain multiplier for a mover carrying `tags` entering cell `c`. When `c`
+    /// carries no `cost_by_tag`-bearing terrain contribution (`tag_cost.get(&c)` is `None` — the
+    /// common case), identical to `terrain_multiplier` (the cheap flat-only path). Otherwise,
+    /// per contributing terrain region: resolves the MINIMUM `cost_by_tag` value whose key the
+    /// mover's tags contain, falling back to that region's own flat cost when no tag matches
+    /// ("you navigate however is easiest for you" — a mover with several qualifying tags takes
+    /// whichever tag's terrain description favors them most). The per-region resolved values
+    /// then fold through the SAME overlapping-regions-take-the-MAX rule `compose` applies to
+    /// flat costs — never a second precedence rule, so a cell covered by both a plain
+    /// (untagged) terrain region and a tag-costed one still composes correctly: the plain
+    /// region's flat cost is one of the folded values, exactly as if it authored an empty
+    /// `cost_by_tag`.
+    pub(crate) fn resolved_terrain_multiplier(&self, c: Cell, tags: &BTreeSet<String>) -> f64 {
+        let Some(contributions) = self.tag_cost.get(&c) else {
+            return self.terrain_multiplier(c);
+        };
+        contributions
+            .iter()
+            .map(|(flat, by_tag)| {
+                by_tag
+                    .iter()
+                    .filter(|(tag, _)| tags.contains(*tag))
+                    .map(|(_, cost)| *cost)
+                    .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.min(v))))
+                    .unwrap_or(*flat)
+            })
+            .fold(None::<f64>, |acc, m| Some(acc.map_or(m, |a| a.max(m))))
+            .unwrap_or(1.0)
+    }
+
+    /// The composed ambient-light adjustment covering `c`; `None` when no `ambient_light`
+    /// region covers it. Test-only: production reads the map through `into_ambient_map` (the
+    /// lighting-inputs build), never per cell.
+    #[cfg(test)]
+    pub(crate) fn ambient_at(&self, c: Cell) -> Option<AmbientAdjustment> {
+        self.ambient.get(&c).copied()
+    }
+
+    /// Consume the field into JUST its ambient facet (the movement facet dropped) — the shape
+    /// `SceneEcs::ambient_light_map` hands the lighting-inputs build, which never reads a
+    /// movement effect.
+    pub(crate) fn into_ambient_map(self) -> BTreeMap<Cell, AmbientAdjustment> {
+        self.ambient
+    }
+
     /// True iff any cell composes to `Impassable`. Split from
     /// `has_terrain_or_impassable` because the continuous router's dispatch predicate reads the
     /// two halves differently for an `MoveTraits::ignore_terrain` mover: impassable still forces
@@ -266,21 +476,25 @@ impl RegionField {
             .any(|e| matches!(e, RegionEffect::Impassable))
     }
 
-    /// True iff any cell is weighted `Terrain` (multiplier > 1.0).
-    pub(crate) fn has_weighted_terrain(&self) -> bool {
-        self.cells
-            .values()
-            .any(|e| matches!(e, RegionEffect::Terrain(m) if *m > 1.0))
+    /// True iff any cell is weighted `Terrain` for a mover carrying `tags` (the tag-resolved
+    /// multiplier, via `resolved_terrain_multiplier` — never the flat-only reading, or a
+    /// scene where every terrain region's flat cost is 1.0 but a `cost_by_tag` entry weights a
+    /// tagged mover would wrongly read as unweighted).
+    pub(crate) fn has_weighted_terrain(&self, tags: &BTreeSet<String>) -> bool {
+        self.cells.iter().any(|(c, e)| {
+            matches!(e, RegionEffect::Terrain(_))
+                && self.resolved_terrain_multiplier(*c, tags) > 1.0
+        })
     }
 
-    /// True iff any cell is `Impassable` or weighted `Terrain` (multiplier > 1.0). The
-    /// dispatch predicate the continuous router uses to decide between the weighted grid
-    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither) for
-    /// a NON-exempt mover. Arrest is excluded: it neither bends the route nor requires
-    /// route-around, so an arrest-only scene stays on the polyanya path with an arrest
-    /// post-filter.
-    pub(crate) fn has_terrain_or_impassable(&self) -> bool {
-        self.has_impassable() || self.has_weighted_terrain()
+    /// True iff any cell is `Impassable` or weighted `Terrain` (tag-resolved, per `tags`) for
+    /// a mover carrying `tags`. The dispatch predicate the continuous router uses to decide
+    /// between the weighted grid route (terrain/impassable present) and the pure any-angle
+    /// polyanya route (neither) for a NON-exempt mover. Arrest is excluded: it neither bends
+    /// the route nor requires route-around, so an arrest-only scene stays on the polyanya path
+    /// with an arrest post-filter.
+    pub(crate) fn has_terrain_or_impassable(&self, tags: &BTreeSet<String>) -> bool {
+        self.has_impassable() || self.has_weighted_terrain(tags)
     }
 
     /// Read-only iteration over the composed per-cell effects, existing for the parity
@@ -294,16 +508,26 @@ impl RegionField {
 }
 
 /// Accumulates per-region contributions cell-by-cell; `build` composes them
-/// (`compose`'s precedence + MAX-overlap rule) into the final `RegionField`.
+/// (`compose`'s movement precedence + MAX-overlap rule, plus `compose_ambient`'s ambient
+/// fold) into the final `RegionField`.
 #[derive(Default)]
 pub(crate) struct RegionFieldBuilder {
-    /// Raw `(behavior, cost)` contributions per cell, pre-composition.
-    per_cell: BTreeMap<Cell, Vec<(RegionBehavior, f64)>>,
+    /// Raw `(behavior, cost, cost_by_tag)` contributions per cell, pre-composition.
+    /// `cost_by_tag` is empty for every non-`Terrain` behavior and for a `Terrain`
+    /// contribution that authors no per-tag override.
+    per_cell: BTreeMap<Cell, Vec<RegionContribution>>,
 }
 
 impl RegionFieldBuilder {
     /// Add one region's rasterized cells + behavior/cost. Skips (contributes nothing) on a
     /// fail-closed rasterization failure — never silently all-passes an over-cap/degenerate shape.
+    /// The single-shape convenience spelling of `add_parts` (a one-part region), so every
+    /// additive contribution routes through the ONE composition rule. The production caller
+    /// (`SceneEcs::region_field_if`) feeds `add_parts` the normalized part list from
+    /// `parse_region_shape`; this `#[cfg(test)]` spelling serves the single-shape fixtures.
+    /// Carries no `cost_by_tag` (an empty map) — a fixture exercising per-tag cost calls
+    /// `add_parts` directly.
+    #[cfg(test)]
     pub(crate) fn add(
         &mut self,
         shape: &RegionShape,
@@ -312,33 +536,299 @@ impl RegionFieldBuilder {
         cell: f64,
         grid: &dyn crate::scene::grid_shape::GridShape,
     ) {
-        let Some(cells) = rasterize(shape, cell, grid) else {
+        self.add_parts(
+            &[(shape.clone(), false)],
+            behavior,
+            cost,
+            &BTreeMap::new(),
+            cell,
+            grid,
+        );
+    }
+
+    /// Add one compound region's composed cells + behavior/cost/cost_by_tag: the union of its
+    /// additive parts minus its hole parts, through `rasterize_compound`. Skips (contributes
+    /// nothing) when the composition fails closed — never silently all-passes a region one of
+    /// whose parts is over-cap or degenerate. `cost_by_tag` is meaningful only for
+    /// `RegionBehavior::Terrain`; a non-empty map on any other behavior is carried but never
+    /// read (`compose`/`compose_ambient` ignore it, and `build` only reads it for `Terrain`
+    /// contributions).
+    pub(crate) fn add_parts(
+        &mut self,
+        parts: &[(RegionShape, bool)],
+        behavior: RegionBehavior,
+        cost: f64,
+        cost_by_tag: &BTreeMap<String, f64>,
+        cell: f64,
+        grid: &dyn crate::scene::grid_shape::GridShape,
+    ) {
+        let Some(cells) = rasterize_compound(parts, cell, grid) else {
             return;
         };
         for c in cells {
-            self.per_cell.entry(c).or_default().push((behavior, cost));
+            self.per_cell
+                .entry(c)
+                .or_default()
+                .push((behavior, cost, cost_by_tag.clone()));
         }
     }
 
-    /// Compose all accumulated contributions into the final per-cell field.
+    /// Compose all accumulated contributions into the final per-cell field: the movement facet
+    /// (`compose`) and the ambient-light facet (`compose_ambient`) fold the SAME per-cell
+    /// contribution list, so the two output maps can never disagree about which regions covered
+    /// a cell. A cell that composes to `Terrain` additionally populates `tag_cost` when at
+    /// least one of its terrain contributions authored a non-empty `cost_by_tag` — recording
+    /// EVERY terrain contribution at that cell (not just the tag-bearing ones), since
+    /// `resolved_terrain_multiplier` must fold all of them through the same MAX rule `compose`
+    /// already applied to their flat costs.
     pub(crate) fn build(self) -> RegionField {
         let mut cells = BTreeMap::new();
+        let mut ambient = BTreeMap::new();
+        let mut tag_cost = BTreeMap::new();
         for (c, contributions) in self.per_cell {
             if let Some(effect) = compose(&contributions) {
+                if matches!(effect, RegionEffect::Terrain(_)) {
+                    let terrain: Vec<TerrainTagCost> = contributions
+                        .iter()
+                        .filter(|(b, _, _)| matches!(b, RegionBehavior::Terrain))
+                        .map(|(_, cost, by_tag)| (*cost, by_tag.clone()))
+                        .collect();
+                    if terrain.iter().any(|(_, by_tag)| !by_tag.is_empty()) {
+                        tag_cost.insert(c, terrain);
+                    }
+                }
                 cells.insert(c, effect);
             }
+            if let Some(adjustment) = compose_ambient(&contributions) {
+                ambient.insert(c, adjustment);
+            }
         }
-        RegionField { cells }
+        RegionField {
+            cells,
+            ambient,
+            tag_cost,
+        }
     }
 }
 
-/// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionShape` — a raw
-/// `{kind, points}` pair, `deny_unknown_fields`-checked at write time) into this module's
+/// Upper bound on the segments one region contributes as a sense occluder. A region whose
+/// merged cell outline exceeds it occludes through its bounding rectangle instead
+/// (`occluder_outline`), keeping the per-raycast wall count bounded without ever occluding less.
+pub(crate) const MAX_OCCLUDER_EDGES: usize = 4096;
+
+/// Fixed-point scale for outline vertex identity: two cells' shared corner, computed from
+/// different cell centers, differs by float rounding noise far below `1 / OUTLINE_QUANTUM`
+/// scene units, so rounding to this grid makes the corners compare equal.
+const OUTLINE_QUANTUM: f64 = 1e4;
+
+/// A scene point rounded onto the `OUTLINE_QUANTUM` grid; the key outline edges and vertices
+/// are matched by.
+type QuantizedPoint = (i64, i64);
+
+/// Round `p` onto the `OUTLINE_QUANTUM` grid.
+fn quantize(p: crate::scene::vision::P) -> QuantizedPoint {
+    (
+        (p.0 * OUTLINE_QUANTUM).round() as i64,
+        (p.1 * OUTLINE_QUANTUM).round() as i64,
+    )
+}
+
+/// The boundary of a covered-cell set as wall segments: every cell edge no other covered cell
+/// shares. Cell corners come from `GridShape::cell_vertices` (square and hex), ordered into a
+/// ring by angle around the cell's centroid (cells are convex, and `cell_vertices` promises no
+/// ring order). An edge listed by exactly one covered cell is a boundary edge; one listed by two
+/// is interior. Holes in the set therefore produce inner outlines with no extra work. Runs of
+/// collinear boundary edges are merged into one segment, so a square region's outline is its
+/// corner-to-corner polygon rather than a segment per cell. Output order is deterministic for a
+/// given set.
+pub(crate) fn cell_outline_segments(
+    cells: &[Cell],
+    grid: &dyn crate::scene::grid_shape::GridShape,
+    cell: f64,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    type Edge = (u32, crate::scene::vision::P, crate::scene::vision::P);
+    let mut edges: BTreeMap<(QuantizedPoint, QuantizedPoint), Edge> = BTreeMap::new();
+    for &c in cells {
+        let mut ring = grid.cell_vertices(c, cell);
+        let n = ring.len() as f64;
+        let cx = ring.iter().map(|v| v.0).sum::<f64>() / n;
+        let cy = ring.iter().map(|v| v.1).sum::<f64>() / n;
+        ring.sort_by(|a, b| {
+            (a.1 - cy)
+                .atan2(a.0 - cx)
+                .total_cmp(&(b.1 - cy).atan2(b.0 - cx))
+        });
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            let (qa, qb) = (quantize(a), quantize(b));
+            if qa == qb {
+                continue;
+            }
+            let key = if qa < qb { (qa, qb) } else { (qb, qa) };
+            edges
+                .entry(key)
+                .and_modify(|e| e.0 += 1)
+                .or_insert((1, a, b));
+        }
+    }
+    let boundary: Vec<_> = edges
+        .into_values()
+        .filter(|e| e.0 == 1)
+        .map(|e| (e.1, e.2))
+        .collect();
+    merge_collinear_edges(boundary)
+}
+
+/// Join boundary segments that meet end to end in a straight line at a vertex touched by
+/// exactly those two segments. A vertex shared by more than two segments (a pinch point) or
+/// by a bend is left alone. One pass suffices: a join replaces two segments with one that
+/// touches the same two outer vertices, so no vertex's incident count changes.
+fn merge_collinear_edges(
+    edges: Vec<(crate::scene::vision::P, crate::scene::vision::P)>,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    let mut segs: Vec<Option<(crate::scene::vision::P, crate::scene::vision::P)>> =
+        edges.into_iter().map(Some).collect();
+    let mut at: BTreeMap<QuantizedPoint, Vec<usize>> = BTreeMap::new();
+    for (i, s) in segs.iter().enumerate() {
+        if let Some((a, b)) = s {
+            at.entry(quantize(*a)).or_default().push(i);
+            at.entry(quantize(*b)).or_default().push(i);
+        }
+    }
+    let keys: Vec<QuantizedPoint> = at.keys().copied().collect();
+    for key in keys {
+        let Some(ids) = at.get(&key) else { continue };
+        if ids.len() != 2 || ids[0] == ids[1] {
+            continue;
+        }
+        let (i, j) = (ids[0], ids[1]);
+        let (Some((a1, b1)), Some((a2, b2))) = (segs[i], segs[j]) else {
+            continue;
+        };
+        let (far1, v) = if quantize(a1) == key {
+            (b1, a1)
+        } else {
+            (a1, b1)
+        };
+        let far2 = if quantize(a2) == key { b2 } else { a2 };
+        let d1 = (v.0 - far1.0, v.1 - far1.1);
+        let d2 = (far2.0 - v.0, far2.1 - v.1);
+        let cross = d1.0 * d2.1 - d1.1 * d2.0;
+        let dot = d1.0 * d2.0 + d1.1 * d2.1;
+        let scale = d1.0.hypot(d1.1) * d2.0.hypot(d2.1);
+        if dot <= 0.0 || cross.abs() > 1e-9 * scale {
+            continue;
+        }
+        let joined = segs.len();
+        segs.push(Some((far1, far2)));
+        segs[i] = None;
+        segs[j] = None;
+        for end in [quantize(far1), quantize(far2)] {
+            if let Some(list) = at.get_mut(&end) {
+                for id in list.iter_mut() {
+                    if *id == i || *id == j {
+                        *id = joined;
+                    }
+                }
+            }
+        }
+        at.remove(&key);
+    }
+    segs.into_iter().flatten().collect()
+}
+
+/// The occluder segments of a region's `(shape, hole)` part list: the composed cell set's outline
+/// (`rasterize_compound` then `cell_outline_segments`, the same coverage movement, ambient light
+/// and triggers read). Fails CLOSED toward more occlusion: when the set cannot be rasterized (an
+/// over-cap or degenerate part) or its outline passes `MAX_OCCLUDER_EDGES`, the bounding
+/// rectangle of the additive parts stands in (holes ignored), because dropping the region would
+/// reveal what it was authored to hide. A region covering no cell centers yields no segments.
+pub(crate) fn occluder_outline(
+    parts: &[(RegionShape, bool)],
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    if let Some(cells) = rasterize_compound(parts, cell, grid) {
+        let outline = cell_outline_segments(&cells, grid, cell);
+        if outline.len() <= MAX_OCCLUDER_EDGES {
+            return outline;
+        }
+    }
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for (shape, hole) in parts {
+        if *hole {
+            continue;
+        }
+        let Some((x0, y0, x1, y1)) = shape_bounds(shape) else {
+            continue;
+        };
+        bounds = Some(match bounds {
+            None => (x0, y0, x1, y1),
+            Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+        });
+    }
+    let Some((x0, y0, x1, y1)) = bounds else {
+        return Vec::new();
+    };
+    vec![
+        ((x0, y0), (x1, y0)),
+        ((x1, y0), (x1, y1)),
+        ((x1, y1), (x0, y1)),
+        ((x0, y1), (x0, y0)),
+    ]
+}
+
+/// One memoized `occluder_outline` result for a region document. Reused only while the region's
+/// resolved parts (absolute coordinates: an anchored region's carrier position is part of the
+/// key), the scene's cell size and its grid kind all still equal the values it was computed
+/// from, so a stale entry can never be served whichever path mutated the document or moved the
+/// carrier (the same self-verifying shape as `SceneEcs`'s decoded-engine cache).
+pub(crate) struct OccluderCacheEntry {
+    /// The resolved `(shape, hole)` parts the outline was computed from.
+    pub(crate) parts: Vec<(RegionShape, bool)>,
+    /// The cell size the outline was computed at.
+    pub(crate) cell: f64,
+    /// The grid kind (square or hex) the outline was computed on.
+    pub(crate) kind: crate::scene::GridKind,
+    /// The outline segments, shared by every collector call that hits this entry.
+    pub(crate) outline: std::sync::Arc<Vec<(crate::scene::vision::P, crate::scene::vision::P)>>,
+}
+
+/// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionGeometry` — the
+/// untagged legacy/compound union, whose hand-written `Deserialize` routes each wire form
+/// through its inner struct's own `deny_unknown_fields` at write time) into
+/// the normalized `(shape, hole)` part list every downstream consumer reads. A legacy
+/// `RegionGeometry::Single` normalizes to a one-element additive list the moment parsing
+/// completes, so `rasterize_compound`, the composed `RegionField` and the trigger identity rows
+/// never branch on which wire form was stored. Fails closed to `None` for the WHOLE region when
+/// ANY part fails to parse (an unrecognized `kind` or a point count that doesn't match it) or a
+/// compound list is empty — a partially-valid compound region is NOT partially rasterized, since
+/// a silently-dropped hole could silently make an impassable region passable in a spot the GM
+/// thought was excluded, which is far worse than dropping the whole region.
+pub(crate) fn parse_region_shape(
+    shape: &crate::data::engine::RegionGeometry,
+) -> Option<Vec<(RegionShape, bool)>> {
+    match shape {
+        crate::data::engine::RegionGeometry::Single(s) => Some(vec![(parse_one_shape(s)?, false)]),
+        crate::data::engine::RegionGeometry::Compound(parts) => {
+            if parts.is_empty() {
+                return None;
+            }
+            let mut out = Vec::with_capacity(parts.len());
+            for part in parts {
+                out.push((parse_one_shape(&part.shape)?, part.hole));
+            }
+            Some(out)
+        }
+    }
+}
+
+/// Parse ONE wire `data::engine::RegionShape` (a raw `{kind, points}` pair) into this module's
 /// `RegionShape` enum. Still structural-only past this function's own kind/point-count
 /// dispatch: an
 /// unrecognized `kind` or a `points` length that doesn't match the kind fails closed to `None`
 /// (the caller then drops the region entirely, never half-parses it).
-pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
+fn parse_one_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
     let points = &shape.points;
     match shape.kind.as_str() {
         "rect" if points.len() == 4 => Some(RegionShape::Rect {
@@ -360,9 +850,75 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
     }
 }
 
+/// Translate (and, when `follow_rotation`, rotate) an anchored region's `(shape, hole)` part
+/// list from carrier-centre offsets into absolute scene coordinates. The ONE geometry step every
+/// anchored-region consumer shares (`SceneEcs::anchored_region_parts` calls it right after
+/// `parse_region_shape`), so the composed `RegionField`, the trigger identity rows and the
+/// occluder outlines translate identically.
+///
+/// `carrier_pos` is the carrier token's centre, `carrier_rotation` its `TokenEngine::rotation`
+/// in degrees (the same angle convention as `rotate_point`). Without `follow_rotation` every
+/// shape keeps its kind (a `Rect` stays a `Rect`, so a translated-only region rasterizes
+/// exactly as a static one of the same absolute shape). With it, a `Rect` becomes a four-vertex
+/// `Polygon` (a rotated rectangle is not axis-aligned); a `Circle` stays a `Circle`, rotated
+/// about the carrier's centre. A non-finite pose yields non-finite coordinates, which
+/// `rasterize` already fails closed on.
+pub(crate) fn anchored_parts(
+    parts: Vec<(RegionShape, bool)>,
+    carrier_pos: (f64, f64),
+    carrier_rotation: f64,
+    follow_rotation: bool,
+) -> Vec<(RegionShape, bool)> {
+    let (px, py) = carrier_pos;
+    // Offset -> absolute: optional rotation about the carrier's centre, then translation.
+    let place = |x: f64, y: f64| -> (f64, f64) {
+        let (x, y) = if follow_rotation {
+            rotate_point((x, y), carrier_rotation)
+        } else {
+            (x, y)
+        };
+        (x + px, y + py)
+    };
+    parts
+        .into_iter()
+        .map(|(shape, hole)| {
+            let placed = match shape {
+                RegionShape::Rect { x0, y0, x1, y1 } if !follow_rotation => RegionShape::Rect {
+                    x0: x0 + px,
+                    y0: y0 + py,
+                    x1: x1 + px,
+                    y1: y1 + py,
+                },
+                RegionShape::Rect { x0, y0, x1, y1 } => RegionShape::Polygon {
+                    points: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                        .into_iter()
+                        .map(|(x, y)| place(x, y))
+                        .collect(),
+                },
+                RegionShape::Circle { cx, cy, r } => {
+                    let (cx, cy) = place(cx, cy);
+                    RegionShape::Circle { cx, cy, r }
+                }
+                RegionShape::Polygon { points } => RegionShape::Polygon {
+                    points: points.into_iter().map(|(x, y)| place(x, y)).collect(),
+                },
+            };
+            (placed, hole)
+        })
+        .collect()
+}
+
+/// Rotate `p` about the origin by `degrees`, clockwise on a y-down canvas (the
+/// `TokenEngine::rotation` convention: the standard rotation matrix applied to `(x, y)` with
+/// `+y` pointing down the screen).
+fn rotate_point(p: (f64, f64), degrees: f64) -> (f64, f64) {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    (p.0 * cos - p.1 * sin, p.0 * sin + p.1 * cos)
+}
+
 /// One trigger-bearing region's identity row: which cells it covers, which
 /// triggers it carries, and whether every world member can see its `/engine`
-/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize` the
+/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize_compound` the
 /// composed `RegionField` uses — one rasterizer feeds both consumers, so an
 /// identity row and the composed field can never disagree about a region's
 /// coverage (the parity battery pins this).
@@ -380,27 +936,86 @@ pub(crate) struct TriggerRegion {
     pub cells: BTreeSet<Cell>,
 }
 
-/// The `(region, trigger)` pairs that fire for one move or placement report,
-/// in region-table order then authored engine order. `entered` is the
+/// The `(region id, trigger)` pairs that fire for one move or placement
+/// report, in region-table order then authored engine order. `entered` is the
 /// deduplicated cell-entry sequence (`MoveOutcome::entered_cells`) or a
 /// placement's footprint cells; `arrest_cell` is `Some` only when the walk
-/// was arrested (`MoveOutcome::arrested`). Each listed trigger fires at most
-/// once per report no matter how many of its region's cells were entered —
-/// the caller applies each returned pair exactly once.
-pub(crate) fn fired_triggers<'a>(
-    regions: &'a [TriggerRegion],
+/// was arrested (`MoveOutcome::arrested`); `exited` is the region-identity
+/// list the report's membership diff produced (`SceneEcs::region_membership`'s
+/// stored set minus the regions intersecting the report's post-event
+/// OCCUPANCY — `TriggerReport::occupancy`, the report kind's own Enter basis:
+/// a move's stop center cell, a placement's footprint — a set-difference
+/// event over whole regions, never a per-cell crossing like Enter/Arrest).
+/// Each listed trigger fires at most once per report no matter how many of
+/// its region's cells were entered, and an exited region id fires its
+/// region's `Exit` triggers at most once — the same per-report discipline.
+/// An exited id no row of `regions` carries (a deleted or disabled region, or
+/// one the report's elevation filter excludes) fires nothing: the table has
+/// already forgotten it. The pairs are owned (not row references) so a caller
+/// firing exits for regions OUTSIDE the passed table can concatenate a second
+/// call's plan without a lifetime tie — see `Room::fire_region_triggers`.
+/// The four turn/round variants never fire from a movement report: they are
+/// combat-clock events, planned by `fired_turn_round_triggers` from
+/// `combat::transition`'s boundary record instead.
+pub(crate) fn fired_triggers(
+    regions: &[TriggerRegion],
     entered: &[Cell],
     arrest_cell: Option<Cell>,
-) -> Vec<(&'a TriggerRegion, &'a RegionTrigger)> {
+    exited: &[Uuid],
+) -> Vec<(Uuid, RegionTrigger)> {
     let mut out = Vec::new();
     for region in regions {
         for trigger in &region.triggers {
             let fires = match trigger.on {
                 TriggerEvent::Enter => entered.iter().any(|c| region.cells.contains(c)),
                 TriggerEvent::Arrest => arrest_cell.is_some_and(|c| region.cells.contains(&c)),
+                TriggerEvent::Exit => exited.contains(&region.region_id),
+                // Combat-clock events; a move/placement report never crosses one.
+                TriggerEvent::TurnStart
+                | TriggerEvent::TurnEnd
+                | TriggerEvent::RoundStart
+                | TriggerEvent::RoundEnd => false,
             };
             if fires {
-                out.push((region, trigger));
+                out.push((region.region_id, trigger.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The `(region id, trigger index, trigger)` triples that fire for ONE token
+/// at ONE combat turn/round boundary: every trigger on a region the token is
+/// a recorded member of (`SceneEcs::region_membership` — the occupancy proof,
+/// written only by the movement/placement funnel; a clock boundary never
+/// re-derives it) whose `on` is exactly `event`. `rows` are the identity
+/// rows for the member regions, resolved by id WITHOUT the per-scene
+/// elevation filter (`SceneEcs::trigger_region_row` — the same rule Exit
+/// firing uses: membership is the occupancy proof, so re-filtering by the
+/// token's CURRENT floor or scene would wrongly drop a region the token was
+/// legitimately recorded inside). A member id with no live row (a deleted or
+/// disabled region) fires nothing, mirroring `fired_triggers`'s exited-id
+/// rule. The returned trigger INDEX is the trigger's position in its
+/// region's authored `triggers` list — the trigger-identity component of
+/// `Room::fire_turn_round_triggers`'s once-per-turn/round dedup key, which
+/// content-equality cannot supply (two identical authored triggers on one
+/// region are two distinct identities: a `resource_delta` authored twice
+/// applies twice). Each matching trigger fires at most once per call — one
+/// authored trigger, one firing — the per-report discipline
+/// `fired_triggers` already keeps.
+pub(crate) fn fired_turn_round_triggers(
+    rows: &[TriggerRegion],
+    member: &std::collections::BTreeSet<Uuid>,
+    event: TriggerEvent,
+) -> Vec<(Uuid, usize, RegionTrigger)> {
+    let mut out = Vec::new();
+    for row in rows {
+        if !member.contains(&row.region_id) {
+            continue;
+        }
+        for (index, trigger) in row.triggers.iter().enumerate() {
+            if trigger.on == event {
+                out.push((row.region_id, index, trigger.clone()));
             }
         }
     }

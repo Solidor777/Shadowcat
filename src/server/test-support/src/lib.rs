@@ -1,14 +1,28 @@
-//! Shared WS integration-test harness for the scene tests: a real WS client
-//! against an ephemeral in-process server whose single seeded user owns the
-//! world (GM), so its intents are authorized.
+//! This crate holds the integration-test support that the server's test binaries share.
 //!
-//! A library crate rather than a shared module included by each integration-test binary: such a
-//! module compiles whole while each binary uses only part of it, so every unused
-//! helper is dead code there and the module needs a blanket suppression. A `pub` item in a
-//! library is reachable by definition, so no such diagnostic fires and nothing is silenced.
-//! Reaching this crate only through `shadowcat`'s [dev-dependencies] keeps it out of release
-//! builds.
+//! Its root provides a real WS client against an ephemeral in-process server whose single seeded
+//! user owns the world (GM), so its intents are authorized; its modules provide the egress,
+//! HTTP/2, TLS, observation, log-capture, measurement and throughput fixtures.
+//!
+//! It is a library crate rather than a shared module included by each integration-test binary: such
+//! a module compiles whole while each binary uses only part of it, so every unused helper is dead
+//! code there and the module needs a blanket suppression. A `pub` item in a library is reachable by
+//! definition, so no such diagnostic fires and nothing is silenced. Reaching this crate only through
+//! `shadowcat`'s [dev-dependencies] keeps it out of release builds.
+
 #![deny(missing_docs)]
+
+/// The HTTP/2 implementation the client helpers use, re-exported so tests name one version.
+pub use h2;
+pub mod acceptance;
+pub mod egress;
+pub mod h2_session;
+pub mod h2c;
+pub mod logs;
+pub mod measure;
+pub mod observed;
+pub mod throughput;
+pub mod tls;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -49,6 +63,11 @@ pub struct Harness {
     /// Per-run asset root; each world's directory lives beneath it. Distinct per harness, so
     /// asset writes from concurrent tests cannot overwrite each other.
     pub assets_dir: std::path::PathBuf,
+    /// The TLS runtime the server was started with (`TlsRuntime::disabled()` for [`spawn`] /
+    /// [`spawn_with`]; the real ladder for [`spawn_tls`] / [`spawn_tls_with`]).
+    pub tls: Arc<shadowcat::tls::TlsRuntime>,
+    /// The effective configuration the server was started with.
+    pub config: Arc<Config>,
 }
 
 /// Start a harness with the default configuration.
@@ -60,15 +79,62 @@ pub async fn spawn() -> Harness {
 }
 
 /// Like `spawn`, but `mutate` can tweak the `Config` before the server starts
-/// (e.g. set a tiny upload cap). Uses a per-run tempdir for asset storage.
+/// (e.g. set a tiny upload cap). Uses a per-run tempdir for asset storage. The server answers
+/// plain HTTP only (TLS off), served through `http::into_service` so `ConnectInfo<ConnMeta>` has
+/// the production shape.
 pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
+    spawn_inner(mutate, TlsSetup::Off).await
+}
+
+/// Start a harness whose ONE port answers both plain HTTP and TLS (the production listener),
+/// with an in-memory self-signed certificate.
+pub async fn spawn_tls() -> Harness {
+    spawn_tls_with(|_| {}).await
+}
+
+/// Like [`spawn_tls`], with a `Config` mutator applied before the TLS ladder runs.
+pub async fn spawn_tls_with(mutate: impl FnOnce(&mut Config)) -> Harness {
+    spawn_inner(mutate, TlsSetup::Start).await
+}
+
+/// Like [`spawn_tls_with`], but the TLS runtime is built by `make_runtime` from the mutated
+/// `Config` (for example with an injected certificate generator), while the SAME production
+/// sniffing listener serves the port.
+pub async fn spawn_with_runtime(
+    mutate: impl FnOnce(&mut Config),
+    make_runtime: impl FnOnce(&Config) -> Arc<shadowcat::tls::TlsRuntime> + 'static,
+) -> Harness {
+    spawn_inner(mutate, TlsSetup::With(Box::new(make_runtime))).await
+}
+
+/// Builds a caller-supplied TLS runtime from the harness `Config`.
+type RuntimeFactory = Box<dyn FnOnce(&Config) -> Arc<shadowcat::tls::TlsRuntime>>;
+
+/// How a harness builds its TLS runtime.
+enum TlsSetup {
+    /// TLS off: the plain `TcpListener` serves the router.
+    Off,
+    /// The production ladder over the configuration.
+    Start,
+    /// A caller-built runtime.
+    With(RuntimeFactory),
+}
+
+/// Shared body of every `spawn*` function.
+async fn spawn_inner(mutate: impl FnOnce(&mut Config), setup: TlsSetup) -> Harness {
     let assets_dir = std::env::temp_dir().join(format!("shadowcat-assets-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&assets_dir).unwrap();
     let mut cfg = Config {
         assets_dir: Some(assets_dir.to_string_lossy().into_owned()),
+        db: "sqlite::memory:".into(),
+        // A harness server removes discarded files outright: its default trash directory sits
+        // beside the system temp directory and would collect an entry per test run. A test that
+        // inspects the trash sets `trash_retention` and `trash_dir` in `mutate`.
+        trash_retention: shadowcat::trash::TrashRetention::Disabled,
         ..Config::default()
     };
     mutate(&mut cfg);
+    let cfg = Arc::new(cfg);
 
     let repo = Arc::new(
         SqliteRepository::connect("sqlite::memory:")
@@ -83,9 +149,16 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         .unwrap();
     let world = repo.create_world_owned("test", uid, 0).await.unwrap();
 
+    shadowcat::tls::install_default_provider();
+    let tls_on = !matches!(setup, TlsSetup::Off);
+    let tls = match setup {
+        TlsSetup::Off => shadowcat::tls::TlsRuntime::disabled(),
+        TlsSetup::Start => shadowcat::tls::TlsRuntime::start(&cfg),
+        TlsSetup::With(make) => make(&cfg),
+    };
     let state = AppState {
         repo: repo.clone(),
-        config: Arc::new(cfg),
+        config: cfg.clone(),
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
@@ -94,15 +167,39 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: tls.clone(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::from_config(&cfg)),
     };
     let ws_state = state.ws.clone();
     let app = http::router(state).await;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp.local_addr().unwrap().to_string();
+    if tls_on {
+        let listener = shadowcat::tls::listener::SniffListener::new(
+            tcp,
+            tls.clone(),
+            cfg.clone(),
+            shadowcat::tls::listener::Limits::default(),
+        );
+        tokio::spawn(http::conn_serve::serve_router(
+            listener,
+            app,
+            std::future::pending(),
+            http::conn_serve::ConnLimits::default(),
+            || {},
+        ));
+    } else {
+        tokio::spawn(http::conn_serve::serve_router(
+            tcp,
+            app,
+            std::future::pending(),
+            http::conn_serve::ConnLimits::default(),
+            || {},
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .cookie_store(true)
@@ -134,6 +231,8 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         repo,
         ws: ws_state,
         assets_dir,
+        tls,
+        config: cfg,
     }
 }
 
@@ -175,6 +274,42 @@ impl Harness {
             .unwrap()
     }
 
+    /// Inserts an asset row of `content_type` with `meta` in this world (version 3, no file) and
+    /// writes `files` (suffix, bytes) beside its canonical path, bypassing the upload pipeline so
+    /// a test can serve any bytes under any type. Returns the asset id.
+    pub async fn seed_asset(
+        &self,
+        content_type: &str,
+        meta: shadowcat::data::asset::AssetMeta,
+        files: &[(&str, &[u8])],
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        self.repo
+            .insert_asset(&shadowcat::data::asset::Asset {
+                id,
+                world_id: self.world,
+                storage_key: format!("{}/{}", self.world, id),
+                original_name: "seeded.bin".into(),
+                content_type: content_type.into(),
+                byte_size: 0,
+                created_by: Some(self.user),
+                created_at: 0,
+                version: 3,
+                folder_id: None,
+                tags: vec![],
+                derived_tags: vec![],
+                meta,
+            })
+            .await
+            .unwrap();
+        let dir = self.assets_dir.join(self.world.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        for (suffix, bytes) in files {
+            std::fs::write(dir.join(format!("{id}{suffix}")), bytes).unwrap();
+        }
+        id
+    }
+
     /// Replace asset `id`'s bytes with `bytes` as `name`; returns the raw response.
     pub async fn replace(
         &self,
@@ -194,6 +329,57 @@ impl Harness {
             .send()
             .await
             .unwrap()
+    }
+
+    /// DER of the certificate an IP-literal / SNI-less connection from this machine's loopback
+    /// receives (the self-signed host-machine certificate): every harness client is a loopback
+    /// peer.
+    pub fn fallback_cert_der(&self) -> rustls::pki_types::CertificateDer<'static> {
+        let snapshot = self
+            .tls
+            .resolver()
+            .expect("TLS is enabled for this harness")
+            .snapshot();
+        snapshot.host_fallback().certified_key().cert[0].clone()
+    }
+
+    /// The socket address the server listens on.
+    pub fn socket_addr(&self) -> std::net::SocketAddr {
+        self.addr.parse().unwrap()
+    }
+
+    /// A `reqwest` client (cookie jar on) that trusts exactly this server's self-signed
+    /// certificate, so the handshake validates the SAN, key usage and validity for real.
+    /// `add_root_certificate` alone ADDS to reqwest's built-in root store (its
+    /// `tls_built_in_root_certs` defaults to on), so the built-in roots are switched off
+    /// to make "exactly" true.
+    pub fn https_client(&self) -> reqwest::Client {
+        reqwest::Client::builder()
+            .cookie_store(true)
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(
+                reqwest::Certificate::from_der(self.fallback_cert_der().as_ref()).unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    /// Open a `wss://` WebSocket as the given session `cookie` over HTTP/1.1, trusting this
+    /// server's certificate.
+    pub async fn connect_tls_as(&self, cookie: &str) -> Ws {
+        let url = format!("wss://{}/ws?world={}", self.addr, self.world);
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut().insert("cookie", cookie.parse().unwrap());
+        let cfg = tls::trusting_config(&[self.fallback_cert_der()], &["http/1.1"]);
+        let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+            req,
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(cfg)),
+        )
+        .await
+        .unwrap();
+        ws
     }
 
     /// Open a WebSocket as the seeded GM user. Use [`Harness::connect_as`] to connect as a
@@ -431,7 +617,10 @@ pub fn scene_subscribe_as(request_n: u64, channel: &str, as_user: Uuid) -> Messa
 }
 
 /// Read frames until one of type `ty` arrives (5s budget), returning it.
-pub async fn drain_until_type(ws: &mut Ws, ty: &str) -> serde_json::Value {
+pub async fn drain_until_type<S>(ws: &mut S, ty: &str) -> serde_json::Value
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
     loop {
         let Ok(Some(Ok(m))) =
             tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
@@ -446,7 +635,31 @@ pub async fn drain_until_type(ws: &mut Ws, ty: &str) -> serde_json::Value {
     }
 }
 
+/// Read the next frame that is not a `presence` frame (5s budget per frame), returning it.
+///
+/// A connecting socket receives its own `presence` frame, which can arrive before or after the
+/// reply to the first request, so a test reading "the reply" skips it.
+pub async fn next_non_presence_frame<S>(ws: &mut S) -> serde_json::Value
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            panic!("no frame received");
+        };
+        let v: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+        if v["type"] != "presence" {
+            return v;
+        }
+    }
+}
+
 /// Read until the next `event` frame.
-pub async fn drain_until_event(ws: &mut Ws) -> serde_json::Value {
+pub async fn drain_until_event<S>(ws: &mut S) -> serde_json::Value
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
     drain_until_type(ws, "event").await
 }

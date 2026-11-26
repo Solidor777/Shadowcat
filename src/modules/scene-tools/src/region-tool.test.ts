@@ -85,3 +85,253 @@ test("with viewedLevelBand unset, a new region's engine body's elevation stays n
   const op = sent[0][0];
   if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });
+
+test("ambient_light behavior persists the configured mode/level as ambient_override", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "brighten";
+  controller.regionAmbientLevel = 0.3;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({
+      behavior: "ambient_light",
+      ambient_override: { mode: "brighten", level: 0.3 },
+    });
+  }
+});
+
+test("an out-of-range or cleared ambient level persists as a level the server accepts", () => {
+  // Fails without the clamp: an `override` level of 2 or a cleared input (NaN) is rejected by the
+  // server's region validation, or serializes to JSON null.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "override";
+  for (const level of [2, Number.NaN]) {
+    controller.regionAmbientLevel = level;
+    tool.onPointerDown({ x: 0, y: 0 }, ev);
+    tool.onPointerUp({ x: 100, y: 100 }, ev);
+  }
+  controller.regionAmbientMode = "darken";
+  controller.regionAmbientLevel = -3;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const levels = sent.map((ops) => (ops[0].op === "create" ? (ops[0].doc.engine as { ambient_override: { level: number } }).ambient_override.level : null));
+  expect(levels).toEqual([1, 0, 0]);
+});
+
+test("flipping a staged part to a hole repaints the staged preview", () => {
+  const { tool, controller, previews } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const before = previews();
+  controller.setRegionPartHole(0, true);
+  expect(controller.regionParts[0].hole).toBe(true);
+  expect(previews()).toBe(before + 1);
+  controller.setRegionPartHole(5, true); // no such part: nothing repaints
+  expect(previews()).toBe(before + 1);
+});
+
+test("ticked sense checkboxes persist as occludes; none ticked persists null", () => {
+  // Fails if either persist site stops reading the flags (the literal `null` it replaced) or the
+  // none-ticked case writes an all-false block, which the server rejects.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const none = sent[0][0];
+  if (none.op === "create") expect(none.doc.engine).toMatchObject({ occludes: null });
+
+  controller.regionOccludesSight = true;
+  controller.regionOccludesSound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const some = sent[1][0];
+  if (some.op === "create") {
+    expect(some.doc.engine).toMatchObject({ occludes: { sight: true, light: false, sound: true } });
+  }
+
+  controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "scene-1");
+  controller.commitRegionParts();
+  const compound = sent[2][0];
+  if (compound.op === "create") {
+    expect(compound.doc.engine).toMatchObject({ occludes: { sight: true, light: false, sound: true } });
+  }
+});
+
+test("a non-ambient_light behavior always persists ambient_override: null, even with a configured level", () => {
+  // Mutation coverage for `regionAmbientOverride`'s own gate: removing the
+  // `regionBehavior !== "ambient_light"` check would leak the configured level onto every
+  // region regardless of behavior, which this pins against.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionAmbientMode = "override";
+  controller.regionAmbientLevel = 0.9;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ ambient_override: null });
+});
+
+test("staged regionCostByTag rows persist as a record on the created region, clamped to >= 1", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: 0.2 }, { tag: "swimming", cost: 3 });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    // `flying`'s authored 0.2 clamps to 1 — the SAME `>= 1` floor `regionCost` itself gets,
+    // via `regionCostByTagRecord`, never a second independently-authored bound.
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1, swimming: 3 } });
+  }
+});
+
+test("a cleared per-tag cost input (NaN) persists the floor, not NaN/null", () => {
+  // A `<input type="number">` an author clears binds `NaN`; `Math.max(1, NaN)` is itself
+  // `NaN`, which `JSON.stringify`s to `null` and fails the whole `Create` at ingress
+  // (`BTreeMap<String, f64>` type mismatch) with no feedback. `clampRegionCost` must floor a
+  // non-finite value to 1 instead, matching the server's own `f64::max`-based clamp (which
+  // already floors `NaN` this way).
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: Number.NaN });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1 } });
+  }
+});
+
+test("a cleared flat regionCost input (NaN) persists the floor, not NaN/null", () => {
+  // The identical gap on the flat `cost` field, fixed in the same pass rather than left
+  // beside the per-tag fix.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCost = Number.NaN;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost: 1 });
+  }
+});
+
+test("a blank tag row is dropped from the persisted cost_by_tag record", () => {
+  // Mutation coverage for `regionCostByTagRecord`'s blank-tag guard: a row whose tag is
+  // still empty (freshly added via `addRegionCostByTagRow`, never filled in) must not
+  // persist as an empty-string key.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "", cost: 2 }, { tag: "flying", cost: 1.5 });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1.5 } });
+    expect(Object.keys((op.doc.engine as { cost_by_tag: Record<string, number> }).cost_by_tag)).toHaveLength(1);
+  }
+});
+
+test("commitRegionParts persists staged regionCostByTag rows the same way the single-shape flow does", () => {
+  // The compound-flow persist site (`commitRegionParts`) must never drift from the
+  // single-shape flow (`makeRegionTool.onPointerUp`) on how `regionCostByTag` becomes a
+  // record — both route through the SAME `regionCostByTagRecord` helper.
+  const { controller, sent } = setup();
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: 2 });
+  controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "scene-1");
+  controller.commitRegionParts();
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 2 } });
+});
+
+test("the compound commit carries the controller's own behavior, not a hardcoded one", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  controller.commitRegionParts();
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ behavior: "terrain", cost: 2, ambient_override: null });
+  }
+});
+
+test("the armed compound gesture stages parts and commits ONE compound region doc", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true; // the rail's region-part-add arms the gesture
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  tool.onPointerDown({ x: 200, y: 200 }, ev);
+  tool.onPointerUp({ x: 300, y: 300 }, ev);
+  expect(sent).toHaveLength(0); // nothing exists as a document until the whole list commits
+  expect(controller.regionParts).toHaveLength(2);
+  expect(controller.regionParts[0]).toEqual({ shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false });
+
+  // The row's hole checkbox flips the part's flag in place (region-part-hole).
+  controller.regionParts[1].hole = true;
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "darken";
+  controller.regionAmbientLevel = 0.4;
+  controller.commitRegionParts();
+
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.doc_type).toBe("region");
+    expect(op.doc.engine).toMatchObject({
+      behavior: "ambient_light",
+      ambient_override: { mode: "darken", level: 0.4 },
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "rect", points: [200, 200, 300, 300] }, hole: true },
+      ],
+    });
+  }
+  // The gesture resets after commit: the next plain drag is an immediate single-shape
+  // persist again (the unchanged default flow).
+  expect(controller.regionParts).toHaveLength(0);
+  expect(controller.regionCompound).toBe(false);
+});
+
+test("a staged list discarded by onDeactivate leaves the plain drag flow untouched", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(controller.regionParts).toHaveLength(1);
+
+  tool.onDeactivate?.();
+  expect(controller.regionParts).toHaveLength(0);
+  expect(controller.regionCompound).toBe(false);
+  expect(sent).toHaveLength(0);
+
+  // The very next drag is the plain single-shape flow again — an armed-but-uncommitted
+  // list must never silently change what a later drag does.
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 50, y: 50 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ shape: { kind: "rect", points: [0, 0, 50, 50] } });
+  }
+});

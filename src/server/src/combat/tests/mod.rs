@@ -76,6 +76,8 @@ pub(super) fn actor_combatant(
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: BTreeMap::from([(
             "movement".to_string(),
             CombatantResource { current: movement },
@@ -109,6 +111,8 @@ pub(super) fn event_combatant(
         },
         initiative: Some(30.0),
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: BTreeMap::new(),
     };
     Combatant {
@@ -158,6 +162,7 @@ pub(super) fn actor_with_effect(
             expires,
         }),
         lifecycle: None,
+        origin: None,
     };
     let mut actor = doc(id, "actor", None, actor_body());
     actor.embedded.insert(
@@ -205,6 +210,7 @@ pub(super) fn snapshot(
         history: None,
         registry: Some(registry_with_movement(Formula::Number(30.0))),
         other_active: vec![],
+        groups: Vec::new(),
         chain: (None, None, None),
     }
 }
@@ -247,7 +253,7 @@ fn validate_persisted(doc: &Document) {
 /// new map — lets a test chain transitions. Mirrors the real repository's own per-doc field
 /// apply (`data::command::apply_field_change`), never re-deriving the mutation semantics.
 ///
-/// Also performs a real OCC check, mirroring `SqliteRepository::apply_intent`'s Phase 1: every
+/// Also performs a real OCC check, mirroring `SqliteRepository::apply_intent`'s validation pass: every
 /// `FieldChange.old` is compared against the document's value at that path as it stood at the
 /// START of this whole `ops` batch — never a sibling op's already-applied intermediate value,
 /// since the real repository loads each `Operation::Update`'s target fresh from the DB before
@@ -326,5 +332,6 @@ pub(super) fn engine_of<T: serde::de::DeserializeOwned>(
 }
 
 mod effects;
+mod expiry;
 mod history;
 mod transition;

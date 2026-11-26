@@ -1,7 +1,8 @@
-//! OCC pre-image comparison, membership/role guards, world/user/scene delete
-//! cascades, asset and schema-declaration round trips, world-scoped UI state
-//! merge, explored-fog persistence, and the engine/property-override ingress
-//! gates on Create/Update.
+//! These tests cover row-level persistence and ingress validation in the SQLite repository.
+//!
+//! They check OCC pre-image comparison, membership/role guards, world/user/scene delete cascades,
+//! asset and schema-declaration round trips, world-scoped UI state merge, explored-fog persistence,
+//! and the engine/property-override ingress gates on Create/Update.
 
 use super::*;
 
@@ -115,7 +116,7 @@ async fn list_members_includes_usernames() {
         .unwrap();
     let w = r.create_world_owned("W", gm, 0).await.unwrap();
     let members = r.list_members(w.id).await.unwrap();
-    assert!(members.iter().any(|(_, name, _)| name == "alice"));
+    assert!(members.iter().any(|m| m.username == "alice"));
 }
 
 #[tokio::test]
@@ -139,7 +140,7 @@ async fn list_members_orders_by_username() {
     r.add_member(w.id, abby, WorldRole::Player).await.unwrap();
 
     let members = r.list_members(w.id).await.unwrap();
-    let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+    let names: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
     assert_eq!(names, vec!["abby", "mona", "zeke"]);
 }
 
@@ -165,12 +166,72 @@ async fn list_members_orders_case_insensitively() {
         .unwrap();
 
     let members = r.list_members(w.id).await.unwrap();
-    let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+    let names: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
     assert_eq!(
         names,
         vec!["alice", "Bob", "Charlie"],
         "case-insensitive order: alice before Bob before Charlie"
     );
+}
+
+#[tokio::test]
+async fn profile_and_avatar_round_trip_and_project_into_list_members() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let pl = r
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, pl, WorldRole::Player).await.unwrap();
+
+    // Unset: every field reads back empty.
+    assert!(r.avatar_for(pl).await.unwrap().is_none());
+    let record = r.user_by_id(pl).await.unwrap().unwrap();
+    assert!(record.colour.is_none() && record.pronouns.is_none());
+
+    r.set_profile(pl, Some("#336699"), Some("she/her"))
+        .await
+        .unwrap();
+    r.set_avatar(pl, Some((&[1, 2, 3], "image/png")))
+        .await
+        .unwrap();
+
+    let record = r.user_by_username("pl").await.unwrap().unwrap();
+    assert_eq!(record.colour.as_deref(), Some("#336699"));
+    assert_eq!(record.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(
+        r.avatar_for(pl).await.unwrap(),
+        Some((vec![1, 2, 3], "image/png".to_owned()))
+    );
+
+    // `has_avatar` is a computed `IS NOT NULL` read back as an integer: the avatar-less GM
+    // reads false and the avatar-bearing player reads true.
+    let members = r.list_members(w.id).await.unwrap();
+    let gm_row = members.iter().find(|m| m.user == gm).unwrap();
+    let pl_row = members.iter().find(|m| m.user == pl).unwrap();
+    assert!(!gm_row.has_avatar && gm_row.colour.is_none() && gm_row.pronouns.is_none());
+    assert!(pl_row.has_avatar);
+    assert_eq!(pl_row.colour.as_deref(), Some("#336699"));
+    assert_eq!(pl_row.pronouns.as_deref(), Some("she/her"));
+
+    // Clearing resets both columns together.
+    r.set_avatar(pl, None).await.unwrap();
+    r.set_profile(pl, None, None).await.unwrap();
+    assert!(r.avatar_for(pl).await.unwrap().is_none());
+    let row = &r.list_members(w.id).await.unwrap()[1];
+    assert!(!row.has_avatar && row.colour.is_none() && row.pronouns.is_none());
+}
+
+#[tokio::test]
+async fn profile_and_avatar_writes_reject_an_unknown_account() {
+    let r = repo().await;
+    let ghost = uuid::Uuid::new_v4();
+    assert!(r.set_profile(ghost, Some("#336699"), None).await.is_err());
+    assert!(r.set_avatar(ghost, None).await.is_err());
 }
 
 #[tokio::test]
@@ -1278,6 +1339,79 @@ async fn worlds_for_user_scopes_to_membership_and_admin_sees_all() {
 /// Parse a user's stored UI-state for structural assertions.
 async fn ui_state_of(repo: &SqliteRepository, user: Uuid) -> serde_json::Value {
     serde_json::from_str(&repo.get_ui_state(user).await.unwrap().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn merge_ui_state_modules_preserves_sibling_keys_across_successive_patches() {
+    let repo = repo().await;
+    let user = repo
+        .create_user("u", Some("hash"), ServerRole::User, 0)
+        .await
+        .unwrap();
+    let cap = 64 * 1024;
+
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "other-module": { "keep": true } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "foo": 1 } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "bar": 2 } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(
+        v["modules"]["my-module"],
+        serde_json::json!({ "foo": 1, "bar": 2 })
+    );
+    // A sibling namespace written earlier is untouched by later patches to another module.
+    assert_eq!(
+        v["modules"]["other-module"],
+        serde_json::json!({ "keep": true })
+    );
+
+    // `null` at a leaf removes that key; `null` at the module id removes the whole slice.
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "foo": null } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(v["modules"]["my-module"], serde_json::json!({ "bar": 2 }));
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": null } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(v["modules"].get("my-module"), None);
+    assert_eq!(
+        v["modules"]["other-module"],
+        serde_json::json!({ "keep": true })
+    );
+
+    // A non-object `modules` patch is rejected at the store, as `worlds` is.
+    assert!(matches!(
+        repo.merge_ui_state(user, &serde_json::json!({ "modules": [1] }), cap)
+            .await,
+        Err(DataError::OpFailed(_))
+    ));
 }
 
 #[tokio::test]
@@ -2885,5 +3019,179 @@ async fn explored_fog_is_keyed_per_scene_level_user() {
         repo.get_explored(scene, "l2", alice).await.unwrap(),
         Some(vec![2, 2, 2]),
         "the l2 row is untouched by the l1 upsert"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scene_only_clears_every_user_and_level() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(31);
+    let other_scene = crate::test_ids::test_uuid(32);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l1", alice, &[2, 2])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+    repo.set_explored(world, other_scene, "", alice, &[9, 9])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, None, None).await.unwrap();
+
+    assert_eq!(repo.get_explored(scene, "", alice).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene, "l1", alice).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene, "", bob).await.unwrap(), None);
+    assert_eq!(
+        repo.get_explored(other_scene, "", alice).await.unwrap(),
+        Some(vec![9, 9]),
+        "a reset scoped to `scene` must not touch a different scene's rows"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_one_user_leaves_others_untouched() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(33);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, None, Some(alice))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "", alice).await.unwrap(),
+        None,
+        "alice's own row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "a reset scoped to one user must not clear another user's row"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_one_level_leaves_other_levels_untouched() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(34);
+    let alice = crate::test_ids::test_uuid(40);
+
+    repo.set_explored(world, scene, "l1", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l2", alice, &[2, 2])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, Some("l1"), None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        None,
+        "the targeted level's row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2]),
+        "a reset scoped to one level must not clear another level's row"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_combined_user_and_level_scope() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(35);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "l1", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l2", alice, &[2, 2])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l1", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, Some("l1"), Some(alice))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        None,
+        "the (scene, l1, alice) row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2]),
+        "a different level for the SAME user is untouched"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l1", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "the SAME level for a different user is untouched"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_on_a_scene_with_no_rows_is_ok_not_an_error() {
+    let repo = repo().await;
+    let scene = crate::test_ids::test_uuid(36);
+
+    // No `set_explored` call precedes this: the scene has zero `explored_fog` rows.
+    let result = repo.reset_explored_fog(scene, None, None).await;
+
+    assert!(
+        result.is_ok(),
+        "a reset against an already-empty scene is not an error case; got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_a_user_with_no_rows_is_ok_and_leaves_others_intact() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(37);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    // alice has never explored this scene; bob has.
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    let result = repo.reset_explored_fog(scene, None, Some(alice)).await;
+
+    assert!(
+        result.is_ok(),
+        "a reset scoped to a user with zero matching rows is not an error case; got {result:?}"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "the no-match path must not widen to touch a different user's row"
     );
 }

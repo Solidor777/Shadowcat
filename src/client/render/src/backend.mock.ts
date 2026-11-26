@@ -3,6 +3,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNod
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
@@ -18,6 +19,11 @@ export class MockBackend implements DisplayBackend {
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
   gridColor: number | null = null;
+  /** Segments of the last `drawBoundsOutline` call, recorded verbatim; empty before the first
+   * call or after a clear. */
+  boundsOutline: LineSeg[] = [];
+  /** Color passed to the last `drawBoundsOutline` call, `0xRRGGBB`; `null` before the first call. */
+  boundsOutlineColor: number | null = null;
   /** Last `setCameraTransform` value, recorded verbatim. */
   camera: CameraTransform | null = null;
   /** Last applied visibility mask — either the last `setVisibility` input, or the
@@ -74,6 +80,8 @@ export class MockBackend implements DisplayBackend {
   pings: PingRing[] = [];
   /** Last `drawEmotes` glyphs, recorded verbatim. */
   emotes: EmoteGlyph[] = [];
+  /** Last `drawRulers` rulers, recorded verbatim. */
+  rulers: RemoteRulerPath[] = [];
   /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
   /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
@@ -161,6 +169,23 @@ export class MockBackend implements DisplayBackend {
   drawGrid(lines: LineSeg[], color: number): void {
     this.gridLineCount = lines.length;
     this.gridColor = color;
+  }
+  /** `DisplayBackend.drawBoundsOutline`: records the segments verbatim into `boundsOutline`
+   * (replacing the previous set) and the color into `boundsOutlineColor`.
+   * @param lines The outline segments; an empty array clears the recorded outline.
+   * @param color The stroke color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.drawBoundsOutline([{ x1: 0, y1: 0, x2: 100, y2: 0 }], 0xd9a441);
+   * backend.boundsOutline.length; // 1
+   * ```
+   */
+  drawBoundsOutline(lines: LineSeg[], color: number): void {
+    this.boundsOutline = lines;
+    this.boundsOutlineColor = color;
   }
   /** `DisplayBackend.setCameraTransform`: records `t` verbatim into `this.camera`.
    * @param t The camera transform: translation `(x,y)` plus uniform `scale`.
@@ -477,11 +502,24 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 0.8 }]);
    * ```
    */
   drawEmotes(glyphs: EmoteGlyph[]): void {
     this.emotes = glyphs;
+  }
+  /** `DisplayBackend.drawRulers`: records `rulers` verbatim into `this.rulers`.
+   * @param rulers The current remote rulers to record.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.drawRulers([{ user: "u1", origin: "conn-1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 }]);
+   * ```
+   */
+  drawRulers(rulers: RemoteRulerPath[]): void {
+    this.rulers = rulers;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.
    * @param frame The resolved per-cell lighting to record.

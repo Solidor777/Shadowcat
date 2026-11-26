@@ -9,7 +9,7 @@ import {
 import { FallbackTrackPlayer } from "./fallback-player";
 import { setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS } from "./track-player";
 import type { MediaElementLike } from "./context";
-import { stubMediaElement } from "./__fixtures__/stubContext";
+import { quietGate, stubMediaElement } from "./__fixtures__/stubContext";
 
 function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
   return {
@@ -22,6 +22,7 @@ function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
     loop: false,
     startedAt: 0,
     pausedAt: null,
+    sessionPaused: false,
     ...over,
   };
 }
@@ -54,7 +55,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("FallbackTrackPlayer", () => {
   it("plays a LOOPING entry through the bare element with el.loop set (hiccup accepted)", () => {
     const channels = channelStates();
-    const player = new FallbackTrackPlayer(new AssetResolver(), channels.get, entry("e1", { loop: true }), () => {});
+    const player = new FallbackTrackPlayer(new AssetResolver(), channels.get, entry("e1", { loop: true }), () => {}, quietGate());
     player.sync(entry("e1", { loop: true }), 1000);
     expect(els).toHaveLength(1);
     expect(els[0].loop).toBe(true);
@@ -64,7 +65,7 @@ describe("FallbackTrackPlayer", () => {
 
   it("a non-looping entry streams with el.loop false and reports its natural end", () => {
     const ended: string[] = [];
-    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), (id) => ended.push(id));
+    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), (id) => ended.push(id), quietGate());
     expect(els[0].loop).toBe(false);
     els[0].onended?.(new Event("ended"));
     expect(ended).toEqual(["e1"]);
@@ -78,6 +79,7 @@ describe("FallbackTrackPlayer", () => {
       channels.get,
       entry("e1", { gain: 0.5 }),
       () => {},
+      quietGate(),
     );
     expect(els[0].volume).toBeCloseTo(0.4);
     channels.record.sfx = { gain: 0.8, muted: true };
@@ -97,6 +99,7 @@ describe("FallbackTrackPlayer", () => {
       channels.get,
       entry("e1", { gain: -0.6 }),
       () => {},
+      quietGate(),
     );
     expect(els[0].volume).toBeGreaterThanOrEqual(0);
     expect(els[0].volume).toBe(0);
@@ -104,7 +107,7 @@ describe("FallbackTrackPlayer", () => {
   });
 
   it("sync pauses and resumes against the authoritative entry and hard-seeks past the drift threshold", () => {
-    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), () => {});
+    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), () => {}, quietGate());
     const el = els[0];
     const play = vi.spyOn(el, "play");
     const pause = vi.spyOn(el, "pause");
@@ -125,7 +128,7 @@ describe("FallbackTrackPlayer", () => {
 
   it("dispose pauses the element and drops the end callback (a late end reports nothing)", () => {
     const ended: string[] = [];
-    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), (id) => ended.push(id));
+    const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), (id) => ended.push(id), quietGate());
     const pause = vi.spyOn(els[0], "pause");
     player.dispose();
     expect(pause).toHaveBeenCalled();

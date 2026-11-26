@@ -3,6 +3,12 @@ import {
   listUsers,
   createUser,
   deleteUser,
+  changeOwnPassword,
+  ChangePasswordError,
+  updateProfile,
+  uploadAvatar,
+  deleteAvatar,
+  avatarUrl,
   listWorldMembers,
   createWorldInvite,
   listWorldInvites,
@@ -42,6 +48,76 @@ test("deleteUser issues DELETE and surfaces the server error body", async () => 
   await expect(deleteUser("u-2")).rejects.toThrow(
     "cannot delete the server's only administrator",
   );
+});
+
+test("changeOwnPassword POSTs both passwords and throws a status-carrying error on refusal", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  await changeOwnPassword("old-pw", "new-password");
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/account/password");
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(init.method).toBe("POST");
+  expect(JSON.parse(init.body as string)).toEqual({
+    current_password: "old-pw",
+    new_password: "new-password",
+  });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: "unauthorized" }) }),
+  );
+  const err = await changeOwnPassword("bad", "new-password").catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ChangePasswordError);
+  expect((err as ChangePasswordError).status).toBe(401);
+  expect((err as ChangePasswordError).message).toBe("unauthorized");
+});
+
+test("updateProfile PUTs both fields as JSON and surfaces the server's rejection text", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  await updateProfile({ colour: "#336699", pronouns: null });
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/account/profile");
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(init.method).toBe("PUT");
+  expect(JSON.parse(init.body as string)).toEqual({ colour: "#336699", pronouns: null });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 422, json: async () => ({ error: "bad colour" }) }),
+  );
+  await expect(updateProfile({ colour: "red", pronouns: null })).rejects.toThrow("bad colour");
+});
+
+test("uploadAvatar PUTs the raw file as the body and deleteAvatar issues DELETE", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  const file = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+  await uploadAvatar(file);
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/account/avatar");
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(init.method).toBe("PUT");
+  expect(init.body).toBe(file);
+
+  await deleteAvatar();
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/account/avatar");
+  expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("DELETE");
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 413, json: async () => ({ error: "too large" }) }),
+  );
+  await expect(uploadAvatar(file)).rejects.toThrow("too large");
+});
+
+test("avatarUrl names the world-scoped route only when the member has an avatar", () => {
+  expect(avatarUrl("w 1", "u1", true)).toBe("/api/worlds/w%201/members/u1/avatar");
+  expect(avatarUrl("w1", "u1", false)).toBeNull();
+  expect(avatarUrl("w1", "u1", undefined)).toBeNull();
+});
+
+test("avatarUrl appends the cache-busting version only when one is given", () => {
+  expect(avatarUrl("w1", "u1", true, 3)).toBe("/api/worlds/w1/members/u1/avatar?v=3");
+  expect(avatarUrl("w1", "u1", false, 3)).toBeNull();
 });
 
 test("listUsers surfaces the server's reason on the non-admin 403", async () => {

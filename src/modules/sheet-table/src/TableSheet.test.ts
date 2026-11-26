@@ -144,7 +144,7 @@ describe("TableSheet header", () => {
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
     const context = setAppContextForTest({
       documents, canEdit: () => true,
-      chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+      chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
     });
     const { getByTestId } = render(TableSheet, { props: { docId: "t1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.change(getByTestId("table-draw-count"), { target: { value: "3" } });
@@ -168,7 +168,7 @@ describe("TableSheet header", () => {
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
     const context = setAppContextForTest({
       documents, canEdit: () => true, notify,
-      chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+      chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
     });
     const { getByTestId } = render(TableSheet, { props: { docId: "t1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.click(getByTestId("table-draw"));

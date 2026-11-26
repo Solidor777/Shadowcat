@@ -4,6 +4,8 @@ import type { GeneratedBackground } from "./GeneratedBackground";
 import type { GeneratedBorder } from "./GeneratedBorder";
 import type { GeneratedCrop } from "./GeneratedCrop";
 import type { RenderVisual } from "./RenderVisual";
+import type { TokenArtFilter } from "./TokenArtFilter";
+import type { VisualTransform } from "./VisualTransform";
 
 /**
  * The client-owned token/actor visual union. Internally tagged on
@@ -15,7 +17,7 @@ import type { RenderVisual } from "./RenderVisual";
  * ```
  * use shadowcat::data::engine::TokenVisual;
  *
- * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+ * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false };
  * let json = serde_json::to_value(&visual).unwrap();
  * // Internally tagged on `kind`, lowercase.
  * assert_eq!(json["kind"], "image");
@@ -27,7 +29,19 @@ export type TokenVisual = { "kind": "image",
 /**
  * Asset id of the image.
  */
-asset: string, } | { "kind": "animated", 
+asset: string, 
+/**
+ * True when the server drew this image from a `RandomVariant` pool; false for art an
+ * author chose. A pool save redraws only drawn art
+ * (`SqliteRepository::redraw_linked_token_art`), so hand-set art is never replaced. The
+ * flag is the only record of provenance, so it travels with the value.
+ */
+drawn?: boolean, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "animated", 
 /**
  * Where the frames come from.
  */
@@ -39,7 +53,12 @@ fps: number,
 /**
  * Loop playback; false = play once and hold the last frame.
  */
-loop: boolean, } | { "kind": "faces", 
+loop: boolean, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "faces", 
 /**
  * Face name -> drawable visual (never nested `faces`).
  */
@@ -69,4 +88,14 @@ border: GeneratedBorder | null,
 /**
  * Fill drawn behind the cropped art, or `None` for none.
  */
-background: GeneratedBackground | null, };
+background: GeneratedBackground | null, } | { "kind": "randomVariant", 
+/**
+ * Candidate pool, scoped to the token's world and to image assets at draw time.
+ */
+filter: TokenArtFilter, 
+/**
+ * Used verbatim when `filter` matches no asset, so a token is never left with no visual.
+ * `TokenVisual::validate` refuses a `RandomVariant` here: `Box<TokenVisual>` does not
+ * exclude the recursive case at the type level the way `Box<RenderVisual>` does.
+ */
+fallback: TokenVisual, };

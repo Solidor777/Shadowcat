@@ -15,16 +15,26 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::auth::role::ServerRole;
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::Document;
 use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::snapshot::StoredCommand;
+use crate::data::sqlite::SqliteRepository;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 use crate::ws::PingRateLimiter;
+
+mod placement;
+pub(crate) use placement::{
+    place_effect_wire_message, spawn_placement_expiry_sweep, PlaceEffectError, PlaceEffectInputs,
+    PLACEMENT_EXPIRY_PERIOD,
+};
+mod portal;
+pub(crate) use portal::{portal_choice_wire_message, PortalChoiceError};
 
 /// The room-facing result of a server-authoritative token move. Production code reads only
 /// `frame` (the wire `MoveStream`, already registered in the room's in-flight registry); the
@@ -80,6 +90,96 @@ pub(crate) struct MoveRequestInputs {
     pub ts: i64,
     /// Correlates the resulting `MoveStream`/`MoveError` with the originating `MoveRequest`.
     pub request_id: Uuid,
+}
+
+/// Grouped inputs to `Room::toggle_door` (mirroring `MoveRequestInputs`).
+pub(crate) struct ToggleDoorInputs {
+    /// Correlates a rejection's `ServerMsg::DoorToggleError` with the originating
+    /// `ClientMsg::ToggleDoor` (success is the broadcast `Event` echo).
+    pub request_id: Uuid,
+    /// The scene the request names — checked for agreement against the wall's own derived
+    /// `parent_id` (`Room::toggle_door`'s derive-from-the-document rule), never used to
+    /// select anything.
+    pub scene_id: Uuid,
+    /// The wall whose door state flips.
+    pub wall_id: Uuid,
+    /// The target state.
+    pub to: eng::DoorState,
+    /// Server-authoritative commit timestamp.
+    pub ts: i64,
+}
+
+/// How far a token may stand from a door and still flip it, in CELLS (converted to world
+/// units at the gate via `GridShape::world_units_per_cell`). On a unit square grid, a token
+/// standing in a cell DIAGONALLY adjacent to the door's own cell has its center up to
+/// √2 ≈ 1.41 cells from a wall segment sitting at the shared cell boundary; 1.5 is the
+/// smallest round number clearing that worst case, so a token in any of the 8 cells
+/// surrounding the door's cell can always reach it while a token two cells away (minimum
+/// distance 2.0) never can.
+pub(crate) const DOOR_REACH_CELLS: f64 = 1.5;
+
+/// Why a `ClientMsg::ToggleDoor` was refused. `Display` yields ONE wording for every variant
+/// ("door rejected") — the wire message for a NON-GM caller, because a distinguishable wording
+/// would disclose something about the wall/token/scene the requester has no right to learn
+/// (does this wall exist, is my token close enough, can I see it, is it secretly `gm_only`,
+/// is it locked). A GM caller may instead receive the variant-specific diagnostic text
+/// (`door_toggle_wire_message`), mirroring the role-conditioned disclosure discipline
+/// `combat::CombatError` already establishes: the role decides disclosure, never the variant.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DoorToggleError {
+    /// No scene-hydrated wall document by that id (including a doc of another type).
+    #[error("door rejected")]
+    UnknownWall,
+    /// The request's `scene_id` disagrees with the wall's derived parent scene (or the wall's
+    /// scene has no live scene document).
+    #[error("door rejected")]
+    SceneMismatch,
+    /// The requester effectively controls no token parented to the wall's scene.
+    #[error("door rejected")]
+    NoOwnedToken,
+    /// The nearest owned token is farther than `DOOR_REACH_CELLS` from the door's segment.
+    #[error("door rejected")]
+    OutOfReach,
+    /// The door segment's cells fall outside the requester's visible-cell set.
+    #[error("door rejected")]
+    NotVisible,
+    /// The requester holds no engine-tier visibility on the wall document itself (a `gm_only`
+    /// wall) — geometric adjacency and sight do not imply this (the visibility raycast is
+    /// deliberately permission-blind), which is exactly why the check exists.
+    #[error("door rejected")]
+    WallNotVisible,
+    /// The flip would move onto or off `Locked` (or the wall has no door state at all) — a
+    /// non-GM may only flip `Closed`↔`Open`.
+    #[error("door rejected")]
+    Locked,
+    /// An authority input or the commit itself failed (repository/serialization).
+    #[error("door rejected")]
+    Data(#[from] DataError),
+}
+
+/// The error-to-wire conversion `ws::conn`'s `handle_toggle_door` applies: the caller's ROLE
+/// decides disclosure, never the variant — a non-GM gets the uniform `Display` wording
+/// (`DoorToggleError`'s own discipline), a GM gets the variant-specific diagnostic (the same
+/// GM-only-reachable distinction `CombatRewind`'s wording precedent establishes). Takes the
+/// role as an argument because the error value itself carries no role.
+pub(crate) fn door_toggle_wire_message(
+    err: &DoorToggleError,
+    world_role: crate::data::document::WorldRole,
+) -> String {
+    if world_role != crate::data::document::WorldRole::Gm {
+        return err.to_string();
+    }
+    match err {
+        DoorToggleError::UnknownWall => "no such wall",
+        DoorToggleError::SceneMismatch => "the wall is not on that scene",
+        DoorToggleError::NoOwnedToken => "you control no token in that scene",
+        DoorToggleError::OutOfReach => "no token you control is within reach of the door",
+        DoorToggleError::NotVisible => "your token cannot see the door",
+        DoorToggleError::WallNotVisible => "the wall is hidden from you",
+        DoorToggleError::Locked => "the door is locked",
+        DoorToggleError::Data(_) => "internal error",
+    }
+    .to_string()
 }
 
 /// The mover's turn-budget state in the token's scene's active combat, built by
@@ -368,6 +468,8 @@ fn wire_move_stream(
                 intensity: ls.intensity,
                 falloff: crate::scene::emitters::wire_falloff(ls.falloff),
                 color: ls.color,
+                angle: ls.angle,
+                rotation: ls.rotation,
                 polygons: ls
                     .polygons
                     .into_iter()
@@ -656,6 +758,14 @@ pub struct Room {
     /// scope: the floor only needs to survive for the lifetime of the room, exactly like
     /// `moving`.
     session_floors: Mutex<HashMap<Uuid, i64>>,
+    /// Per-user live connection count in this room, driving the 0<->1 presence-transition
+    /// broadcast (`ServerMsg::Presence`). Derived, in-memory only, cleared with the room: there
+    /// is no separate online list: `presence_online` reads this map for the `Welcome` snapshot.
+    /// A `std::sync::Mutex` because the guard is never held across an
+    /// `.await` and `presence_connect`/`presence_disconnect` are synchronous. Parallels
+    /// `RoomStats::connections` without replacing it: `reap_if_empty` still reads that
+    /// aggregate.
+    presence: std::sync::Mutex<HashMap<Uuid, u32>>,
     /// Whether an explicit `ClientMsg::ResyncRequest` is clamped against `resync_floor`
     /// (`ws::conn`'s `Egress::Resync` handler reads this via `Room::resync_floor_enforced`
     /// — the internal `Lagged`-driven auto-resync deliberately does NOT consult it, since
@@ -671,11 +781,30 @@ pub struct Room {
     /// `ClientMsg::PlayVfx` frame and `/fx` already share, rather than a parallel unthrottled
     /// path (never-fork: one validation+authz/budget source per one-shot family).
     vfx_rate: Arc<PingRateLimiter>,
+    /// Ephemeral per-combat once-per-turn/round region-trigger dedup —
+    /// `fire_turn_round_triggers`'s seen-set, the SAME seen-set shape
+    /// `combat::transition`'s per-sweep recovery dedup keeps, living
+    /// room-side because the (combatant, region, trigger) identity it keys
+    /// on only exists at the firing pass (the pure transition never sees
+    /// regions). Never persisted: a restart clears it, which can only
+    /// re-permit a fire — the same accepted ephemeral-table residual class
+    /// as `SceneEcs::region_membership` and `Room::moving`. `Mutex`, never
+    /// locked across an `.await`... the firing pass holds `publish_guard`,
+    /// which serializes every updater anyway.
+    turn_round_dedup: Mutex<HashMap<Uuid, TurnRoundDedup>>,
+    /// Pending portal offers, one per token (`ws::room::portal`): token id → its live offer. Held
+    /// in memory only, because an offer is a moment: a restart drops it and `OpenPortal` recovers
+    /// it. A `std::sync::Mutex` never held across an `.await`; every writer also holds
+    /// `publish_guard`, which makes an answer's validate-then-consume atomic.
+    portal_offers: std::sync::Mutex<HashMap<Uuid, portal::PortalOffer>>,
 }
 
 /// One firing report: the token that entered, the scene it happened in, the cells it
 /// entered (`MoveOutcome::entered_cells` for a move, the new footprint cells for a
 /// placement), and the arrest stop position when the walk was region-arrested.
+/// `TriggerEvent::Exit` fires from the membership diff, not a per-cell crossing:
+/// `fire_region_triggers` replaces `SceneEcs::region_membership`'s stored set with the
+/// regions intersecting `occupancy` and fires `Exit` on whatever the stored set loses.
 pub(crate) struct TriggerReport {
     /// The scene the entry happened in (derived from the token, never the request).
     pub scene: Uuid,
@@ -686,6 +815,142 @@ pub(crate) struct TriggerReport {
     pub entered: Vec<(i32, i32)>,
     /// The arrest stop position, `Some` only when the walk was region-arrested.
     pub arrest_stop: Option<(f64, f64)>,
+    /// The path-end OCCUPANCY basis for the `Exit` membership diff: the cells whose
+    /// intersection with a region's cell set makes the token "inside" it after this
+    /// report. Each call site supplies the SAME cell basis its own Enter detection
+    /// uses — a move's stop cell (the move executor's region gate and `entered` are
+    /// center-cell keyed) or a placement's full footprint — so an `Enter` and its
+    /// later `Exit` for one report kind can never drift onto different bases (a
+    /// footprint bleed past the center cell would otherwise register membership a
+    /// center-keyed `Enter` never fired, and vice versa).
+    pub occupancy: Vec<(i32, i32)>,
+    /// When `Some`, the only regions whose `Enter`/`Arrest` triggers may fire from `entered`;
+    /// `Exit` is never filtered. A carrier-move report sets it to the attached regions the
+    /// token has not yet entered, so a stationary token's `entered` centre cell cannot
+    /// re-fire the Enter triggers of an unrelated region it already occupies.
+    pub enter_only: Option<Vec<Uuid>>,
+}
+
+/// One fired (event, round, combatant, region, trigger-index) tuple — the
+/// once-per-turn/round dedup identity for `Room::fire_turn_round_triggers`.
+/// Scoped to (combatant, region, trigger identity) — the same axes the
+/// recovery dedup's own sets key on — plus the boundary instance (`event`,
+/// `round`) so a genuinely NEW turn or round can never be suppressed by an
+/// earlier one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct TurnRoundFireKey {
+    /// The boundary event that fired (`TriggerEvent::TurnStart` & kin).
+    event: eng::TriggerEvent,
+    /// The round the firing boundary belongs to — the boundary instance:
+    /// `(round, combatant)` is one turn for turn-scoped events; for
+    /// round-scoped events it is the new round `round_wrap` committed.
+    round: u32,
+    /// The combatant whose token fired. Round-scoped boundaries expand to
+    /// one key per covered combatant, so two member tokens of one region
+    /// each fire once per round boundary.
+    combatant: Uuid,
+    /// The region carrying the fired trigger.
+    region: Uuid,
+    /// The trigger's index in the region's authored `triggers` list
+    /// (`regions::fired_turn_round_triggers` returns it) — the trigger
+    /// identity content-equality cannot supply: two identical authored
+    /// triggers on one region are two distinct identities (a `resource_delta`
+    /// authored twice applies twice).
+    trigger: usize,
+}
+
+/// Per-combat once-per-turn/round dedup state: the keys already fired within
+/// the current round window, and the highest round the firing pass has
+/// observed for the combat. A fresh instance sees every fire.
+#[derive(Default)]
+struct TurnRoundDedup {
+    /// Highest round observed for the combat; keys older than the previous
+    /// round are pruned against it on each pass (`k.round + 1 < last_round`
+    /// drops). A key's lifetime is therefore one boundary-to-boundary window
+    /// — the same rotation `combat::transition`'s per-sweep recovery dedup
+    /// sets keep, retained across commands because the double-fire this set
+    /// must catch is a CROSS-command shape: an auto-resolved entry the
+    /// `settle_turn` budget parks on has already run its `turn_end`, and the
+    /// next `CombatAdvance` ends that SAME (round, combatant) turn again.
+    /// A committed `CombatRewind` CLEARS the whole entry
+    /// (`Room::commit_combat_and_fire`'s `rewind` arm): the rewind re-runs
+    /// recovery when the clock re-crosses those boundaries, so the triggers
+    /// riding them re-arm in full — pruning alone would only re-arm rounds
+    /// outside the retained window, silently suppressing an ordinary
+    /// one-round rewind's re-crossing.
+    last_round: u32,
+    /// The fired keys inside the current/previous round window.
+    keys: std::collections::BTreeSet<TurnRoundFireKey>,
+}
+
+/// Combats retained in `Room::turn_round_dedup` before the whole map is
+/// cleared wholesale — over-invalidation is the safe direction (a cleared
+/// set can only re-permit a legitimate-looking fire, never suppress a first
+/// one), the same discipline `MAX_LIGHTING_INPUTS_CACHE_ENTRIES` keeps.
+/// Entries otherwise live for the room's lifetime: one small set per combat
+/// that ever crossed a boundary.
+const MAX_TURN_ROUND_DEDUP_COMBATS: usize = 64;
+
+/// The token a teleport moves: what `Room::apply_teleport_to` reads of it. Bundled to keep
+/// that function under the >7-argument signature limit.
+struct TeleportSubject<'a> {
+    /// The token document id.
+    token: Uuid,
+    /// The token's current scene (`None` when it sits on no scene).
+    scene: Option<Uuid>,
+    /// The token's parsed engine body (position/elevation); `None` when it does not parse.
+    token_eng: Option<&'a eng::TokenEngine>,
+    /// The token's effective owner, whose `vfx_rate` bucket a carried VFX charges; `None`
+    /// admits uncharged.
+    effective_owner: Option<Uuid>,
+}
+
+/// The one hop a fire applies: a fixed destination, or a choice that registers an offer.
+enum HopEffect<'a> {
+    /// A `TriggerEffect::Teleport` target, applied at once.
+    Fixed(&'a eng::PortalTarget),
+    /// A `TriggerEffect::PortalChoice`, offered to the token's owner and the GMs.
+    Choice(portal::PortalSource<'a>),
+}
+
+/// The firing-plan input bundle for `Room::apply_region_trigger_effects` —
+/// what fires, the rows the secrecy forcing searches, the combat a
+/// `ResourceDelta` resolves against, and the one-hop teleport guard. Bundled
+/// to keep the application funnel under the >7-argument signature limit
+/// (`MoveRequestInputs`'s own discipline).
+struct TriggerEffectPlan<'a> {
+    /// The (region id, trigger) pairs to apply, in fire order.
+    fired: Vec<(Uuid, eng::RegionTrigger)>,
+    /// The identity rows a `ChatNotice`'s audience forcing searches (an
+    /// unresolvable row fails closed to forced-GM-only).
+    secrecy_rows: &'a [crate::scene::regions::TriggerRegion],
+    /// The combat a `ResourceDelta` resolves against: `Some` for the
+    /// turn/round fire site (the FIRING combat — correct even for a token
+    /// teleported off its combat's scene), `None` for the movement sites
+    /// (the token's scene's ACTIVE combat, the rule the movement sites have
+    /// always used).
+    combat_hint: Option<Uuid>,
+    /// Whether a `Teleport` effect may apply on this pass (the one-hop
+    /// anti-loop guard; `false` only on a teleport destination's own
+    /// re-fire).
+    allow_teleport: bool,
+}
+
+/// The post-commit tail of one combat intent — everything
+/// `Room::commit_combat_and_fire` does AFTER the transition's own commit.
+/// Bundled to keep the method under the >7-argument signature limit
+/// (`MoveRequestInputs`'s own discipline).
+pub(crate) struct CombatTriggerTail<'a> {
+    /// The snapshot the transition resolved from (combat id, combatant→token
+    /// kinds) — the firing pass's lookup table.
+    pub snap: &'a crate::combat::CombatSnapshot,
+    /// The transition's turn/round boundary record (empty for every intent
+    /// but a boundary-crossing `start`/`advance`).
+    pub plan: Vec<crate::combat::transition::TurnRoundBoundary>,
+    /// Whether the committed intent was a `CombatRewind`: its commit re-arms
+    /// the combat's `turn_round_dedup` entry (recovery re-runs on the
+    /// re-crossed boundaries, so the triggers riding them re-fire too).
+    pub rewind: bool,
 }
 
 impl Room {
@@ -715,8 +980,11 @@ impl Room {
             stats: RoomStats::default(),
             moving: Mutex::new(HashMap::new()),
             session_floors: Mutex::new(HashMap::new()),
+            presence: std::sync::Mutex::new(HashMap::new()),
             resync_floor_enforced_flag: resync_floor_enforced,
             vfx_rate,
+            turn_round_dedup: Mutex::new(HashMap::new()),
+            portal_offers: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -929,15 +1197,15 @@ impl Room {
                 CellSet,
                 CellSet,
                 crate::scene::GridKind,
+                uuid::Uuid,
             )> = Vec::new();
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
             // grants — an await, which must not run under the scene read guard below. Fetched
-            // once, ahead of the guard, and only when this batch actually contains a token
-            // Create (the sole op shape that reads the mask); every other batch skips the fetch.
-            let needs_world_defaults = ops.iter().any(
-                |op| matches!(op, Operation::Create { doc } if doc.doc_type == "token" && doc.parent_id.is_some()),
-            );
+            // once, ahead of the guard, and only when this batch contains a token Create (which
+            // reads the mask) or a token rotation write under the `OwnTurn` rule (which resolves
+            // the caller's standing on the token's combatant); every other batch skips the fetch.
+            let needs_world_defaults = self.batch_needs_world_defaults(&ops).await;
             let world_defaults = if needs_world_defaults {
                 Some(repo.world_cap_defaults(self.world_id).await?)
             } else {
@@ -958,6 +1226,33 @@ impl Room {
                         if let Some((_, a0, a1)) = scene.token_move(*doc_id, changes) {
                             if a0 != a1 {
                                 return Err(DataError::Forbidden);
+                            }
+                        }
+                        // A non-GM rotation write is refused by the one rotation predicate
+                        // (`rotation_refusal`): the token's `lock_rotation`, then the scene's
+                        // turn rule. The auto-rotate `FieldChange` of `execute_move` never
+                        // passes through here (it commits through `commit_ops_locked`).
+                        if let Some(w) = scene.token_rotation_write(*doc_id, changes) {
+                            if w.rotation_changed {
+                                let rule = scene.resolve_scene(w.scene).facing_turn_rule;
+                                let standing =
+                                    if rule == crate::data::engine::FacingTurnRule::OwnTurn {
+                                        // Fail closed: the defaults were fetched for every batch
+                                        // holding an `OwnTurn` rotation write, so `None` cannot occur.
+                                        let Some(wd) = world_defaults.as_ref() else {
+                                            return Err(DataError::Forbidden);
+                                        };
+                                        scene.token_turn_standing(w.scene, *doc_id, ctx, wd)
+                                    } else {
+                                        crate::scene::rotation_gate::TurnStanding::Unconstrained
+                                    };
+                                if crate::scene::rotation_gate::rotation_refusal(
+                                    w.locked, rule, standing,
+                                )
+                                .is_some()
+                                {
+                                    return Err(DataError::Forbidden);
+                                }
                             }
                         }
                     }
@@ -1058,6 +1353,10 @@ impl Room {
                                     [target].into_iter().collect(),
                                     mask,
                                     settings.grid_kind,
+                                    crate::scene::explored::explored_fog_key(
+                                        settings.fog_pooling,
+                                        ctx.user_id,
+                                    ),
                                 ));
                             }
                         }
@@ -1072,11 +1371,12 @@ impl Room {
                 (uuid::Uuid, String),
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, level, move_cells, visible, grid_kind) in revealed_pending {
+            for (scene_id, level, move_cells, visible, grid_kind, explored_key) in revealed_pending
+            {
                 let explored = match explored_cache.entry((scene_id, level.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let set = match repo.get_explored(scene_id, &level, ctx.user_id).await {
+                        let set = match repo.get_explored(scene_id, &level, explored_key).await {
                             Ok(Some(blob)) => {
                                 crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
@@ -1154,7 +1454,21 @@ impl Room {
         } else {
             None
         };
+        let session_before = self.session_before_write(&ops).await;
         let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if let Some(before) = session_before {
+            let after = self.session_state().await;
+            crate::audio::transport::on_session_pause(
+                repo,
+                ctx,
+                self,
+                self.world_id,
+                &before,
+                &after,
+                ts,
+            )
+            .await;
+        }
         if let Some(ws_doc_id) = active_scene_write {
             let new_active_scene = self
                 .scene
@@ -1249,12 +1563,20 @@ impl Room {
     }
 
     /// Commits a server-authored combat-clock command: acquires `publish_guard` FRESH here (the
-    /// `CombatSnapshot` backing `ops` was loaded by the caller OUTSIDE any guard — combat intents
-    /// are the first production caller of this path), then delegates to `commit_ops_locked` under
-    /// `WriteOrigin::CombatTransition`. Because every op the pure `combat::transition` functions
+    /// `CombatSnapshot` backing `ops` was loaded by the caller OUTSIDE any guard), then delegates
+    /// to `commit_ops_locked` under `WriteOrigin::CombatTransition`. Because every op the pure
+    /// `combat::transition` functions
     /// produce carries an OCC pre-image (`FieldChange.old`), a write racing a concurrent change to
     /// the same document surfaces as a clean `DataError::Conflict` here rather than a lost or
     /// corrupted update — the snapshot-outside/guard-only-at-commit split is what makes that hold.
+    ///
+    /// The combat-INTENT pipeline (`combat::run_intent`) does NOT use this — it commits through
+    /// `commit_combat_and_fire`, whose single guard acquisition spans the transition commit AND
+    /// the turn/round region-trigger fire, so no queued write can interleave between them. This
+    /// self-contained acquire-commit-release form remains as the TEST SEAM for direct callers
+    /// that carry no boundary record to fire (the `sight_walls`/`light_walls` test-seam
+    /// precedent), hence `#[cfg(test)]`.
+    #[cfg(test)]
     pub(crate) async fn commit_combat(
         &self,
         repo: &dyn Repository,
@@ -1265,6 +1587,45 @@ impl Room {
         let _guard = self.publish_guard.lock().await;
         self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
             .await
+    }
+
+    /// THE one commit+fire tail for a combat intent (`combat::run_intent`'s
+    /// only commit path): commits the transition's ops under
+    /// `WriteOrigin::CombatTransition`, then fires its turn/round
+    /// region-trigger plan — under ONE `publish_guard` acquisition spanning
+    /// both, so a queued write from another connection can never interleave
+    /// between the clock commit and the fire (mutating a boundary token's
+    /// region membership, shifting a region's authored trigger list, or
+    /// deleting the token mid-pass). The split COMMIT (`Trigger`-origin
+    /// effect batch after the `CombatTransition`-origin clock batch) is
+    /// unchanged — the guard, not the batch, is what spans.
+    ///
+    /// `tail.rewind` clears the combat's `turn_round_dedup` entry: a
+    /// committed `CombatRewind` re-runs recovery when the clock re-crosses
+    /// those boundaries, so the region triggers riding them must re-arm too
+    /// (absence is the seen-set's ground state; the parked-turn suppression
+    /// it serves rebuilds from the next advance's own inserts).
+    pub(crate) async fn commit_combat_and_fire(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+        tail: CombatTriggerTail<'_>,
+    ) -> Result<Command, DataError> {
+        let _guard = self.publish_guard.lock().await;
+        let cmd = self
+            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .await?;
+        if tail.rewind {
+            self.turn_round_dedup
+                .lock()
+                .await
+                .remove(&tail.snap.combat.id);
+        }
+        self.fire_turn_round_triggers(repo, ctx, tail.snap, tail.plan, ts)
+            .await;
+        Ok(cmd)
     }
 
     /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
@@ -1353,6 +1714,7 @@ impl Room {
                             ),
                         }],
                         source: None,
+                        system: None,
                     },
                     crate::ws::time::now_millis(),
                 );
@@ -1391,9 +1753,10 @@ impl Room {
     /// explored blob, walls, and regions — is DERIVED from the token's own `parent_id`
     /// (`SceneEcs::token_move`), never taken from the caller's `scene_id`. Gating a token that
     /// lives in scene A against scene B's walls, mask, and regions is a full bypass of the
-    /// movement gate for a token the requester legitimately owns. `Room::publish`'s drag path
-    /// has always derived the scene this way; this mirrors it. `scene_id` is additionally
-    /// required to agree with the derived scene (defense in depth — it selects nothing).
+    /// movement gate for a token the requester legitimately owns. `Room::publish` takes only
+    /// the start and end positions from `SceneEcs::token_move` and refuses a non-GM `Update`
+    /// when they differ. `scene_id` is additionally required to agree with the derived scene
+    /// (defense in depth — it selects nothing).
     ///
     /// # Critical-section invariant (load-bearing)
     ///
@@ -1479,8 +1842,8 @@ impl Room {
         // `gather_vision_sources_in_scene` → `user_access`), both of which run
         // UNDER that guard — and a scene read guard is never held across an await, so the
         // settings read has to happen ahead of it. Fetched unconditionally rather than only when
-        // a combat turns out to be running: whether one is is itself only knowable under the
-        // guard. Propagates its error rather than defaulting: an unresolvable authority input
+        // a combat turns out to be running: whether one is running is itself only knowable under
+        // the guard. Propagates its error rather than defaulting: an unresolvable authority input
         // fails closed (the move is refused) instead of being guessed at.
         let world_defaults = repo.world_cap_defaults(self.world_id).await?;
 
@@ -1496,6 +1859,10 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The `explored_fog` row the Revealed union reads: the mover's own row under
+        // `FogPooling::Individual`, the shared sentinel row under `Shared` — the same key
+        // `ws::conn::enrich_vision_explored` accumulates into.
+        let explored_key: Uuid;
         // The mover's resolved level id (`""` = ground/a level-less scene), captured under the
         // first guard: explored memory is keyed per level, so the Revealed union reads the
         // mover's OWN floor's memory — a floor the token is not on grants nothing.
@@ -1506,19 +1873,23 @@ impl Room {
         // the token/actor, so a GM moving a flying token is priced as flying too: the GM
         // exemption covers the gameplay GATES, never the cost accounting.
         let move_traits: crate::scene::pathfinding::MoveTraits;
-        // The per-turn movement-budget gate, resolved off this same read guard (combat lookup is
-        // step 2 below, under the same lock as restriction/cell/visible_cells/start). `None` means
+        // The per-turn movement-budget gate, resolved off this same read guard (the combat lookup
+        // below runs under the same lock as restriction/cell/visible_cells/start). `None` means
         // no active combat on the token's scene, or the token names no combatant in it — either
         // way the caller treats that as "moves freely", never a refusal.
         let budget_gate: Option<BudgetGate>;
+        // The stored rotation this move would replace, or `None` when the move must not write
+        // one: the resolved scene has `auto_rotate_tokens` off, or the token has
+        // `lock_rotation` set. Captured under the first guard so the rotation `FieldChange`'s
+        // OCC pre-image is as fresh as the position pre-image.
+        let auto_rotate_from: Option<f64>;
         {
             let scene = self.scene.read().await;
 
             // Resolve the token's OWN scene and its committed position (the `/engine/x,y` band —
             // the sole position source; `/system` never carries position) from one authoritative
             // ECS read. `token_move(token, &[])` is the committed pre-image with no changes
-            // applied, which is exactly how `Room::publish` derives the scene of a dragged token —
-            // the precedent this mirrors, and why the drag path never had to trust a client scene.
+            // applied, so the scene comes from the committed document and never from the client.
             // Fail-closed `None`: not a token entity, no `parent_id` (a parentless doc is never
             // hydrated as a scene entity at all), or no `/engine/x,y`.
             let (owner_scene, committed, _) =
@@ -1538,18 +1909,27 @@ impl Room {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;
+            let mover_tags = scene.token_movement_tags(token);
             move_traits = crate::scene::pathfinding::MoveTraits {
-                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
-                    &scene.token_movement_tags(token),
-                ),
+                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(&mover_tags),
+                tags: mover_tags,
             };
 
             let settings = scene.resolve_scene(token_scene);
+            auto_rotate_from = scene
+                .token_rotation_state(token)
+                .filter(|&(_, locked)| {
+                    settings.auto_rotate_tokens
+                        && crate::scene::rotation_gate::lock_refusal(locked).is_none()
+                })
+                .map(|(rotation, _)| rotation);
             // Captured under this same read guard for the same reason `cell` is: the explored
             // decode below runs after the guard is dropped. Also feeds `visible_cells_cached`
             // below, so the movement gate's mask is level-scoped to this SAME mover floor.
             let mover_elevation = scene.token_mover_elevation(token);
             grid_kind = settings.grid_kind;
+            explored_key =
+                crate::scene::explored::explored_fog_key(settings.fog_pooling, ctx.user_id);
             mover_level = crate::scene::elevation::level_of(
                 &scene.scene_levels(token_scene),
                 mover_elevation,
@@ -1576,7 +1956,7 @@ impl Room {
                 settings.movement_restriction
             };
 
-            // Combat lookup (step 2 under this same read guard): the scene's active combat, if
+            // Combat lookup (under this same read guard): the scene's active combat, if
             // any, and this token's combatant in it, if any. Either miss means no gate applies —
             // there is no active combat on the token's own scene, or the token is not fighting in
             // it. `MoveGateInputs.budget` and the turn/resource checks below are resolved from
@@ -1646,7 +2026,7 @@ impl Room {
         let visible = if is_revealed {
             let mut union = visible_cells;
             let explored = match repo
-                .get_explored(token_scene, &mover_level, ctx.user_id)
+                .get_explored(token_scene, &mover_level, explored_key)
                 .await
             {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
@@ -1669,8 +2049,10 @@ impl Room {
         // Maps MoveReject → DataError::Forbidden (all reject reasons indicate the request
         // is invalid: unknown token, too-long path, bad start, non-adjacent step).
         let outcome;
+        let stop_cell;
         let duration_ms;
         let samples;
+        let committed_rotation: Option<f64>;
         let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
         let mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>;
         {
@@ -1697,6 +2079,17 @@ impl Room {
                 footprint,
             )
             .map_err(|_| DataError::Forbidden)?;
+            // The move report's occupancy basis for the Exit membership diff: the stop's
+            // center cell — the SAME center-cell basis the executor's region gate and the
+            // report's `entered` transitions key on (`TriggerReport::occupancy`).
+            stop_cell = scene
+                .resolve_grid_shape(token_scene, cell)
+                .cell_of(outcome.stop);
+            // The rotation this move commits, derived once: the streamed facing vision and
+            // carried cone light below and the commit's `/engine/rotation` write all read it,
+            // so a viewer never sees the stream look along one heading and the commit another.
+            committed_rotation = auto_rotate_from
+                .map(|current| move_exec::bearing_degrees(start, outcome.stop, current));
             let speed_cells_per_sec = scene.resolved_animation_speed();
             // Animation speed is authored in cells/sec, so the travelled distance converts
             // through the scene shape's per-cell world distance, not its indexing scale.
@@ -1733,8 +2126,11 @@ impl Room {
             mover_vision = if is_gm {
                 None
             } else {
-                let sight =
+                let mut sight =
                     scene.sight_sources(ctx.user_id, ctx.world_role, &world_defaults, token_scene);
+                if let Some(rotation) = committed_rotation {
+                    sight.turn_source(token, rotation);
+                }
                 Some(
                     samples
                         .iter()
@@ -1755,7 +2151,7 @@ impl Room {
             // the mover's role: a GM walking a torch-bearer lights the corridor for the
             // players watching it exactly as a player's own move does.
             mover_light = scene
-                .mover_light_inputs(token_scene, token, cell)
+                .mover_light_inputs(token_scene, token, cell, committed_rotation)
                 .map(|li| {
                     samples
                         .iter()
@@ -1767,6 +2163,10 @@ impl Room {
         // Zero-progress move (stop == start): return immediately without writing.
         // Invariant: render_path always contains at least `start` (path.len() >= 2 was
         // validated by execute_move), so this only fires when the very first step was blocked.
+        // Skipping the fire below also skips the `SceneEcs::region_membership` update —
+        // the token's occupancy provably did not change, which is correct, but it means a
+        // stale entry (e.g. a fresh post-restart table) is NOT healed by a zero-progress
+        // move: healing defers to the first move with real progress.
         if (outcome.stop.0 - start.0).abs() < 1e-9 && (outcome.stop.1 - start.1).abs() < 1e-9 {
             let zero_samples = vec![crate::scene::move_stream::PosSamplePt {
                 t_ms: 0.0,
@@ -1809,26 +2209,40 @@ impl Room {
         // full duration. The guard was acquired at the top of this function and is still held
         // here — no re-acquisition needed or allowed (tokio Mutex is non-reentrant; re-acquiring
         // would deadlock). The position ops write ONLY `/engine/x,y` — position lives
-        // exclusively in the engine band since this task; `/system` is game-system data and is
-        // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
-        // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
-        // in `apply_intent` passes as defense-in-depth.
+        // exclusively in the engine band; `/system` is game-system data and is never touched by
+        // movement. `old` is keyed on the authoritative ECS-read `start` (the committed start
+        // `SceneEcs::token_move` returns, itself `/engine/x,y`) so the optimistic-concurrency
+        // check in `apply_intent` passes as defense-in-depth.
+        let mut position_changes = vec![
+            FieldChange {
+                remove: false,
+                path: "/engine/x".into(),
+                old: serde_json::json!(start.0),
+                new: serde_json::json!(outcome.stop.0),
+            },
+            FieldChange {
+                remove: false,
+                path: "/engine/y".into(),
+                old: serde_json::json!(start.1),
+                new: serde_json::json!(outcome.stop.1),
+            },
+        ];
+        // Auto-rotate: the facing rides in the SAME `Update` as the position so every viewer
+        // sees both change together under one commit. Only reachable past the zero-progress
+        // return above, so `start != stop` and the bearing is a real direction. A GM move
+        // rotates too: the GM exemption covers gameplay gates, not a cosmetic write.
+        if let (Some(current_rotation), Some(new_rotation)) = (auto_rotate_from, committed_rotation)
+        {
+            position_changes.push(FieldChange {
+                remove: false,
+                path: "/engine/rotation".into(),
+                old: serde_json::json!(current_rotation),
+                new: serde_json::json!(new_rotation),
+            });
+        }
         let ops = vec![Operation::Update {
             doc_id: token,
-            changes: vec![
-                FieldChange {
-                    remove: false,
-                    path: "/engine/x".into(),
-                    old: serde_json::json!(start.0),
-                    new: serde_json::json!(outcome.stop.0),
-                },
-                FieldChange {
-                    remove: false,
-                    path: "/engine/y".into(),
-                    old: serde_json::json!(start.1),
-                    new: serde_json::json!(outcome.stop.1),
-                },
-            ],
+            changes: position_changes,
         }];
 
         // Position write commits ALONE under `WriteOrigin::Client`, UNCONDITIONALLY — never
@@ -1885,28 +2299,6 @@ impl Room {
             }
         }
 
-        // Region triggers, fired AFTER the position commit AND the combat decrement: a
-        // `ResourceDelta` trigger can write the very combatant/resource the decrement just
-        // wrote, so effects run last and read freshly committed state (the decrement's own
-        // pre-image was captured pre-commit and must not be raced by an effect write). A
-        // SEPARATE commit under `WriteOrigin::CombatTransition`, never batched with the
-        // client-origin position write — the same split discipline the position commit above
-        // states. The zero-progress early return above never reaches here, and it has no
-        // entered cells to report in any case.
-        self.fire_region_triggers(
-            repo,
-            ctx,
-            TriggerReport {
-                scene: token_scene,
-                token,
-                entered: outcome.entered_cells.clone(),
-                arrest_stop: outcome.arrested.then_some(outcome.stop),
-            },
-            ts,
-            true,
-        )
-        .await;
-
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
             request_id,
@@ -1934,6 +2326,8 @@ impl Room {
         // long sessions (tokens that moved once and never moved again do not leak permanently).
         // Sub-ms floor: a non-zero-progress move whose duration rounds to 0 ms would let the
         // next request pass immediately; ceil().max(1) guarantees end > now for any real move.
+        // Registered BEFORE the region triggers below fire: a teleport trigger ends this
+        // token's active stream (`apply_region_trigger_effects`), which removes this entry.
         {
             let mut moving = self.moving.lock().await;
             moving.retain(|_, st| now < st.end_ms);
@@ -1948,6 +2342,34 @@ impl Room {
             );
         }
 
+        // Region triggers, fired AFTER the position commit AND the combat decrement: a
+        // `ResourceDelta` trigger can write the very combatant/resource the decrement just
+        // wrote, so effects run last and read freshly committed state (the decrement's own
+        // pre-image was captured pre-commit and must not be raced by an effect write). A
+        // SEPARATE commit under `WriteOrigin::Trigger`, never batched with the
+        // client-origin position write — the same split discipline the position commit above
+        // states. The zero-progress early return above never reaches here, and it has no
+        // entered cells to report in any case — and its skipped membership update means a
+        // zero-progress move also does NOT heal a stale `SceneEcs::region_membership`
+        // entry (e.g. post-restart): healing defers to the first move with real progress.
+        self.fire_region_triggers(
+            repo,
+            ctx,
+            TriggerReport {
+                scene: token_scene,
+                token,
+                entered: outcome.entered_cells.clone(),
+                arrest_stop: outcome.arrested.then_some(outcome.stop),
+                occupancy: vec![stop_cell],
+                enter_only: None,
+            },
+            ts,
+            true,
+        )
+        .await;
+        self.fire_attached_region_triggers(repo, ctx, token, ts, true)
+            .await;
+
         Ok(MoveExecution {
             #[cfg(test)]
             scene: token_scene,
@@ -1959,12 +2381,237 @@ impl Room {
         })
     }
 
+    /// Flip a wall's door state (`ClientMsg::ToggleDoor`): the ONE positional
+    /// authorization + commit path for a non-GM door interaction.
+    ///
+    /// # Authorization (load-bearing)
+    ///
+    /// A GM bypasses the positional clauses entirely — matching the documented GM exemption
+    /// from every other gameplay gate in this subsystem (`execute_move`'s walls/mask/
+    /// impassable/arrest/footprint) — and may additionally set/clear `Locked`. A non-GM is
+    /// admitted only when EVERY one of these holds:
+    ///
+    /// 1. the requester effectively controls at least one token parented to the wall's scene
+    ///    (`SceneEcs::token_scene_and_effective_owner` — the SAME effective-ownership rule
+    ///    `token_emote_permitted`/`handle_pathfind`'s token gate use, never a forked check);
+    /// 2. that token's position is within `DOOR_REACH_CELLS` (converted to world units via
+    ///    `GridShape::world_units_per_cell`) of the door segment (`vision::point_segment_distance`,
+    ///    the same primitive the footprint-clearance wall check uses);
+    /// 3. the token's current visible-cell set (`SceneEcs::visible_cells_cached`, the SAME mask
+    ///    the movement gate reads) intersects the door segment's own supercover cells
+    ///    (`GridShape::line_traversal`, the same primitive `move_exec`'s wall-crossing test
+    ///    uses — never a single-midpoint approximation that could misjudge a wall spanning a
+    ///    cell boundary);
+    /// 4. the requester holds engine-tier visibility on the WALL DOCUMENT ITSELF
+    ///    (`engine_tier_visible(&wall_doc, Some(user))` — the same per-requester authority
+    ///    `move_wall_entries`/`region_field` apply). This clause is NOT implied by the visible-cells clause:
+    ///    `visible_cells_cached`'s raycast is DELIBERATELY permission-blind (a `gm_only` wall
+    ///    still occludes sight for someone who may not know it exists), so a token can be
+    ///    geometrically adjacent to and "in sight of" a hidden door's cells while the requester
+    ///    has no right to know that door exists. Without this clause a non-GM could toggle —
+    ///    and thereby discover the existence and state of — a door the GM authored as hidden.
+    /// 5. the wall's CURRENT stored `door` is `Closed`/`Open` (never `Locked`, never absent)
+    ///    and `to` is `Closed`/`Open` (never `Locked`) — the "never onto or off `Locked`"
+    ///    constraint, enforced here on the handler's own read of the current document.
+    ///
+    /// `scene_id` is NOT trusted and selects nothing: the authoritative scene is DERIVED from
+    /// the wall document's own `parent_id`, and a `scene_id` that disagrees is refused —
+    /// `execute_move`'s derive-from-the-document invariant applied to a wall instead of a token.
+    ///
+    /// # Critical section
+    ///
+    /// `publish_guard` is held across the whole validate→commit body (mirrors `execute_move`):
+    /// the state read, the gate decision, and the commit serialize against every other write,
+    /// so two simultaneous toggles resolve sequentially (the second reads the first's committed
+    /// state) instead of double-writing from a shared stale pre-image. The scene read guard is
+    /// scoped and dropped before the commit (a read guard is never held across an await).
+    ///
+    /// # Commit shape
+    ///
+    /// One `Operation::Update` of `/engine/door` via `commit_ops_locked` under
+    /// `WriteOrigin::DoorToggle` — the write reaches `apply_intent` already vetted, so
+    /// `authorize_update_change` needs NO exemption of any kind (a positional authorization
+    /// cannot be expressed as a `FieldChange` classifier: it sees a document id and old/new
+    /// values, never where the actor stands or what they can see). The committed Event echo is
+    /// the success confirmation; only a rejection produces a dedicated frame
+    /// (`ServerMsg::DoorToggleError`, built by `ws::conn`'s handler wrapper).
+    pub(crate) async fn toggle_door(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        req: ToggleDoorInputs,
+    ) -> Result<(), DoorToggleError> {
+        let ToggleDoorInputs {
+            scene_id,
+            wall_id,
+            to,
+            ts,
+            ..
+        } = req;
+        let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+
+        let _guard = self.publish_guard.lock().await;
+
+        // The world capability defaults feed the visible-cells clause's `visible_cells_cached` (its
+        // observer-vision source admission reads them under the scene read guard, and a read
+        // guard is never held across an await, so the fetch happens first) — the same call
+        // `execute_move` makes for its own mask. A GM skips the positional clauses and never
+        // needs it. Fails closed: an unresolvable authority input refuses the toggle rather
+        // than guessing at it.
+        let world_defaults = if is_gm {
+            None
+        } else {
+            Some(repo.world_cap_defaults(self.world_id).await?)
+        };
+
+        // The OCC pre-image for the committed write, captured under the same read guard as
+        // the gate inputs so both read one consistent ECS snapshot.
+        let old_door;
+        {
+            let ecs = self.scene.read().await;
+
+            // The wall must exist as a scene-hydrated wall document; its scene is
+            // DERIVED from its own `parent_id`, and the request's `scene_id` must agree.
+            let wall_doc = ecs
+                .scene_entity_doc(wall_id)
+                .filter(|d| d.doc_type == "wall")
+                .ok_or(DoorToggleError::UnknownWall)?;
+            let wall_scene = wall_doc.parent_id.ok_or(DoorToggleError::UnknownWall)?;
+            if wall_scene != scene_id {
+                return Err(DoorToggleError::SceneMismatch);
+            }
+            let wall = ecs
+                .engine_as_cached::<eng::WallEngine>(wall_id, &wall_doc)
+                .ok_or(DoorToggleError::UnknownWall)?;
+
+            // Fail-closed on a missing scene document (an absent `scene_grid_sizes` entry
+            // means the scene is gone) — never a synthesized grid.
+            let cell = *ecs
+                .scene_grid_sizes()
+                .get(&wall_scene)
+                .ok_or(DoorToggleError::SceneMismatch)?;
+            let shape = ecs.resolve_grid_shape(wall_scene, cell);
+
+            if !is_gm {
+                let user = ctx.user_id;
+                // Fetched above for every non-GM, so this is always `Some` here; a miss fails
+                // closed rather than guessing at the authority input.
+                let Some(defaults) = world_defaults.as_ref() else {
+                    return Err(DoorToggleError::Data(DataError::OpFailed(
+                        "world defaults unresolved for a non-GM door toggle".into(),
+                    )));
+                };
+                let seg_a = (wall.seg.x1, wall.seg.y1);
+                let seg_b = (wall.seg.x2, wall.seg.y2);
+
+                // The ownership and reach clauses: the requester's nearest effectively-owned token in the scene,
+                // and its reach. The scan pattern is the same one `compute_audibility`'s
+                // emitter loop shaped: enumerate the scene's tokens
+                // (`SceneEcs::scene_token_ids`), filter to the requester's own via the shared
+                // effective-ownership rule, take the nearest to the segment.
+                let mut nearest: Option<(Uuid, f64)> = None;
+                for token in ecs.scene_token_ids(wall_scene) {
+                    if ecs.token_scene_and_effective_owner(token) != Some((wall_scene, Some(user)))
+                    {
+                        continue;
+                    }
+                    let Some(pos) = ecs.token_position(token) else {
+                        continue;
+                    };
+                    let d = crate::scene::vision::point_segment_distance(pos, seg_a, seg_b);
+                    if nearest.is_none_or(|(_, best)| d < best) {
+                        nearest = Some((token, d));
+                    }
+                }
+                let Some((mover, dist)) = nearest else {
+                    return Err(DoorToggleError::NoOwnedToken);
+                };
+                if dist > DOOR_REACH_CELLS * shape.world_units_per_cell() {
+                    return Err(DoorToggleError::OutOfReach);
+                }
+
+                // The visible-cells clause: the door segment's own supercover cells must intersect the
+                // requester's visible-cell set — the SAME mask the movement gate reads,
+                // level-scoped to the nearest token's floor exactly as a move of that token
+                // would be.
+                let lenient = ecs.resolve_scene(wall_scene).partial_cell_leniency;
+                let visible = ecs.visible_cells_cached(
+                    user,
+                    ctx.world_role,
+                    defaults,
+                    wall_scene,
+                    lenient,
+                    ecs.token_mover_elevation(mover),
+                );
+                let door_in_sight = shape
+                    .line_traversal(seg_a, seg_b, cell)
+                    .is_some_and(|cells| cells.iter().any(|c| visible.contains(c)));
+                if !door_in_sight {
+                    return Err(DoorToggleError::NotVisible);
+                }
+
+                // The wall-document-visibility clause: engine-tier visibility on the wall DOCUMENT — the one clause that
+                // reads the wall's own declared visibility tier rather than a geometric
+                // consequence of it (see the method doc for why the visible-cells clause cannot imply it).
+                if !crate::scene::engine_tier_visible(&wall_doc, Some(user)) {
+                    return Err(DoorToggleError::WallNotVisible);
+                }
+
+                // The state-machine clause: flip `Closed`↔`Open` only, never onto or off `Locked`, and a
+                // doorless wall has nothing to flip.
+                let flippable = matches!(
+                    wall.door,
+                    Some(eng::DoorState::Closed) | Some(eng::DoorState::Open)
+                );
+                let admitted_target = matches!(to, eng::DoorState::Closed | eng::DoorState::Open);
+                if !flippable || !admitted_target {
+                    return Err(DoorToggleError::Locked);
+                }
+            }
+
+            old_door = wall_doc
+                .engine
+                .as_ref()
+                .and_then(|e| e.get("door").cloned())
+                .unwrap_or(serde_json::Value::Null);
+        } // scene read guard dropped — commit_ops_locked takes the write guard itself
+
+        let new_door = serde_json::to_value(to).map_err(DataError::from)?;
+        self.commit_ops_locked(
+            repo,
+            ctx,
+            vec![Operation::Update {
+                doc_id: wall_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/door".into(),
+                    old: old_door,
+                    new: new_door,
+                }],
+            }],
+            ts,
+            WriteOrigin::DoorToggle,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Fire the region triggers a token report sets off: every enabled trigger-bearing region
     /// covering an `entered` cell fires its `Enter` effects, and when `arrest_stop` is `Some`
     /// (the executor reported a region-arrest), regions covering the arrest cell fire their
-    /// `Arrest` effects. This ONE application path serves both fire sites — `execute_move`
-    /// (entered-cell sequence from `MoveOutcome`) and `fire_placement_triggers` (footprint
-    /// cells of the new position) — so the two cannot drift on what an effect means.
+    /// `Arrest` effects. `Exit` effects fire from the membership diff: the regions
+    /// intersecting the report's `occupancy` basis (its own Enter basis — a move's stop
+    /// cell, a placement's footprint) replace `SceneEcs::region_membership`'s stored set
+    /// UNCONDITIONALLY, and any region the stored set loses fires its `Exit` triggers —
+    /// including, via `SceneEcs::trigger_region_row`'s unfiltered by-id rows, a region the
+    /// report's scene/elevation table no longer selects (a cross-scene portal or an
+    /// elevation-changing teleport). This is the membership-diff's ONLY writer, so the
+    /// stored set can never skew from the firing decision. Effects themselves apply through
+    /// `apply_region_trigger_effects`, THE one application path every fire site funnels
+    /// into — `execute_move` (entered-cell sequence from `MoveOutcome`),
+    /// `fire_placement_triggers` (footprint cells of the new position), and
+    /// `fire_turn_round_triggers` (the combat boundary plan) — so the sites
+    /// cannot drift on what an effect means.
     ///
     /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
     /// `WriteOrigin::Trigger` — never batched with the client-origin write that
@@ -2010,6 +2657,11 @@ impl Room {
     ///   teleported OFF its combat's scene keeps its combatant record and turn but moves
     ///   unbudgeted there (a portal is a legitimate escape), made visible by a GM-only notice
     ///   when an active combat runs on the source scene.
+    /// - `PortalChoice` (on `Enter`): shares the one-hop slot with `Teleport` (the first of the
+    ///   two in the fired list wins). With `allow_teleport` it moves nothing: it registers a
+    ///   per-token offer (`offer_portal`) and broadcasts `ServerMsg::PortalOffer` to the token's
+    ///   owner and the GMs. The owner's answer (`handle_choose_portal`) runs the chosen target
+    ///   back through this funnel as a synthetic `Teleport`, so it shares `apply_teleport_to`.
     ///
     /// `allow_teleport` is a FUNCTION parameter rather than a `TriggerReport` field by
     /// deliberate choice: the report describes the entry EVENT (scene, token, cells, arrest),
@@ -2028,11 +2680,10 @@ impl Room {
             token,
             entered,
             arrest_stop,
+            occupancy,
+            enter_only,
         } = report;
         let entered: &[(i32, i32)] = &entered;
-        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
-        use crate::combat::transition::{resource as resource_transition, ResourceOp};
-        use crate::combat::CombatError;
         use crate::scene::regions;
 
         // The entering token's document, loaded AFTER the triggering write committed, so the
@@ -2060,17 +2711,19 @@ impl Room {
             .and_then(|v| serde_json::from_value(v).ok());
 
         // The authoritative identity table (the server springs secret regions), the arrest
-        // cell, and the token's effective owner — one read guard, no lock across an await.
-        // `trigger_regions` is filtered to the entering token's floor: a region banded to
-        // another level never fires on this token (`elevation::band_contains`).
-        let (regions, arrest_cell, effective_owner) = {
-            let ecs = self.scene.read().await;
+        // cell, and the Exit-firing inputs — one WRITE guard
+        // (the membership diff updates `SceneEcs::region_membership`), no lock across an
+        // await. `trigger_regions` is filtered to the entering token's floor: a region
+        // banded to another level never fires on this token (`elevation::band_contains`).
+        let (regions, arrest_cell, exited, stale_rows) = {
+            let mut ecs = self.scene.write().await;
             let regions = ecs
                 .trigger_regions(
                     scene,
                     crate::scene::elevation::elevation_or_ground(
                         token_eng.as_ref().and_then(|t| t.elevation),
                     ),
+                    Some(token),
                 )
                 .unwrap_or_default();
             let arrest_cell = match arrest_stop {
@@ -2080,13 +2733,117 @@ impl Room {
                     .map(|&cell| ecs.resolve_grid_shape(scene, cell).cell_of(pos)),
                 None => None,
             };
-            let owner = ecs.token_effective_owner(&token_doc);
-            (regions, arrest_cell, owner)
+            // Exit membership diff: the regions intersecting the report's OCCUPANCY basis
+            // (its own Enter basis — a move's stop cell, a placement's footprint) replace
+            // the stored set UNCONDITIONALLY, and whatever the stored set loses is this
+            // report's exited list. Unconditional even when nothing fires: a stored entry
+            // is dropped on the move out of its region whether or not the region carries
+            // an `Exit` trigger, so a later edit ADDING one can never fire an exit for a
+            // region the token had already left.
+            let exited = {
+                let now: std::collections::BTreeSet<Uuid> = regions
+                    .iter()
+                    .filter(|r| occupancy.iter().any(|c| r.cells.contains(c)))
+                    .map(|r| r.region_id)
+                    .collect();
+                ecs.diff_region_membership(token, now)
+            };
+            // Stale rows: exited ids the scene/elevation-filtered table no longer selects
+            // (a cross-scene portal or an elevation-changing teleport carried the token
+            // out of a region its stored membership still names). Their rows resolve by
+            // id WITHOUT the band filter (`SceneEcs::trigger_region_row`), so the exit
+            // still fires; fired below with an empty `entered` so no Enter/Arrest can
+            // fire from them. Partitioned from `regions` by construction, so no trigger
+            // can fire twice on one report.
+            let stale_rows: Vec<regions::TriggerRegion> = exited
+                .iter()
+                .filter(|id| !regions.iter().any(|r| r.region_id == **id))
+                .filter_map(|&id| ecs.trigger_region_row(id))
+                .collect();
+            (regions, arrest_cell, exited, stale_rows)
         };
-        let fired = regions::fired_triggers(&regions, entered, arrest_cell);
+        let mut fired = regions::fired_triggers(&regions, entered, arrest_cell, &exited);
+        if let Some(only) = &enter_only {
+            // Enter/Arrest narrow to the named regions; an Exit pair (its region id is in
+            // `exited`) always stays.
+            fired.retain(|(id, _)| only.contains(id) || exited.contains(id));
+        }
+        fired.extend(regions::fired_triggers(&stale_rows, &[], None, &exited));
+        // The rows a notice's secrecy forcing searches: the scene table AND the stale
+        // exit rows (an Exit-fired notice rides the identical rule).
+        let mut secrecy_rows = regions;
+        secrecy_rows.extend(stale_rows);
+        self.apply_region_trigger_effects(
+            repo,
+            ctx,
+            token_doc,
+            TriggerEffectPlan {
+                fired,
+                secrecy_rows: &secrecy_rows,
+                combat_hint: None,
+                allow_teleport,
+            },
+            ts,
+        )
+        .await;
+    }
+
+    /// The effect-application half of region-trigger firing — THE one path
+    /// every fire site shares, so a move entry, a placement/teleport, and a
+    /// combat turn/round boundary can never drift on what an effect MEANS:
+    /// `fire_region_triggers` (movement/placement reports) and
+    /// `fire_turn_round_triggers` (the combat boundary plan) both end here.
+    /// The caller computes the firing set; this function never re-decides
+    /// WHAT fires, only applies it: condition/resource/notice/teleport
+    /// effects against `plan.fired`, then ONE batch commit via
+    /// `commit_ops_locked` under `WriteOrigin::Trigger` — never batched with
+    /// the write whose firing set this was (the `execute_move` split
+    /// discipline). A commit failure is logged and swallowed rather than
+    /// propagated: the triggering write already stands, and failing the
+    /// caller over a lost effect would desync it from what was actually
+    /// written (the movement decrement's own precedent).
+    ///
+    /// `token_doc` is the entering token's committed document (each caller
+    /// loads it AFTER the triggering write committed, so the actor join and
+    /// every pre-image read committed state); the token's scene is derived
+    /// from its `parent_id` — the same value every caller's own derivation
+    /// already produces, stated once here instead.
+    ///
+    /// PRECONDITION: caller holds `publish_guard` (`commit_ops_locked` requires it).
+    async fn apply_region_trigger_effects(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        token_doc: Document,
+        plan: TriggerEffectPlan<'_>,
+        ts: i64,
+    ) {
+        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
+        use crate::combat::transition::{resource as resource_transition, ResourceOp};
+        use crate::combat::CombatError;
+
+        let TriggerEffectPlan {
+            fired,
+            secrecy_rows,
+            combat_hint,
+            allow_teleport,
+        } = plan;
         if fired.is_empty() {
             return;
         }
+        let token = token_doc.id;
+        // The token's scene, derived from its committed document (a caller's
+        // own scene derivation — `execute_move`'s `token_move`, a placement's
+        // footprint — resolves to this same value post-commit).
+        let scene = token_doc.parent_id;
+        // The token's own engine body (position/elevation for a Teleport,
+        // `actor_id` for the resource combatant join) — parsed here rather
+        // than handed in, so both fire sites share one derivation.
+        let token_eng: Option<eng::TokenEngine> = token_doc
+            .engine
+            .clone()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let effective_owner = { self.scene.read().await.token_effective_owner(&token_doc) };
 
         let mut ops: Vec<Operation> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
@@ -2170,10 +2927,24 @@ impl Room {
             .iter()
             .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::ResourceDelta { .. }));
         if needs_resources {
-            let active = { self.scene.read().await.active_combat_for_scene(scene) };
-            match active {
+            // The combat the delta resolves against: the FIRING combat when
+            // the turn/round site named one (`combat_hint` — a boundary's
+            // combatant is resolved there even when the token was teleported
+            // off that combat's scene), else the token's scene's active
+            // combat (the movement sites' rule).
+            let combat_id = match combat_hint {
+                Some(id) => Some(id),
+                None => match scene {
+                    Some(scene) => {
+                        let active = { self.scene.read().await.active_combat_for_scene(scene) };
+                        active.map(|(id, _)| id)
+                    }
+                    None => None,
+                },
+            };
+            match combat_id {
                 None => failures.push("no active combat on the scene".to_string()),
-                Some((combat_id, _)) => {
+                Some(combat_id) => {
                     match crate::combat::load_snapshot(repo, self.world_id, combat_id).await {
                         Err(_) => {
                             failures
@@ -2221,8 +2992,12 @@ impl Room {
                                         }
                                     }
                                     // Every key's FieldChange folds into ONE Update on the
-                                    // combatant: the store admits at most one Update per
-                                    // document per batch.
+                                    // combatant: the store checks EACH op's pre-image against
+                                    // PRE-BATCH state and applies ops in order (two Updates to
+                                    // one document are admitted, never chained), so a second
+                                    // per-key Update carrying the pre-fire value as its `old`
+                                    // would silently overwrite the first's write instead of
+                                    // composing with it.
                                     let mut changes = Vec::new();
                                     for (key, sum) in sums {
                                         match resource_transition(
@@ -2267,169 +3042,99 @@ impl Room {
 
         // --- Teleport: at most ONE per token per fire (a region's own trigger list could in
         // principle carry several teleports; only the FIRST wins — a second is silently ignored
-        // rather than double-moving the token, mirroring "one hop per move"). ---
+        // rather than double-moving the token, mirroring "one hop per move"). A `PortalChoice`
+        // is a kind of teleport: it shares the one-hop guard, so a fire that may not teleport
+        // refuses it with the same chained-portal failure. A fixed teleport applies now; a
+        // choice only registers an offer (`Room::offer_portal`), and its hop applies later,
+        // through this same funnel, when the offer is answered. ---
         let mut teleported: Option<Uuid> = None;
-        if allow_teleport {
-            if let Some((_, trigger)) = fired
-                .iter()
-                .find(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
-            {
-                let eng::TriggerEffect::Teleport { target } = &trigger.effect else {
-                    unreachable!("the find matched a Teleport effect")
-                };
-                let dest_scene = target.scene.unwrap_or(scene);
-                // Scene existence AND same-world membership are checked here (fire time), never
-                // at ingress (`validate_engine_tree` is pure — no repository access). Without the
-                // world check, a cross-world (or otherwise wrong-world) portal target still
-                // passes `doc_type == "scene"` and only fails deep inside `commit_ops_locked`'s
-                // `check_command_scope` — which drops the WHOLE ops batch (every unrelated
-                // condition/resource/chat effect fired in the same pass) through the generic
-                // `tracing::debug!` arm below, with no GM notice. Checking it here instead routes
-                // the failure through `failures` like every other teleport refusal, so the
-                // batch's OTHER effects still commit and the GM is told specifically why the
-                // portal itself failed.
-                let scene_exists = match repo.get_document(dest_scene).await {
-                    Ok(Some(doc)) => {
-                        doc.doc_type == "scene"
-                            && crate::data::document::world_of(&doc) == Some(self.world_id)
-                    }
-                    _ => false,
-                };
-                if !scene_exists {
-                    failures.push(format!("teleport target scene {dest_scene} does not exist"));
-                } else if token_eng.is_none() {
-                    failures.push("token has no engine body to teleport".to_string());
-                } else {
-                    let t = token_eng.as_ref().expect("checked non-None above");
-                    let mut update_changes = Vec::new();
-                    update_changes.push(crate::data::command::FieldChange {
-                        path: "/engine/x".to_string(),
-                        old: serde_json::json!(t.x),
-                        new: serde_json::json!(target.x),
-                        remove: false,
-                    });
-                    update_changes.push(crate::data::command::FieldChange {
-                        path: "/engine/y".to_string(),
-                        old: serde_json::json!(t.y),
-                        new: serde_json::json!(target.y),
-                        remove: false,
-                    });
-                    if let Some(new_elev) = target.elevation {
-                        update_changes.push(crate::data::command::FieldChange {
-                            path: "/engine/elevation".to_string(),
-                            old: serde_json::json!(t.elevation),
-                            new: serde_json::json!(new_elev),
-                            remove: false,
-                        });
-                    }
-                    if dest_scene != scene {
-                        ops.push(Operation::Move {
-                            doc_id: token,
-                            parent_id: Some(dest_scene),
-                            old_parent_id: Some(scene),
-                        });
-                        // Active-combat visibility: the budget decrement for the walk that
-                        // entered the portal already happened; this notice only makes the
-                        // scene-change visible.
-                        if self
-                            .scene
-                            .read()
-                            .await
-                            .active_combat_for_scene(scene)
-                            .is_some()
-                        {
-                            let notice = build_message_doc(
-                                self.world_id,
-                                ctx.user_id,
-                                MessageDraft {
-                                    channel: "region".to_string(),
-                                    actor_owner: None,
-                                    audience: Audience::GmOnly,
-                                    kind: MessageKind::System,
-                                    content: vec![Segment::Text {
-                                        text: format!(
-                                            "Token {token} teleported off scene {scene} while an active combat is running there"
-                                        ),
-                                    }],
-                                    source: None,
-                                },
-                                ts,
-                            );
-                            ops.push(Operation::Create { doc: notice });
-                        }
-                    }
-                    ops.push(Operation::Update {
-                        doc_id: token,
-                        changes: update_changes,
-                    });
-                    // A carried `vfx` asset plays at BOTH ends of the hop — the source position
-                    // on the ORIGIN scene (where the token just vanished from) and the
-                    // destination position on `dest_scene` (where it now stands) — mirroring
-                    // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
-                    // out-of-band, no seq, one fresh id per broadcast). Charged against
-                    // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
-                    // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
-                    // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
-                    // into and out of a portal's trigger region cannot emit unlimited,
-                    // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
-                    // would (never-fork: one budget source per one-shot family). Keyed on the
-                    // token's effective owner: a GM-owned/NPC-moved token
-                    // (`effective_owner: None`) has no attributable player to charge and is
-                    // admitted uncharged, matching this codebase's broader pattern of GM actions
-                    // being less restricted than player ones; a player-owned token charges that
-                    // player's bucket exactly once per fire (one check covers both ends of the
-                    // hop, not two).
-                    if let Some(asset) = &target.vfx {
-                        let vfx_admitted = match effective_owner {
-                            Some(owner) => self.vfx_rate.check(owner, ts, 30),
-                            None => true,
-                        };
-                        if vfx_admitted {
-                            self.broadcast_aux(ServerMsg::Vfx {
-                                scene,
-                                user: ctx.user_id,
-                                asset: asset.clone(),
-                                x: t.x,
-                                y: t.y,
-                                scale: None,
-                                rotation: None,
-                                duration_ms: None,
-                                sound: None,
-                                elevation: t.elevation,
-                                id: Uuid::new_v4(),
-                            });
-                            self.broadcast_aux(ServerMsg::Vfx {
-                                scene: dest_scene,
-                                user: ctx.user_id,
-                                asset: asset.clone(),
-                                x: target.x,
-                                y: target.y,
-                                scale: None,
-                                rotation: None,
-                                duration_ms: None,
-                                sound: None,
-                                elevation: target.elevation,
-                                id: Uuid::new_v4(),
-                            });
-                        }
-                    }
-                    teleported = Some(dest_scene);
-                }
+        let hop = fired.iter().find_map(|(region_id, t)| match &t.effect {
+            eng::TriggerEffect::Teleport { target } => Some(HopEffect::Fixed(target)),
+            eng::TriggerEffect::PortalChoice { prompt, options } if portal::offers_portal(t) => {
+                // Secrecy: an unresolvable row fails closed to GM-only, as for a notice.
+                let visible_to_all = secrecy_rows
+                    .iter()
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                Some(HopEffect::Choice(portal::PortalSource {
+                    region_id: *region_id,
+                    visible_to_all,
+                    prompt: prompt.as_ref(),
+                    options,
+                }))
             }
-        } else if fired
-            .iter()
-            .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
-        {
+            _ => None,
+        });
+        if allow_teleport {
+            match hop {
+                Some(HopEffect::Fixed(target)) => {
+                    let subject = TeleportSubject {
+                        token,
+                        scene,
+                        token_eng: token_eng.as_ref(),
+                        effective_owner,
+                    };
+                    match self
+                        .apply_teleport_to(repo, ctx, &subject, target, ts, &mut ops)
+                        .await
+                    {
+                        Ok(dest_scene) => teleported = Some(dest_scene),
+                        Err(failure) => failures.push(failure),
+                    }
+                }
+                Some(HopEffect::Choice(source)) => {
+                    self.offer_portal(repo, &token_doc, source, ts).await;
+                }
+                None => {}
+            }
+        } else if fired.iter().any(|(_, t)| {
+            matches!(
+                t.effect,
+                eng::TriggerEffect::Teleport { .. } | eng::TriggerEffect::PortalChoice { .. }
+            )
+        }) {
             failures.push("chained portal refused (one hop per move)".to_string());
         }
 
+        // --- Scrolling-text overlays, in fired order. Out-of-band aux broadcast (no document,
+        // no seq) mirroring `Emote`'s own shape — the client resolves the anchor position from
+        // `token` via `EmoteView`, exactly as a player-fired emote does. `gm_only` mirrors
+        // `ChatNotice`'s own secrecy forcing: a region whose `/engine` band is not visible to
+        // every world member is delivered only to GM connections (`egress_loop`'s per-connection
+        // filter), never broadcast to the whole room. ---
+        for (region_id, trigger) in &fired {
+            if let eng::TriggerEffect::ScrollingText { text } = &trigger.effect {
+                let Some(scene_id) = scene else { continue };
+                let visible_to_all = secrecy_rows
+                    .iter()
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                self.broadcast_aux(ServerMsg::ScrollingText {
+                    scene: scene_id,
+                    token,
+                    text: text.clone(),
+                    gm_only: !visible_to_all,
+                });
+            }
+        }
+
         // --- Chat notices, in fired order ---
-        for (region, trigger) in &fired {
+        for (region_id, trigger) in &fired {
             if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {
                 // Secrecy: a region whose `/engine` band is not visible to every world member
                 // forces GM-only whatever the authored audience says — a wider notice would
-                // name or imply a region some recipients cannot see.
-                let forced = !region.visible_to_all;
+                // name or imply a region some recipients cannot see. The row is found by id
+                // across `secrecy_rows` (the caller's full row set — the movement site's
+                // scene table AND its stale exit rows, so an Exit-fired notice rides the
+                // identical rule); an unresolvable row fails closed to forced.
+                let visible_to_all = secrecy_rows
+                    .iter()
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                let forced = !visible_to_all;
                 let wire_audience = if forced {
                     Audience::GmOnly
                 } else {
@@ -2450,6 +3155,7 @@ impl Room {
                         kind: MessageKind::System,
                         content: vec![Segment::Text { text: text.clone() }],
                         source: None,
+                        system: None,
                     },
                     ts,
                 );
@@ -2489,6 +3195,7 @@ impl Room {
                         text: format!("Region trigger did not apply: {}", lines.join("; ")),
                     }],
                     source: None,
+                    system: None,
                 },
                 ts,
             );
@@ -2504,7 +3211,7 @@ impl Room {
         {
             Err(err) => {
                 tracing::debug!(
-                    %scene, %token, ?err,
+                    ?scene, %token, ?err,
                     "region-trigger commit failed after the triggering write already committed; \
                      the write stands, the effects were not applied"
                 );
@@ -2514,44 +3221,223 @@ impl Room {
                 // another Teleport (`allow_teleport: false`): one hop per move, so a portal
                 // chain can never loop. The destination's other effects (conditions, resources,
                 // notices) fire exactly as if the token had been placed there.
-                if let Some(dest_scene) = teleported {
-                    let new_cells = {
+                if teleported.is_some() {
+                    // The hop ends the token's active move stream: its glide no longer
+                    // describes where the token is, and the moving lock must not refuse the
+                    // next move. Every teleport path (fixed trigger, chosen portal option)
+                    // reaches here through this funnel.
+                    self.moving.lock().await.remove(&token);
+                    let new_footprint = {
                         let ecs = self.scene.read().await;
-                        // The same footprint-cell computation `fire_placement_triggers` runs —
-                        // never a second footprint formula. `None` (the token or its scene
+                        // The ONE footprint-cell computation every fire site shares
+                        // (`SceneEcs::token_footprint_cells`), scene derived from the
+                        // token's committed document. `None` (the token or its scene
                         // unreadable, or a refused footprint) skips the re-fire silently,
                         // mirroring placement's own `continue`.
-                        (|| {
-                            let (_, pos, _) = ecs.token_move(token, &[])?;
-                            let &cell = ecs.scene_grid_sizes().get(&dest_scene)?;
-                            let radius = ecs.resolve_token_footprint(token, dest_scene)?;
-                            let grid = ecs.resolve_grid_shape(dest_scene, cell);
-                            Some(grid.footprint_cells(
-                                grid.cell_of(pos),
-                                pos,
-                                radius.max(0.0) * cell,
-                                cell,
-                            ))
-                        })()
+                        ecs.token_footprint_cells(token)
                     };
-                    if let Some(entered) = new_cells {
+                    if let Some((scene, entered)) = new_footprint {
                         Box::pin(self.fire_region_triggers(
                             repo,
                             ctx,
                             TriggerReport {
-                                scene: dest_scene,
+                                scene,
                                 token,
+                                // The destination re-fire is placement-shaped: its
+                                // occupancy basis is the destination footprint, the same
+                                // cells its Enter detection uses.
+                                occupancy: entered.clone(),
                                 entered,
                                 arrest_stop: None,
+                                enter_only: None,
                             },
                             ts,
                             false,
                         ))
                         .await;
+                        // The teleported token may carry following regions: the zone arrived
+                        // with it. The attached pass is itself one-hop (`allow_teleport: false`).
+                        Box::pin(self.fire_attached_region_triggers(repo, ctx, token, ts, false))
+                            .await;
                     }
                 }
             }
         }
+    }
+
+    /// The ONE teleport implementation: moves the token described by `subject` to `target`
+    /// and returns the destination scene id, or the GM-notice failure line that refused it.
+    /// Appends the committing ops (a cross-scene `Move`, the active-combat notice for a token
+    /// leaving a combat's scene, the position `Update`) to `ops` and broadcasts the target's
+    /// `vfx` at both ends of the hop, charged once to the token owner's `vfx_rate` bucket.
+    /// Both a fixed `TriggerEffect::Teleport` and a chosen `PortalOption` apply through it, so
+    /// the two can never produce different ops for the same target.
+    ///
+    /// The destination scene's existence and same-world membership are checked here (fire
+    /// time), never at ingress (`validate_engine_tree` is pure — no repository access). A
+    /// wrong-world scene would otherwise pass `doc_type == "scene"` and fail deep inside
+    /// `commit_ops_locked`'s `check_command_scope`, dropping the whole batch with no GM
+    /// notice; returning the failure here lets the batch's other effects still commit.
+    ///
+    /// PRECONDITION: the caller commits `ops` under `publish_guard`.
+    async fn apply_teleport_to(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        subject: &TeleportSubject<'_>,
+        target: &eng::PortalTarget,
+        ts: i64,
+        ops: &mut Vec<Operation>,
+    ) -> Result<Uuid, String> {
+        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
+
+        let TeleportSubject {
+            token,
+            scene,
+            token_eng,
+            effective_owner,
+        } = *subject;
+        // The destination scene: the target's own when it names one, else the token's current
+        // scene (a same-scene hop). A token on NO scene (reachable only from the turn/round
+        // fire site, whose token may sit outside every scene) can hop only to a named target.
+        let dest_scene = target.scene.or(scene);
+        let scene_exists = match dest_scene {
+            Some(dest) => match repo.get_document(dest).await {
+                Ok(Some(doc)) => {
+                    doc.doc_type == "scene"
+                        && crate::data::document::world_of(&doc) == Some(self.world_id)
+                }
+                _ => false,
+            },
+            None => false,
+        };
+        let Some(dest_scene) = dest_scene.filter(|_| scene_exists) else {
+            return Err(match dest_scene {
+                Some(dest) => format!("teleport target scene {dest} does not exist"),
+                None => "the token is on no scene to teleport from".to_string(),
+            });
+        };
+        let Some(t) = token_eng else {
+            return Err("token has no engine body to teleport".to_string());
+        };
+        let mut update_changes = Vec::new();
+        update_changes.push(crate::data::command::FieldChange {
+            path: "/engine/x".to_string(),
+            old: serde_json::json!(t.x),
+            new: serde_json::json!(target.x),
+            remove: false,
+        });
+        update_changes.push(crate::data::command::FieldChange {
+            path: "/engine/y".to_string(),
+            old: serde_json::json!(t.y),
+            new: serde_json::json!(target.y),
+            remove: false,
+        });
+        if let Some(new_elev) = target.elevation {
+            update_changes.push(crate::data::command::FieldChange {
+                path: "/engine/elevation".to_string(),
+                old: serde_json::json!(t.elevation),
+                new: serde_json::json!(new_elev),
+                remove: false,
+            });
+        }
+        if Some(dest_scene) != scene {
+            ops.push(Operation::Move {
+                doc_id: token,
+                parent_id: Some(dest_scene),
+                old_parent_id: scene,
+            });
+            // Active-combat visibility: the budget decrement for the walk that
+            // entered the portal already happened; this notice only makes the
+            // scene-change visible.
+            if let Some(source_scene) = scene {
+                if self
+                    .scene
+                    .read()
+                    .await
+                    .active_combat_for_scene(source_scene)
+                    .is_some()
+                {
+                    let notice = build_message_doc(
+                        self.world_id,
+                        ctx.user_id,
+                        MessageDraft {
+                            channel: "region".to_string(),
+                            actor_owner: None,
+                            audience: Audience::GmOnly,
+                            kind: MessageKind::System,
+                            content: vec![Segment::Text {
+                                text: format!(
+                                    "Token {token} teleported off scene {source_scene} while an active combat is running there"
+                                ),
+                            }],
+                            source: None,
+                            system: None,
+                        },
+                        ts,
+                    );
+                    ops.push(Operation::Create { doc: notice });
+                }
+            }
+        }
+        ops.push(Operation::Update {
+            doc_id: token,
+            changes: update_changes,
+        });
+        // A carried `vfx` asset plays at BOTH ends of the hop — the source position
+        // on the ORIGIN scene (where the token just vanished from) and the
+        // destination position on `dest_scene` (where it now stands) — mirroring
+        // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
+        // out-of-band, no seq, one fresh id per broadcast). Charged against
+        // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
+        // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
+        // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
+        // into and out of a portal's trigger region cannot emit unlimited,
+        // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
+        // would (never-fork: one budget source per one-shot family). Keyed on the
+        // token's effective owner: a GM-owned/NPC-moved token
+        // (`effective_owner: None`) has no attributable player to charge and is
+        // admitted uncharged, matching this codebase's broader pattern of GM actions
+        // being less restricted than player ones; a player-owned token charges that
+        // player's bucket exactly once per fire (one check covers both ends of the
+        // hop, not two).
+        if let Some(asset) = &target.vfx {
+            let vfx_admitted = match effective_owner {
+                Some(owner) => self.vfx_rate.check(owner, ts, crate::ws::VFX_RATE_PER_MIN),
+                None => true,
+            };
+            if vfx_admitted {
+                if let Some(source_scene) = scene {
+                    self.broadcast_aux(ServerMsg::Vfx {
+                        scene: source_scene,
+                        user: ctx.user_id,
+                        asset: asset.clone(),
+                        x: t.x,
+                        y: t.y,
+                        scale: None,
+                        rotation: None,
+                        duration_ms: None,
+                        sound: None,
+                        elevation: t.elevation,
+                        id: Uuid::new_v4(),
+                    });
+                }
+                self.broadcast_aux(ServerMsg::Vfx {
+                    scene: dest_scene,
+                    user: ctx.user_id,
+                    asset: asset.clone(),
+                    x: target.x,
+                    y: target.y,
+                    scale: None,
+                    rotation: None,
+                    duration_ms: None,
+                    sound: None,
+                    elevation: target.elevation,
+                    id: Uuid::new_v4(),
+                });
+            }
+        }
+        Ok(dest_scene)
     }
 
     /// The placement/teleport fire site: token Creates and genuine position Updates in a
@@ -2585,28 +3471,290 @@ impl Room {
                 if !seen.insert(token) {
                     continue;
                 }
-                let Some((scene, pos, _)) = ecs.token_move(token, &[]) else {
+                // The ONE footprint-cell computation every fire site shares
+                // (`SceneEcs::token_footprint_cells`), scene derived from the token.
+                let Some((scene, cells)) = ecs.token_footprint_cells(token) else {
                     continue;
                 };
-                let Some(&cell) = ecs.scene_grid_sizes().get(&scene) else {
-                    continue;
-                };
-                let Some(radius) = ecs.resolve_token_footprint(token, scene) else {
-                    continue;
-                };
-                let grid = ecs.resolve_grid_shape(scene, cell);
-                let cells =
-                    grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell);
                 reports.push(TriggerReport {
                     scene,
                     token,
+                    // A placement's occupancy basis IS its footprint — the same cells its
+                    // Enter detection uses (`TriggerReport::occupancy`).
+                    occupancy: cells.clone(),
                     entered: cells,
                     arrest_stop: None,
+                    enter_only: None,
                 });
             }
         }
+        let carriers: Vec<Uuid> = reports.iter().map(|r| r.token).collect();
         for report in reports {
             self.fire_region_triggers(repo, ctx, report, ts, true).await;
+        }
+        for carrier in carriers {
+            self.fire_attached_region_triggers(repo, ctx, carrier, ts, true)
+                .await;
+        }
+    }
+
+    /// The carrier-move fire site: after `carrier` committed a new position, fires the
+    /// triggers of the regions that follow it on every OTHER token of its scene, tokens that
+    /// did not move but that the zone moved onto or off of. Each occupant
+    /// (`SceneEcs::attached_occupants`) gets one `TriggerReport` whose occupancy is its centre
+    /// cell, so `fire_region_triggers`'s unconditional membership diff yields `Exit` for
+    /// regions the zone left; `Enter` fires only for attached regions the token's stored
+    /// membership does not name yet (`TriggerReport::enter_only`), so a second carrier step
+    /// with the token still inside fires nothing. A carrier with no attached region is a
+    /// single index lookup.
+    ///
+    /// Called after the carrier's own report at every position-commit site:
+    /// `execute_move`, `fire_placement_triggers` (placements, GM teleports and drags) and
+    /// the post-teleport re-fire in `fire_region_triggers`. `allow_teleport` is `false` only
+    /// from that last site, so teleport effects cannot chain across carriers.
+    ///
+    /// PRECONDITION: caller holds `publish_guard`.
+    pub(crate) async fn fire_attached_region_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        carrier: Uuid,
+        ts: i64,
+        allow_teleport: bool,
+    ) {
+        let occupants = self.scene.read().await.attached_occupants(carrier);
+        for occ in occupants {
+            let entered = if occ.enter_regions.is_empty() {
+                Vec::new()
+            } else {
+                vec![occ.cell]
+            };
+            self.fire_region_triggers(
+                repo,
+                ctx,
+                TriggerReport {
+                    scene: occ.scene,
+                    token: occ.token,
+                    entered,
+                    arrest_stop: None,
+                    occupancy: vec![occ.cell],
+                    enter_only: Some(occ.enter_regions),
+                },
+                ts,
+                allow_teleport,
+            )
+            .await;
+        }
+    }
+
+    /// Whether `Room::publish` must fetch the world's capability defaults for `ops`: a token
+    /// Create (its placement gate reads the visible mask) or a token rotation write under the
+    /// scene's `OwnTurn` rule (it resolves the caller's standing on the token's combatant). Every
+    /// other batch, including a rotation under any other rule, skips the settings read.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let needs = room.batch_needs_world_defaults(&ops).await;
+    /// ```
+    async fn batch_needs_world_defaults(&self, ops: &[Operation]) -> bool {
+        let scene = self.scene.read().await;
+        ops.iter().any(|op| match op {
+            Operation::Create { doc } => doc.doc_type == "token" && doc.parent_id.is_some(),
+            Operation::Update { doc_id, changes } => scene
+                .token_rotation_write(*doc_id, changes)
+                .is_some_and(|w| {
+                    w.rotation_changed
+                        && scene.resolve_scene(w.scene).facing_turn_rule
+                            == crate::data::engine::FacingTurnRule::OwnTurn
+                }),
+            _ => false,
+        })
+    }
+
+    /// The turn/round-scoped region-trigger fire site: fires the turn/round
+    /// boundaries a COMMITTED `CombatStart`/`CombatAdvance` transition
+    /// crossed (`combat::transition::TurnRoundBoundary` — recorded by the
+    /// pure transition, applied here) against the trigger-bearing regions
+    /// each boundary combatant's token is a recorded member of
+    /// (`SceneEcs::region_membership` — READ here, never written: a clock
+    /// boundary does not move tokens, so membership changes only through the
+    /// movement/placement funnel). Turn-scoped entries fire for the one
+    /// combatant whose turn it is; round-scoped entries expand across
+    /// `covered` (the order at crossing time), one fire per member token per
+    /// round boundary — `round_wrap`'s own structure. Only a combatant whose
+    /// kind names a token (`CombatantKind::Actor { token_id: Some, .. }`)
+    /// fires: an unbound combatant has no scene position, so no membership
+    /// can prove its occupancy. (The budget gate's `actor_id` fallback
+    /// resolves token→combatant; the inverse combatant→token is one-to-many
+    /// and would pick one token's position arbitrarily — a forked decision
+    /// this rule deliberately avoids.)
+    ///
+    /// Effects apply through `apply_region_trigger_effects`, the SAME funnel
+    /// the movement sites use, committing under `WriteOrigin::Trigger` as a
+    /// SECOND batch after the transition's own commit — the split
+    /// is structural, not stylistic: the effect ops' OCC pre-images must be
+    /// read from committed post-transition state (the transition's own
+    /// recovery may have just written the same combatant document).
+    /// `apply_intent` admits MULTIPLE `Update`s to one document in a batch
+    /// and checks each op's pre-image against PRE-BATCH state, applying in
+    /// order — so a folded-in effect op computed from the pre-transition
+    /// snapshot would not be rejected; it would silently overwrite the
+    /// transition's own write to the same path (the last applied wins).
+    /// `combat_hint` resolves a `ResourceDelta` against the FIRING combat
+    /// even when the token was teleported off its scene.
+    ///
+    /// Once-per-turn/round dedup (`Room::turn_round_dedup`, key
+    /// `TurnRoundFireKey`) runs at PLAN time: the set records that the clock
+    /// crossed the boundary, so an effect commit failure (swallowed inside
+    /// the application funnel) is lost exactly as the movement sites'
+    /// swallowed failures are — one failure philosophy.
+    ///
+    /// PRECONDITION: caller holds `publish_guard` (`commit_ops_locked`
+    /// requires it, and the ONE acquisition must span the transition commit
+    /// and this fire — see `commit_combat_and_fire`, this function's only
+    /// caller, for the interleave that rule closes).
+    pub(crate) async fn fire_turn_round_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        snap: &crate::combat::CombatSnapshot,
+        plan: Vec<crate::combat::transition::TurnRoundBoundary>,
+        ts: i64,
+    ) {
+        use crate::scene::regions;
+
+        if plan.is_empty() {
+            return;
+        }
+
+        // Resolve each boundary to the tokens it fires for, preserving plan
+        // (chronological) order for application. `by_token` values are
+        // (combatant, event, round) triples.
+        let mut token_order: Vec<Uuid> = Vec::new();
+        let mut by_token: HashMap<Uuid, Vec<(Uuid, eng::TriggerEvent, u32)>> = HashMap::new();
+        for boundary in &plan {
+            let combatants: &[Uuid] = match &boundary.combatant {
+                Some(c) => std::slice::from_ref(c),
+                None => &boundary.covered,
+            };
+            for &combatant in combatants {
+                let Some(token) = snap
+                    .combatants
+                    .iter()
+                    .find(|c| c.doc.id == combatant)
+                    .and_then(|c| match c.engine.kind {
+                        eng::CombatantKind::Actor { token_id, .. } => token_id,
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+                by_token
+                    .entry(token)
+                    .or_insert_with(|| {
+                        token_order.push(token);
+                        Vec::new()
+                    })
+                    .push((combatant, boundary.event, boundary.round));
+            }
+        }
+        if token_order.is_empty() {
+            return;
+        }
+
+        // The dedup window update, once per pass: fold this plan's highest
+        // round in, then prune keys older than the previous round (the
+        // rotation `TurnRoundDedup::last_round` documents).
+        let plan_max_round = plan.iter().map(|b| b.round).max().unwrap_or(0);
+        {
+            let mut dedup = self.turn_round_dedup.lock().await;
+            if dedup.len() >= MAX_TURN_ROUND_DEDUP_COMBATS && !dedup.contains_key(&snap.combat.id) {
+                dedup.clear();
+            }
+            let entry = dedup.entry(snap.combat.id).or_default();
+            entry.last_round = entry.last_round.max(plan_max_round);
+            let last_round = entry.last_round;
+            entry.keys.retain(|k| k.round + 1 >= last_round);
+        }
+
+        for token in token_order {
+            let boundaries = by_token.remove(&token).unwrap_or_default();
+            // Membership + identity rows under ONE read guard (never nested
+            // with the dedup lock): membership is the occupancy proof; rows
+            // resolve by id WITHOUT the per-scene/elevation filter — the
+            // `trigger_region_row` rule Exit firing already uses, for the
+            // same reason (re-filtering would drop a region the token was
+            // legitimately recorded inside).
+            let (member, rows) = {
+                let ecs = self.scene.read().await;
+                let member: std::collections::BTreeSet<Uuid> =
+                    ecs.region_membership_of(token).cloned().unwrap_or_default();
+                let rows: Vec<regions::TriggerRegion> = member
+                    .iter()
+                    .filter_map(|&id| ecs.trigger_region_row(id))
+                    .collect();
+                (member, rows)
+            };
+            if member.is_empty() {
+                continue;
+            }
+            // The candidate fires in plan order, then the seen-set filter.
+            let mut candidates: Vec<(TurnRoundFireKey, (Uuid, eng::RegionTrigger))> = Vec::new();
+            for (combatant, event, round) in boundaries {
+                for (region, index, trigger) in
+                    regions::fired_turn_round_triggers(&rows, &member, event)
+                {
+                    candidates.push((
+                        TurnRoundFireKey {
+                            event,
+                            round,
+                            combatant,
+                            region,
+                            trigger: index,
+                        },
+                        (region, trigger),
+                    ));
+                }
+            }
+            let fired: Vec<(Uuid, eng::RegionTrigger)> = {
+                let mut dedup = self.turn_round_dedup.lock().await;
+                let entry = dedup.entry(snap.combat.id).or_default();
+                candidates
+                    .into_iter()
+                    .filter(|(key, _)| entry.keys.insert(*key))
+                    .map(|(_, pair)| pair)
+                    .collect()
+            };
+            if fired.is_empty() {
+                continue;
+            }
+            // The token's committed document, loaded after the transition's
+            // commit — the application funnel's own discipline.
+            let token_doc = match repo.get_document(token).await {
+                Ok(Some(doc)) => doc,
+                Ok(None) => {
+                    tracing::debug!(%token, "turn/round region triggers: the token is gone; no effects fire");
+                    continue;
+                }
+                Err(err) => {
+                    tracing::debug!(%token, ?err, "turn/round region triggers: the token could not be loaded; no effects fire");
+                    continue;
+                }
+            };
+            self.apply_region_trigger_effects(
+                repo,
+                ctx,
+                token_doc,
+                TriggerEffectPlan {
+                    fired,
+                    secrecy_rows: &rows,
+                    combat_hint: Some(snap.combat.id),
+                    allow_teleport: true,
+                },
+                ts,
+            )
+            .await;
         }
     }
 
@@ -2753,6 +3901,122 @@ impl Room {
             Some(&floor) => floor + 1,
             None => self.current_seq() + 1,
         }
+    }
+
+    /// Records one more live connection for `user`; `true` iff it is the user's first in this
+    /// room (the 0->1 transition). The caller broadcasts `ServerMsg::Presence { online: true }`
+    /// only on `true`, so a second tab never re-announces an already-online user.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// assert!(room.presence_connect(gm));
+    /// assert!(!room.presence_connect(gm));
+    /// # }
+    /// ```
+    pub fn presence_connect(&self, user: Uuid) -> bool {
+        let mut counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(user).or_insert(0);
+        *count += 1;
+        *count == 1
+    }
+
+    /// Drops one live connection for `user`; `true` iff the count reached zero (the 1->0
+    /// transition). A user with no recorded connection is a no-op returning `false`; the count
+    /// never underflows and a zero count leaves no map entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// room.presence_connect(gm);
+    /// room.presence_connect(gm);
+    /// assert!(!room.presence_disconnect(gm));
+    /// assert!(room.presence_disconnect(gm));
+    /// assert!(!room.presence_disconnect(gm));
+    /// # }
+    /// ```
+    pub fn presence_disconnect(&self, user: Uuid) -> bool {
+        let mut counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        match counts.get_mut(&user) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            Some(_) => {
+                counts.remove(&user);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The members with at least one live connection in this room, sorted for a stable wire
+    /// order. Reads the same map `presence_connect`/`presence_disconnect` maintain, so the
+    /// `Welcome` snapshot and the `Presence` transitions cannot disagree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// assert!(room.presence_online().is_empty());
+    /// room.presence_connect(gm);
+    /// assert_eq!(room.presence_online(), vec![gm]);
+    /// room.presence_disconnect(gm);
+    /// assert!(room.presence_online().is_empty());
+    /// # }
+    /// ```
+    pub fn presence_online(&self) -> Vec<Uuid> {
+        let counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        let mut users: Vec<Uuid> = counts.keys().copied().collect();
+        users.sort_unstable();
+        users
     }
 
     /// Whether an explicit `ClientMsg::ResyncRequest` should be clamped against
@@ -3029,10 +4293,10 @@ impl RoomRegistry {
                 ))
             })
             .clone();
-        // TOCTOU closure, two layers. (1) A `begin_delete` still in flight
+        // TOCTOU closure, two layers. First, a `begin_delete` still in flight
         // between the tombstone check above and this insert has already
         // removed-and-evicted whatever room it saw — which may not include the
-        // one just inserted; the tombstone re-check catches it. (2) A delete
+        // one just inserted; the tombstone re-check catches it. Second, a delete
         // that COMPLETED entirely inside that window (begin → commit →
         // finish_delete) has already lifted the tombstone, so the flag proves
         // nothing — re-verify the world ROW. That read is serialized after any
@@ -3072,6 +4336,128 @@ impl RoomRegistry {
     /// ```
     pub fn get(&self, world_id: Uuid) -> Option<Arc<Room>> {
         self.rooms.get(&world_id).map(|r| r.clone())
+    }
+
+    /// Every live room, cloned out of the registry so a caller can `.await` on each without
+    /// holding a map guard.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// assert!(RoomRegistry::new().live_rooms().is_empty());
+    /// ```
+    pub fn live_rooms(&self) -> Vec<Arc<Room>> {
+        self.rooms.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Broadcasts `user`'s current profile (`ServerMsg::MemberProfile`) into every live room of
+    /// a world the user is seated in. A world with no live room has no connection to tell, and
+    /// its next `Welcome` roster read carries the stored profile. Seating comes from
+    /// `worlds_for_user` with `ServerRole::User`, so a server admin is addressed only where
+    /// seated, the same boundary `list_members` applies. A user with no account is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+    ///
+    /// repo.set_profile(gm, Some("#336699"), None).await.unwrap();
+    /// registry.broadcast_member_profile(&repo, gm).await.unwrap();
+    /// // An account that does not exist has nothing to broadcast.
+    /// registry
+    ///     .broadcast_member_profile(&repo, uuid::Uuid::new_v4())
+    ///     .await
+    ///     .unwrap();
+    /// # }
+    /// ```
+    pub async fn broadcast_member_profile(
+        &self,
+        repo: &SqliteRepository,
+        user: Uuid,
+    ) -> Result<(), DataError> {
+        let Some(frame) = Self::member_profile_frame(repo, user).await? else {
+            return Ok(());
+        };
+        for (world, _) in repo.worlds_for_user(user, ServerRole::User).await? {
+            if let Some(room) = self.get(world.id) {
+                room.broadcast_aux_shared(frame.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Announces a newly seated member to `world`'s live room: the same `MemberProfile` frame
+    /// a profile change sends, so connected clients add the member to their roster without a
+    /// reconnect. Only `world`'s room is addressed, since the member's other worlds already
+    /// list them. A world with no live room has no connection to tell, and its next `Welcome`
+    /// roster read lists the member. A user with no account is a no-op. Called after every
+    /// successful seating: `http::routes::add_member` and `http::routes::accept_invite`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let player = repo.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+    /// repo.add_member(world.id, player, WorldRole::Player).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+    ///
+    /// registry.announce_member_seated(&repo, world.id, player).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn announce_member_seated(
+        &self,
+        repo: &SqliteRepository,
+        world: Uuid,
+        user: Uuid,
+    ) -> Result<(), DataError> {
+        let Some(room) = self.get(world) else {
+            return Ok(());
+        };
+        if let Some(frame) = Self::member_profile_frame(repo, user).await? {
+            room.broadcast_aux_shared(frame);
+        }
+        Ok(())
+    }
+
+    /// The `MemberProfile` frame for `user`'s stored roster row, or `None` when no such account
+    /// exists. The one builder behind `broadcast_member_profile` and `announce_member_seated`.
+    async fn member_profile_frame(
+        repo: &SqliteRepository,
+        user: Uuid,
+    ) -> Result<Option<Arc<ServerMsg>>, DataError> {
+        Ok(repo.member_profile(user).await?.map(|p| {
+            Arc::new(ServerMsg::MemberProfile {
+                user,
+                username: p.username,
+                colour: p.colour,
+                pronouns: p.pronouns,
+                has_avatar: p.has_avatar,
+            })
+        }))
     }
 
     /// Telemetry snapshots for every live room (admin debug endpoint).

@@ -2,8 +2,9 @@
 // import these seams from here — never from each other (the contract-only
 // element boundary).
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
-export type { AppContext, TFunc, HooksEmitApi } from "./appContext";
+export type { AppContext, TFunc, HooksEmitApi, ProgressNotification, MemberProfile } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
+export { findTourAnchor } from "./tourAnchors";
 export { t, locale, i18n, plural, compare } from "./i18n.svelte";
 export { notifications, activeNotifications } from "./notifications.svelte";
 export { default as NotificationHost } from "./NotificationHost.svelte";
@@ -13,11 +14,30 @@ export { Dice3DBridge } from "./dice3dInteraction";
 export type { Dice3DHost, Dice3DInteraction } from "./dice3dInteraction";
 export { createMenuKeyboard } from "./MenuKeyboard";
 export type { MenuKeyboard } from "./MenuKeyboard";
+export { default as ContextMenu } from "./ContextMenu.svelte";
+export {
+  createContextMenuTrigger,
+  DEFAULT_CONTEXT_MENU_LONG_PRESS_MS,
+  CONTEXT_MENU_SLOP_PX,
+} from "./contextMenu";
+export type { ContextMenuItem, ContextMenuRequest, ContextMenuTrigger, ContextMenuTriggerOptions } from "./contextMenu";
+export { EscapeCoordinator, escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
+export { trapFocus } from "./focusTrap";
+export { default as DialogHost } from "./DialogHost.svelte";
+export { default as PortalChooser } from "./PortalChooser.svelte";
+export { confirmDialog } from "./confirmDialog";
+export type { ConfirmOptions } from "./confirmDialog";
+export { promptDialog } from "./promptDialog";
+export type { PromptOptions } from "./promptDialog";
 export { ActorSelection } from "./actorSelection.svelte";
 export { TokenSelection } from "./tokenSelection.svelte";
 export { SceneSelection } from "./sceneSelection.svelte";
 export { SpeakAs } from "./speakAs.svelte";
 export { SpeakAsToken } from "./speakAsToken.svelte";
+export { SnapModePreference } from "./snapModePreference.svelte";
+export { StageView } from "./stageView.svelte";
+export { ShareRulerPreference, shareRulerStorageKey } from "./shareRulerPreference.svelte";
+export type { ShareRulerStorage } from "./shareRulerPreference.svelte";
 export { sizeClass, isCompactViewport } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";
@@ -26,9 +46,20 @@ export { setField, setFields, unsetField } from "./sheetEdit";
 export type { FieldEdit } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
+export { default as ConditionTogglePalette } from "./ConditionTogglePalette.svelte";
 export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
+export { default as TagChips } from "./TagChips.svelte";
+export { default as DocFolderTree } from "./DocFolderTree.svelte";
+export {
+  typedFolderChildren,
+  typedFolderSiblings,
+  appendTypedFolderSortKey,
+  buildTypedFolderDoc,
+  isDescendantOrSelf,
+} from "./folderTree";
+export type { FolderTreeLabels, FolderDeleteChoice } from "./folderTree";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
@@ -41,6 +72,11 @@ export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
 export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
+export { default as PermissionsEditor } from "./PermissionsEditor.svelte";
+export { default as UserMultiSelect } from "./UserMultiSelect.svelte";
+export { default as EffectsList } from "./EffectsList.svelte";
+export { listEffects, effectOriginText } from "./effectsList";
+export type { EffectEntry, EffectLookup } from "./effectsList";
 export { default as RollTooltip } from "./RollTooltip.svelte";
 export { default as SegmentList } from "./SegmentList.svelte";
 export {

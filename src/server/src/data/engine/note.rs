@@ -1,21 +1,26 @@
-//! Engine body for a rich-text note (`NOTE_DOC_TYPE`): author markdown in
-//! `source`, rendered server-side at ingress into a sanitized `body` through
-//! the same chat sanitizer boundary chat messages use
-//! (`chat::body::compose_static` under the fixed `chat::NOTE_CONTENT_POLICY`).
-//! Envelope `name` is the note's title; this module owns only the stored
-//! shape and its ingress validation -- the tree/containment rules live in
-//! `data::validation::validate_containment` and
-//! `data::sqlite::notes::check_note_parent`.
+//! This module defines the engine body of a rich-text note (`NOTE_DOC_TYPE`).
+//!
+//! The author's markdown lives in `source`, and ingress renders it server-side into a sanitized
+//! `body` through the same chat sanitizer boundary chat messages use (`chat::body::compose_static`
+//! under the fixed `chat::NOTE_CONTENT_POLICY`). Envelope `name` is the note's title. This module
+//! owns only the stored shape and its ingress validation; the tree/containment rules live in
+//! `data::validation::validate_containment` and `data::sqlite::notes::check_note_parent`.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
-use crate::chat::{compose_static, Segment, NOTE_CONTENT_POLICY};
+use crate::chat::{
+    compose_static, has_secret, segment_property_overrides, Segment, NOTE_CONTENT_POLICY,
+};
+use crate::data::document::Visibility;
 
 /// Doc_type for a rich-text note: a document tree (`parent_id` names another
 /// note in the same scope, see `check_note_parent`), never embedded (see
@@ -29,17 +34,57 @@ pub const MAX_NOTE_SOURCE_CHARS: usize = 65_536;
 /// this is deliberately larger than `chat::rolls::MAX_INLINE_ROLLS`.
 pub const MAX_NOTE_SPANS: usize = 64;
 
+/// What a note page shows above its caption. Internally tagged on `kind`, so a
+/// text page is `{"kind":"text"}` and a media page is
+/// `{"kind":"image","asset_id":"<uuid>"}`.
+///
+/// `asset_id` is not checked for existence at ingest (the same posture as a chat
+/// `[[asset:]]` span and a table `Image` entry): the client renders it through
+/// the asset resolver and shows a placeholder when it does not resolve.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::note::NotePageKind;
+///
+/// assert_eq!(NotePageKind::default(), NotePageKind::Text);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotePageKind {
+    /// A text-only page: the markdown `body` is the whole page.
+    #[default]
+    Text,
+    /// A page showing one image asset above its caption.
+    Image {
+        /// The image asset shown.
+        asset_id: Uuid,
+    },
+    /// A page showing one PDF asset above its caption.
+    Pdf {
+        /// The PDF asset shown.
+        asset_id: Uuid,
+    },
+    /// A page showing one video asset above its caption.
+    Video {
+        /// The video asset shown.
+        asset_id: Uuid,
+    },
+}
+
 /// The engine body of a rich-text note. Envelope `name` is the note's title.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::engine::note::NoteEngine;
+/// use shadowcat::data::engine::note::{NoteEngine, NotePageKind};
 ///
 /// let note = NoteEngine {
 ///     source: "# Session recap".into(),
 ///     body: vec![],
 ///     sort: 0,
+///     kind: NotePageKind::Text,
 /// };
 /// assert_eq!(note.source, "# Session recap");
 /// assert!(note.body.is_empty()); // server-derived; overwritten by derive_body
@@ -62,6 +107,11 @@ pub struct NoteEngine {
     /// `created_at`). Has no meaning for a root-level note.
     #[serde(default)]
     pub sort: i64,
+    /// What the page shows above its caption. A note stored without this
+    /// field reads as `NotePageKind::Text`. `source` and `body` keep their
+    /// meaning for every kind (a media page's `source` is its caption).
+    #[serde(default)]
+    pub kind: NotePageKind,
 }
 
 impl NoteEngine {
@@ -75,7 +125,12 @@ impl NoteEngine {
     /// ```
     /// use shadowcat::data::engine::note::NoteEngine;
     ///
-    /// let note = NoteEngine { source: "hello".into(), body: vec![], sort: 0 };
+    /// let note = NoteEngine {
+    ///     source: "hello".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
     /// assert!(note.validate().is_ok());
     /// ```
     pub fn validate(&self) -> Result<(), String> {
@@ -102,7 +157,12 @@ impl NoteEngine {
     /// ```
     /// use shadowcat::data::engine::note::NoteEngine;
     ///
-    /// let mut note = NoteEngine { source: "plain text".into(), body: vec![], sort: 0 };
+    /// let mut note = NoteEngine {
+    ///     source: "plain text".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
     /// note.derive_body().unwrap();
     /// assert!(!note.body.is_empty()); // derived from source, never client-supplied
     /// ```
@@ -110,6 +170,40 @@ impl NoteEngine {
         self.body = compose_static(&self.source, &NOTE_CONTENT_POLICY, MAX_NOTE_SPANS)
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The `permissions.property_overrides` entries the derived `body` requires: every
+    /// `Segment::Secret`'s `content` under the secret's own visibility, and, when the body holds
+    /// a secret, `/engine/source` as `OwnerOrGm` -- `source` is the markdown the secret was parsed
+    /// from, so leaving it readable would show every reader the hidden text; the note's owner
+    /// keeps it so the author can edit their own note. The rendered secret text in `body` stays
+    /// under the secret's own `GmOnly` tier. Derived from the
+    /// CURRENT `body`, so call it after `derive_body`. `data::validation::validate_engine_tree`
+    /// is the one caller; it owns the `/engine/body` and `/engine/source` override keys of a note.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::Visibility;
+    /// use shadowcat::data::engine::note::NoteEngine;
+    ///
+    /// let mut note = NoteEngine {
+    ///     source: "intro [[secret:gm|the vault code]]".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
+    /// note.derive_body().unwrap();
+    /// let overrides = note.secret_property_overrides();
+    /// assert_eq!(overrides["/engine/source"], Visibility::OwnerOrGm);
+    /// assert!(overrides.keys().any(|k| k.starts_with("/engine/body/") && k.ends_with("/content")));
+    /// ```
+    pub fn secret_property_overrides(&self) -> BTreeMap<String, Visibility> {
+        let mut out = segment_property_overrides("/engine/body", &self.body);
+        if has_secret(&self.body) {
+            out.insert("/engine/source".to_string(), Visibility::OwnerOrGm);
+        }
+        out
     }
 }
 

@@ -1,3 +1,7 @@
+//! This module tokenizes dice notation.
+//!
+//! `lex` turns a string into `Token`s, and `describe_token` renders a token for error messages.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -118,8 +122,7 @@ pub fn describe_token(tok: Option<&Token>) -> String {
 /// semantics, not UTF-8 decoding) and is only correct for single-byte code
 /// points; slicing `input` at a byte index computed this way would panic on
 /// a multi-byte UTF-8 sequence. This is enforced up front rather than relied
-/// on implicitly, so a future non-ASCII operator arm can't reintroduce a
-/// slice-at-non-char-boundary panic.
+/// on implicitly, so no match arm sees a non-ASCII byte.
 ///
 /// # Examples
 ///

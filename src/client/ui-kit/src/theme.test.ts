@@ -159,6 +159,20 @@ describe("sanitizeCustomThemes", () => {
   });
 });
 
+describe("z-popover", () => {
+  it("clears the stacking of many dockview floating windows and stays under its drag ghost", () => {
+    // dockview-core stacks its n-th floating group at 999 + 2n; a modal built on z-popover must
+    // stay clickable above a deep stack of open sheets, and the drag ghost (99999) stays above it.
+    const floatingWindowsCovered = 100;
+    const dockviewFloatingTop = 999 + 2 * floatingWindowsCovered;
+    for (const theme of BUILTIN_THEMES) {
+      const z = Number(theme.tokens["z-popover"]);
+      expect(z).toBeGreaterThan(dockviewFloatingTop);
+      expect(z).toBeLessThan(99999);
+    }
+  });
+});
+
 describe("colorThemeTokenNames", () => {
   it("includes only tokens every built-in gives an opaque color value", () => {
     const names = colorThemeTokenNames();

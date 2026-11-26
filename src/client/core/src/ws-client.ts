@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { FalloffCurve, RejectReason } from "@shadowcat/types";
+import type { DoorState, FalloffCurve, PortalOfferOption, RegionShape, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -16,9 +16,11 @@ import {
   type WireRecalcOp,
   type WireMergeOutcome,
   type WireMergeErrorKind,
+  type WirePathErrorReason,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
 import type { VfxPlayRequest } from "./vfx";
+import { randomUuid } from "./uuid";
 
 // Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
 // canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
@@ -89,6 +91,11 @@ export interface MoveLightSample {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`). */
   falloff: FalloffCurve;
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this sample (`0` = +x, growing toward +y); present
+   * exactly when `angle` is. A token-following cone already holds the bearer's facing. */
+  rotation?: number;
   /** The light's illumination polygon(s) at this sample, as rings of `[x, y]` scene coords. */
   polygons: [number, number][][];
 }
@@ -142,6 +149,83 @@ export interface MoveStream {
 
 /** The union of results a correlated request in `pending` can resolve to. */
 export type PendingResult = SearchPage | PathResult | MoveStream;
+
+/** Rejection of a request issued while no socket is open (never connected, closed, or awaiting a
+ * reconnect) or that was in flight when the socket closed. A distinct type so a caller tells "the link is down" from a refusal by `instanceof`
+ * rather than by matching the message text. */
+export class NotConnectedError extends Error {
+  /** Construct the rejection.
+   * @param message The description; defaults to `"not connected"`.
+   * @example new NotConnectedError();
+   */
+  constructor(message = "not connected") {
+    super(message);
+    this.name = "NotConnectedError";
+  }
+}
+
+/** Rejection of a correlated request whose reply never arrived within its timeout. A distinct
+ * type so a caller tells "the server did not answer in time" from a refusal by `instanceof`;
+ * a timeout says nothing about whether the request would have succeeded. */
+export class RequestTimeoutError extends Error {
+  /** Construct the rejection.
+   * @param message The description, naming the request that timed out.
+   * @example new RequestTimeoutError("pathfind request timeout");
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = "RequestTimeoutError";
+  }
+}
+
+/** Rejection of a `move_request` or combat intent the whole-session pause refused (`reason:
+ * "paused"` on the `move_error`/`combat_error` frame). A distinct type so a caller raises the
+ * localized "the game is paused" notice by `instanceof` rather than showing the server text. */
+export class SessionPausedError extends Error {
+  /** Construct the rejection.
+   * @param message The server's player-presentable text.
+   * @example new SessionPausedError("the game is paused");
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionPausedError";
+  }
+}
+
+/** The rejection a `move_error`/`combat_error` frame settles its correlated request with:
+ * `SessionPausedError` for the paused reason, a plain `Error` carrying the server text otherwise.
+ * @param msg The frame's `message` and optional typed `reason`.
+ * @param msg.message The server's player-presentable text.
+ * @param msg.reason The typed refusal reason (`"paused"` selects `SessionPausedError`), if any.
+ * @returns The error to reject the pending entry with.
+ * @example
+ * ```
+ * refusalError({ message: "the game is paused", reason: "paused" }) instanceof SessionPausedError;
+ * ```
+ */
+function refusalError(msg: {
+  /** The server's player-presentable text. */
+  message: string;
+  /** The typed refusal reason; only `"paused"` selects a distinct error type. */
+  reason?: string | null;
+}): Error {
+  return msg.reason === "paused" ? new SessionPausedError(msg.message) : new Error(msg.message);
+}
+
+/** Rejection carried by a failed pathfind: the server answered with a `path_error` frame. `reason`
+ * is the server's typed failure; `unreachable` also covers every refusal the server deliberately
+ * does not distinguish, so it discloses no more than "no route". */
+export class PathfindError extends Error {
+  /** Construct from the wire `path_error` frame.
+   * @param message The server's player-presentable text.
+   * @param reason The typed failure.
+   * @example new PathfindError("unreachable", "unreachable");
+   */
+  constructor(message: string, public readonly reason: WirePathErrorReason) {
+    super(message);
+    this.name = "PathfindError";
+  }
+}
 
 /** Rejection carried by a failed merge intent (`WsClient.merge`). `reason` is the raw
  * `WireMergeErrorKind` — `stale_resolutions`/`unknown_resolution`/`unresolvable` carry the
@@ -224,6 +308,24 @@ export interface ScenePingNotice {
   user: string;
 }
 
+/** A relayed shared ruler (`WsClientHandlers.onRuler`); carries no seq. `points` are the route as
+ * the sender sent it, thinned by the sender to at most `RULER_LIMITS.maxPoints` vertices, and
+ * relayed unclipped by the server. */
+export interface RulerNotice {
+  /** The user id measuring (server-stamped, not client-asserted). */
+  from: string;
+  /** The scene the ruler is measured on. */
+  scene: string;
+  /** The route preview's vertices in scene coordinates, start through goal. */
+  points: [number, number][];
+  /** `false` ends `from`'s ruler (`points` is then empty). */
+  active: boolean;
+  /** The token the sending connection chose (`WsClient.rulerOrigin` on the sender). The server
+   * relays it unverified, so any client can send any value: a frame carries this client's own
+   * `WsClient.rulerOrigin` when this connection sent it, or when another client forged it. */
+  origin: string;
+}
+
 /** A relayed emote over a token (`WsClientHandlers.onEmote`); carries no seq. */
 export interface EmoteNotice {
   /** The scene the token stands on. */
@@ -234,6 +336,95 @@ export interface EmoteNotice {
   user: string;
   /** The emote glyph(s). */
   emote: string;
+}
+
+/**
+ * A GM's `reset_explored_fog` intent took effect (`WsClientHandlers.onExploredFogReset`);
+ * carries no seq. Delivered to every connection in the room, including the resetting GM's
+ * own; there is no client-side action required beyond letting the next "vision" push
+ * (which the server re-computes on receipt) reflect the cleared memory.
+ */
+export interface ExploredFogResetNotice {
+  /** The scene whose explored memory was reset. */
+  scene: string;
+  /** The user the reset was scoped to, or `null` for every user. */
+  user: string | null;
+  /** The level the reset was scoped to, or `null` for every level. */
+  level: string | null;
+}
+
+/**
+ * A member's roster row (`WsClientHandlers.onMemberProfile`); carries no seq. Sent when the
+ * member changes their account profile or is seated in the world, to every connection in each
+ * world the member is seated in. The avatar bytes are not carried: a receiver derives the URL
+ * with `avatarUrl` and fetches it.
+ */
+export interface MemberProfileNotice {
+  /** The member the row describes. */
+  user: string;
+  /** The member's username, the name the roster and chat show. */
+  username: string;
+  /** Colour accent as `#rrggbb`, or `null` when unset. */
+  colour: string | null;
+  /** Pronouns text, or `null` when unset. */
+  pronouns: string | null;
+  /** Whether the member has an avatar. */
+  hasAvatar: boolean;
+}
+
+/** Optional scope for `WsClient.resetExploredFog`/`AppContext.resetExploredFog`. */
+export interface ResetExploredFogOptions {
+  /** Limit the reset to one user's memory; omit to clear every user's. */
+  user?: string;
+  /** Limit the reset to one level; omit to clear every level. */
+  level?: string;
+}
+
+/** A region-triggered scrolling-text overlay (`WsClientHandlers.onScrollingText`); carries no seq. */
+export interface ScrollingTextNotice {
+  /** The scene the token stands on. */
+  scene: string;
+  /** The token the overlay plays over. */
+  token: string;
+  /** The overlay text. */
+  text: string;
+  /** True when the firing region is not visible to every world member — this frame reaches
+   * only GM connections (server-decided; a non-GM client never receives one with this set). */
+  gmOnly: boolean;
+}
+
+/** In-flight requests whose only reply is a refusal frame, keyed by request_id: success is
+ * assumed once `CHAT_ERROR_WINDOW_MS` passes in silence. */
+type SilencePending = Map<
+  string,
+  {
+    /** Resolves (void) once the silence window elapses with no refusal. */
+    resolve: () => void;
+    /** Rejects with the server's reason on a correlated refusal, or on disconnect. */
+    reject: (e: Error) => void;
+    /** The silence-window timeout handle that resolves success-assumed. */
+    timer: ReturnType<typeof setTimeout>;
+  }
+>;
+
+/** A portal offer (`WsClientHandlers.onPortalOffer`); carries no seq. Holds no coordinates:
+ * the answer names an option by its `index`. */
+export interface PortalOfferNotice {
+  /** Identifies the offer in `WsClient.choosePortal`. */
+  offerId: string;
+  /** The scene the token stands on. */
+  scene: string;
+  /** The token that may take a portal. */
+  token: string;
+  /** The GM-authored heading, if any. */
+  prompt: string | null;
+  /** The destinations in display order. */
+  options: PortalOfferOption[];
+  /** True when the firing region is not visible to every world member — the frame reaches only
+   * GM connections (server-decided). */
+  gmOnly: boolean;
+  /** The token's effective owner, the one non-GM recipient of a public offer. */
+  owner: string | null;
 }
 
 /** A relayed VFX one-shot (`WsClientHandlers.onVfx`); carries no seq. */
@@ -260,6 +451,15 @@ export interface VfxNotice {
   elevation: number | null;
   /** Fresh per-broadcast id — the render layer's one-shot node key. */
   id: string;
+}
+
+/** A relayed "the GM is presenting this note" focus signal (`WsClientHandlers.onPresentNote`);
+ * carries no seq and no note content. */
+export interface PresentNoteNotice {
+  /** The note document being presented. */
+  noteId: string;
+  /** The GM who presented it (server-stamped). */
+  presentedBy: string;
 }
 
 /** Timeout override for a correlated request whose only option is how long to wait for the
@@ -328,6 +528,11 @@ export interface ChatSendOptions {
   actorOwner?: WireActorOwnerRef | null;
   /** Recipient scoping; defaults to `{ kind: "public" }`. */
   audience?: WireAudience;
+  /** Opaque module-owned payload stored verbatim as the message document's `system` band and
+   * rendered by `CHAT_CARD_EXTENSION_CONTRACT` contributions. The server never inspects it; it
+   * is size-capped like every document's `system` band and readable by exactly the message's
+   * audience. Omitted from the frame when absent. */
+  system?: unknown;
 }
 
 /** Options for `WsClient.drawTable`. */
@@ -376,6 +581,36 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An out-of-band relayed shared ruler (carries no seq), delivered unclipped to every
+   * connection in the room, the sender's own included (`RulerNotice.origin` identifies it).
+   * @param msg The measuring user, scene, vertices, active flag, and origin token. */
+  onRuler?(msg: RulerNotice): void;
+  /** An out-of-band region-triggered scrolling-text overlay (carries no seq).
+   * @param msg The overlay's scene, token, text, and GM-only secrecy flag. */
+  onScrollingText?(msg: ScrollingTextNotice): void;
+  /** An out-of-band portal offer for a token the user may move through a portal (carries no
+   * seq). Addressed by the server: only a GM connection and the token's owner receive it.
+   * @param msg The offer's id, scene, token, prompt and options. */
+  onPortalOffer?(msg: PortalOfferNotice): void;
+  /** A GM's `reset_explored_fog` intent took effect (carries no seq); delivered to every
+   * connection in the room. No client action is required — the next "vision" push already
+   * reflects the cleared memory — this exists for UI feedback only.
+   * @param msg The reset's scene and its user/level scope. */
+  onExploredFogReset?(msg: ExploredFogResetNotice): void;
+  /** A GM changed the world's enabled-module set (carries no seq, no payload); delivered to
+   * every connection in the room, the saving GM's own included. The handler re-runs the
+   * session's module reconcile, which is idempotent when nothing differs. */
+  onModulesChanged?(): void;
+  /** A member's live-connection count crossed 0->1 or 1->0 (carries no seq); delivered to every
+   * connection in the room, the member's own included. Transitions only: the members already
+   * online at connect time arrive on the `welcome` frame's `online_users`.
+   * @param user The member whose presence changed.
+   * @param online `true` when the member's first connection opened, `false` when the last closed. */
+  onPresence?(user: string, online: boolean): void;
+  /** A member changed their account profile (carries no seq); delivered to every connection in
+   * each world the member is seated in, the member's own included.
+   * @param profile The member and their new colour, pronouns and avatar flag. */
+  onMemberProfile?(profile: MemberProfileNotice): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -384,9 +619,24 @@ export interface WsClientHandlers {
   /** An out-of-band relayed VFX one-shot (carries no seq).
    * @param msg The effect's scene, position, asset, and sending user. */
   onVfx?(msg: VfxNotice): void;
+  /** An out-of-band "the GM is presenting this note" signal (carries no seq).
+   * @param msg The presented note id and the presenting GM. */
+  onPresentNote?(msg: PresentNoteNotice): void;
+  /** A connection attempt failed (connect rejected, socket closed, or no `welcome` before the
+   * watchdog) before this client has EVER been welcomed. `consecutive` counts the failures since
+   * `start()` and is monotonically increasing; it never fires once a `welcome` has been received,
+   * so a mid-session drop is not reported here. The seam for a first-connect diagnostic hint
+   * (for example a self-signed certificate a browser refuses for `wss:`).
+   * @param consecutive Failed attempts so far, starting at 1. */
+  onConnectFailure?(consecutive: number): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
+  /** The server refused this connection's join before its `welcome`: the world does not exist,
+   * or the user is not a member. Terminal: the client has already stopped (no reconnect) when
+   * this fires. A refusal of any other kind (`internal`) is transient and is not reported here.
+   * @param code Why the join was refused. */
+  onJoinRefused?(code: "world_not_found" | "forbidden"): void;
 }
 
 /** Construction options for `WsClient`: the connection factory, handler set, and the
@@ -459,6 +709,9 @@ export class WsClient {
   /** Count of reconnect attempts since the last successful Welcome; resets only on Welcome,
    * never on socket `open`. */
   private reconnectAttempt = 0;
+  /** True once any `welcome` has been received by this instance; gates `onConnectFailure`, which
+   * reports only failures BEFORE the first welcome. */
+  #hasEverWelcomed = false;
   /** Next seq to apply; the client-side ordering watermark. Persists across
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
@@ -527,17 +780,31 @@ export class WsClient {
    * (success-ASSUMED from silence, never acknowledged) and cleans the entry up
    * when no error arrives within the window. The three settle paths are exactly:
    * that timer, a `chat_error` reject, and a disconnect reject. */
-  private chatPending = new Map<
+  private chatPending: SilencePending = new Map();
+  /** In-flight door toggles, keyed by request_id — the same asymmetric settle shape as
+   * `chatPending` (ONLY a rejection replies, as a `door_toggle_error` frame; success is the
+   * broadcast Event echo, which carries no `request_id` correlation), kept as its own map so
+   * the two families' error frames never cross-correlate. */
+  private doorPending = new Map<
     string,
     {
-      /** Resolves (void) once the silence window elapses with no `chat_error`. */
+      /** Resolves (void) once the silence window elapses with no `door_toggle_error`. */
       resolve: () => void;
-      /** Rejects with the server's reason on a correlated `chat_error`, or on disconnect. */
+      /** Rejects with the server's reason on a correlated `door_toggle_error`, or on
+       * disconnect. */
       reject: (e: Error) => void;
       /** The silence-window timeout handle that resolves success-assumed. */
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** In-flight portal answers and re-open requests, keyed by request_id — the same
+   * refusal-only reply shape as `doorPending` (`portal_choice_error` is the only reply), kept
+   * as its own map so the two families' error frames never cross-correlate. */
+  private portalPending: SilencePending = new Map();
+  /** In-flight module-placed effect requests, keyed by request_id — the same refusal-only reply
+   * shape as `doorPending` (`place_effect_error` is the only reply), kept as its own map so the
+   * families' error frames never cross-correlate. */
+  private placePending: SilencePending = new Map();
   /** In-flight merge intents (`MergePull`/`MergePush`/`MergeRevert`), keyed by request_id. Unlike
    * `combatPending`/`chatPending`, a merge intent's reply IS a correlated frame carrying real
    * payload (`ServerMsg::MergeResult`'s `outcome`) — the same one-shot request/reply shape as
@@ -705,7 +972,7 @@ export class WsClient {
   /** Reject every in-flight correlated request (e.g. on disconnect/stop): the
    * request was sent on a socket that will not answer it, so fail fast rather
    * than wait out the timeout (which would also outlive the connection).
-   * @param reason Message for the `Error` every pending promise rejects with.
+   * @param reason Message for the `NotConnectedError` every pending promise rejects with.
    * @example
    * ```
    * // called from handleClose() / stop(); not part of the public API
@@ -715,7 +982,7 @@ export class WsClient {
   private failPending(reason: string): void {
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.pending.clear();
     // Live subscriptions are bound to this socket; a reconnect does not replay
@@ -723,7 +990,7 @@ export class WsClient {
     this.subscriptions.clear();
     for (const p of this.scenePending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.scenePending.clear();
     // Scene subscriptions are bound to this socket; WorldSession re-subscribes on
@@ -733,21 +1000,37 @@ export class WsClient {
     // is unknown, so reject rather than silently resolve.
     for (const p of this.chatPending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.chatPending.clear();
+    // Door toggles share the chat-op settle shape; same cleanup rule.
+    for (const p of this.doorPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new NotConnectedError(reason));
+    }
+    this.doorPending.clear();
+    for (const p of this.portalPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new NotConnectedError(reason));
+    }
+    this.portalPending.clear();
+    for (const p of this.placePending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new NotConnectedError(reason));
+    }
+    this.placePending.clear();
     // Combat intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
     for (const p of this.combatPending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.combatPending.clear();
     // Merge intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the combat-intent cleanup above).
     for (const p of this.mergePending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.mergePending.clear();
   }
@@ -794,6 +1077,33 @@ export class WsClient {
    */
   send(msg: ClientMsg): void {
     this.transport?.send(JSON.stringify(msg));
+  }
+
+  /** Random token naming this client instance, generated once and never persisted. It rides on
+   * every `ruler_update` and returns unchanged on the relayed `ruler` frame, so this client can
+   * tell the frame its own connection sent from the same user's frames sent by another
+   * connection. */
+  readonly rulerOrigin: string = randomUuid();
+
+  /** Send a `ruler_update` for `scene` carrying `rulerOrigin`. Fire-and-forget: the server
+   * relays the frame to every connection in the room, this one included. A list over
+   * `RULER_LIMITS.maxPoints` vertices, or a non-finite coordinate (JSON carries `NaN` and
+   * `Infinity` as `null`, which the server rejects as malformed), is answered with a generic
+   * `error` to this connection; a finite coordinate beyond `RULER_LIMITS.maxCoord`, an
+   * unreadable scene, an over-budget rate or an over-long `origin` is dropped silently.
+   * @param scene The scene the ruler is measured on.
+   * @param points The route preview's vertices in scene coordinates.
+   * @param active `false` ends this user's ruler for observers.
+   * @example
+   * ```ts
+   * import type { WsClient } from "@shadowcat/core";
+   *
+   * declare const client: WsClient;
+   * client.sendRulerUpdate("scene-1", [[0, 0], [70, 70]], true);
+   * ```
+   */
+  sendRulerUpdate(scene: string, points: [number, number][], active: boolean): void {
+    this.send({ type: "ruler_update", scene, points, active, origin: this.rulerOrigin });
   }
 
   /** Send a one-shot `PlayVfx` frame. Fire-and-forget: the server replies with nothing on
@@ -882,8 +1192,11 @@ export class WsClient {
 
   /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
    * the Welcome watchdog; on failure schedules a reconnect instead. `running_` is re-checked
-   * immediately after `opts.connect` resolves; a `stop()` call while the connect is pending
-   * closes and discards the resolved transport rather than adopting it unwatched.
+   * immediately after `opts.connect` resolves, together with `connGeneration`; a `stop()` call
+   * (or a `stop()` then `start()`) while the connect is pending closes and discards the resolved
+   * transport rather than adopting it unwatched. The transport's `onClose` acts only while its
+   * own generation is current, so a replaced transport's late close cannot tear down its
+   * successor.
    * Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
    * @returns Resolves once this attempt has either armed the watchdog or scheduled a retry.
    * @example
@@ -898,9 +1211,15 @@ export class WsClient {
     try {
       const transport = await this.opts.connect({
         onMessage: (d) => this.handleFrame(d, gen),
-        onClose: () => this.handleClose(),
+        // Same generation guard as the `welcome`/`resync_end` arms: a close event from a
+        // replaced transport must not tear down the current one.
+        onClose: () => {
+          if (gen === this.connGeneration) this.handleClose();
+        },
       });
-      if (!this.running_) {
+      // A `stop()` then `start()` while this connect was pending leaves `running_` true again
+      // but bumps `connGeneration`; the superseded attempt must not adopt its transport.
+      if (!this.running_ || gen !== this.connGeneration) {
         transport.close();
         return;
       }
@@ -922,16 +1241,21 @@ export class WsClient {
       // degraded server the watchdog exists to escape).
       this.armWelcomeWatchdog();
     } catch {
+      // A superseded attempt (stopped, or replaced by a later `open()`) that fails owns no
+      // state: a reconnect or a connect-failure report here would act on the current attempt.
+      if (!this.running_ || gen !== this.connGeneration) return;
       this.scheduleReconnect();
     }
   }
 
-  /** `Transport.onClose` handler: disarms the watchdog, clears `this.transport`, fails every
-   * in-flight correlated request with "connection closed", and — if still `running_` (not
-   * a `stop()`-triggered close) — schedules a reconnect. Not exported.
+  /** Close handling for the current connection: disarms the watchdog, clears `this.transport`,
+   * fails every in-flight correlated request with "connection closed", and — if still `running_`
+   * (not a `stop()`-triggered close) — schedules a reconnect. `open()` wires the transport's
+   * `onClose` to call this only while that transport's own generation equals `connGeneration`,
+   * so a replaced transport's late close never reaches it. Not exported.
    * @example
    * ```
-   * // wired as onClose: this.opts.connect({ onMessage, onClose: () => this.handleClose() })
+   * // wired in open(): onClose: () => { if (gen === this.connGeneration) this.handleClose(); }
    * this.handleClose();
    * ```
    */
@@ -949,7 +1273,10 @@ export class WsClient {
    * increments on every call and resets ONLY on a successful Welcome (`handleFrame`'s
    * `"welcome"` case), not on socket `open` — so a server that accepts the socket but never
    * welcomes keeps backing off across watchdog-close/reconnect cycles instead of retrying at
-   * the base delay forever. Not exported.
+   * the base delay forever. While this client has never been welcomed, each call also reports the
+   * failure run to `WsClientHandlers.onConnectFailure` (with the running count, starting at 1)
+   * before sleeping; after the first `welcome` it never does, so a mid-session drop is silent.
+   * Not exported.
    * @example
    * ```
    * // called from open()'s catch and from handleClose(); not part of the public API
@@ -958,6 +1285,9 @@ export class WsClient {
    */
   private scheduleReconnect(): void {
     const attempt = this.reconnectAttempt++;
+    if (!this.#hasEverWelcomed) {
+      this.safeEmit(() => this.opts.handlers.onConnectFailure?.(attempt + 1));
+    }
     const ceiling = Math.min(
       this.backoffMaxMs,
       this.backoffBaseMs * 2 ** attempt,
@@ -969,8 +1299,9 @@ export class WsClient {
   /** Parse (`parseServerMsg`, Zod-validated against `ServerMsgSchema` — malformed/unknown JSON
    * is silently dropped) and dispatch one inbound text frame by `msg.type`. `gen` is the
    * `connGeneration` this connection's `onMessage` closure was created with (stamped in
-   * `open()` before the connect `await`); ONLY the `"welcome"` and `"resync_end"` cases compare
-   * `gen !== this.connGeneration` and bail — every other frame type (`event`, `reject`,
+   * `open()` before the connect `await`); ONLY the `"welcome"`, `"resync_end"` and (for a
+   * join-refusing code) `"error"` cases compare `gen` against `this.connGeneration` — every
+   * other frame type (`event`, `reject`,
    * `move_stream`, chat/search/pathfind replies, etc.) acts regardless of generation, because
    * those either carry their own `request_id` correlation (dropped harmlessly if the requester
    * already gave up) or are idempotent/order-tolerant on the applied-seq watermark.
@@ -1001,6 +1332,7 @@ export class WsClient {
         // reset here so an accepted-but-degraded server (open, never welcomes)
         // keeps backing off instead of retrying at the base delay forever.
         this.reconnectAttempt = 0;
+        this.#hasEverWelcomed = true;
         this.serverOffsetMs = msg.server_time - this.now();
         this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
         // Catch up anything applied-after our watermark (initial sync or a
@@ -1035,6 +1367,20 @@ export class WsClient {
         this.send({ type: "pong" });
         break;
       case "error":
+        // A refused join is terminal, and only for the CURRENT connection before its own
+        // Welcome (same guard shape as the `welcome`/`resync_end` arms): an in-session
+        // `forbidden` (a refused fog reset, say) is not a refused join, and a frame from a
+        // superseded connection says nothing about this one. `internal` is transient and keeps
+        // the reconnect loop running.
+        if (
+          (msg.code === "world_not_found" || msg.code === "forbidden") &&
+          this.welcomedGeneration !== gen &&
+          gen === this.connGeneration
+        ) {
+          const refused = msg.code;
+          this.stop();
+          this.safeEmit(() => this.opts.handlers.onJoinRefused?.(refused));
+        }
         break;
       case "evicted":
         // Terminal: the server is deleting this world or account. Stop first
@@ -1083,7 +1429,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(new PathfindError(msg.message, msg.reason));
         }
         break;
       }
@@ -1110,6 +1456,8 @@ export class WsClient {
                 color: l.color,
                 intensity: l.intensity,
                 falloff: l.falloff,
+                angle: l.angle,
+                rotation: l.rotation,
                 polygons: l.polygons as [number, number][][],
               }))
             : null,
@@ -1134,7 +1482,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(refusalError(msg));
         }
         break;
       }
@@ -1149,13 +1497,61 @@ export class WsClient {
         }
         break;
       }
+      case "door_toggle_error": {
+        // A rejected door toggle: reject the correlated request so the clicking user gets
+        // the toast (the wording is already the role-appropriate one — uniform for a
+        // non-GM, diagnostic for a GM — applied server-side by `door_toggle_wire_message`).
+        const p = this.doorPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.doorPending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "place_effect_error": {
+        // A refused module placement: reject the correlated request with the server's
+        // role-conditioned wording (uniform for a non-GM).
+        const p = this.placePending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.placePending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "portal_choice_error": {
+        // A refused portal answer or re-open: reject the correlated request. `refusalError`
+        // maps the paused reason to `SessionPausedError`; every other refusal keeps the
+        // server's role-conditioned (uniform for a non-GM) wording.
+        const p = this.portalPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.portalPending.delete(msg.request_id);
+          p.reject(refusalError(msg));
+        }
+        break;
+      }
+      case "portal_offer":
+        this.safeEmit(() =>
+          this.opts.handlers.onPortalOffer?.({
+            offerId: msg.offer_id,
+            scene: msg.scene,
+            token: msg.token,
+            prompt: msg.prompt,
+            options: msg.options,
+            gmOnly: msg.gm_only,
+            owner: msg.owner,
+          }),
+        );
+        break;
       case "combat_error": {
         // A rejected combat intent: reject the correlated entry directly by request_id.
         const p = this.combatPending.get(msg.request_id);
         if (p) {
           clearTimeout(p.timer);
           this.combatPending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(refusalError(msg));
         }
         break;
       }
@@ -1213,6 +1609,49 @@ export class WsClient {
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
         );
         break;
+      case "ruler":
+        this.safeEmit(() =>
+          this.opts.handlers.onRuler?.({
+            from: msg.from,
+            scene: msg.scene,
+            points: msg.points,
+            active: msg.active,
+            origin: msg.origin,
+          }),
+        );
+        break;
+      case "explored_fog_reset":
+        this.safeEmit(() =>
+          this.opts.handlers.onExploredFogReset?.({ scene: msg.scene, user: msg.user, level: msg.level }),
+        );
+        break;
+      case "modules_changed":
+        this.safeEmit(() => this.opts.handlers.onModulesChanged?.());
+        break;
+      case "presence":
+        this.safeEmit(() => this.opts.handlers.onPresence?.(msg.user, msg.online));
+        break;
+      case "member_profile":
+        this.safeEmit(() =>
+          this.opts.handlers.onMemberProfile?.({
+            user: msg.user,
+            username: msg.username,
+            colour: msg.colour,
+            pronouns: msg.pronouns,
+            hasAvatar: msg.has_avatar,
+          }),
+        );
+        break;
+      case "scrolling_text":
+        this.safeEmit(() =>
+          this.opts.handlers.onScrollingText?.({
+            scene: msg.scene,
+            token: msg.token,
+            text: msg.text,
+            gmOnly: msg.gm_only,
+          }),
+        );
+        break;
       case "audio_error":
         this.safeEmit(() => this.opts.handlers.onAudioError?.(msg.reason));
         break;
@@ -1223,6 +1662,11 @@ export class WsClient {
             scale: msg.scale, rotation: msg.rotation, durationMs: msg.duration_ms,
             sound: msg.sound, elevation: msg.elevation, id: msg.id,
           }),
+        );
+        break;
+      case "present_note":
+        this.safeEmit(() =>
+          this.opts.handlers.onPresentNote?.({ noteId: msg.note_id, presentedBy: msg.presented_by }),
         );
         break;
       case "scene_derived": {
@@ -1274,16 +1718,16 @@ export class WsClient {
    * ```
    */
   search(query: string, opts: WsSearchOptions = {}): Promise<SearchPage> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SearchPage>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("search request timeout"));
+        reject(new RequestTimeoutError("search request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({
@@ -1326,18 +1770,18 @@ export class WsClient {
     opts: WsSubscribeSearchOptions,
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SubscriptionHandle>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       this.subscriptions.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         this.subscriptions.delete(request_id);
-        reject(new Error("subscribe request timeout"));
+        reject(new RequestTimeoutError("subscribe request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, {
         resolve: (page) => {
@@ -1391,18 +1835,18 @@ export class WsClient {
     onUpdate: (frame: SceneFrame) => void,
     opts: WsSubscribeSceneOptions = {},
   ): Promise<SceneSubscription> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SceneSubscription>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       this.sceneSubs.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.scenePending.delete(request_id);
         this.sceneSubs.delete(request_id);
-        reject(new Error("scene subscribe timeout"));
+        reject(new RequestTimeoutError("scene subscribe timeout"));
       }, timeoutMs);
       this.scenePending.set(request_id, { resolve, reject, timer });
       // `as_user` (GM-only see-as-player) and `level` are omitted unless set; the server
@@ -1456,16 +1900,16 @@ export class WsClient {
     token?: string,
     opts: WsTimeoutOptions = {},
   ): Promise<PathResult> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<PathResult>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("pathfind request timeout"));
+        reject(new RequestTimeoutError("pathfind request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({
@@ -1510,16 +1954,16 @@ export class WsClient {
     path: [number, number][],
     opts: WsTimeoutOptions = {},
   ): Promise<MoveStream> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<MoveStream>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("move_request timeout"));
+        reject(new RequestTimeoutError("move_request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
@@ -1561,6 +2005,24 @@ export class WsClient {
    */
   audioListenAs(token: string | null): void {
     this.send({ type: "audio_listen_as", token });
+  }
+
+  /**
+   * GM-only: purge explored-fog memory for `scene`, optionally narrowed to one user and/or
+   * one level. Fire-and-forget on the wire: there is no correlated success reply (the
+   * `explored_fog_reset` broadcast — delivered to every connection, including this one — is
+   * the confirmation); a refusal arrives as a generic `onError`.
+   * @param scene The scene whose explored memory is reset.
+   * @param opts Optionally narrow the reset to one `user` and/or one `level`.
+   * @example
+   * ```ts
+   * declare const client: WsClient;
+   * client.resetExploredFog("scene-1");
+   * client.resetExploredFog("scene-1", { user: "player-1" });
+   * ```
+   */
+  resetExploredFog(scene: string, opts?: ResetExploredFogOptions): void {
+    this.send({ type: "reset_explored_fog", scene, user: opts?.user, level: opts?.level });
   }
 
   /**
@@ -1607,21 +2069,7 @@ export class WsClient {
    * ```
    */
   private trackChatOp(request_id: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.chatPending.delete(request_id);
-        resolve();
-      }, CHAT_ERROR_WINDOW_MS);
-      // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
-      // call reaches it where present without taking a `@types/node` dependency.
-      (
-        timer as unknown as {
-          /** Node-only: detach the timer from keeping the event loop alive. */
-          unref?: () => void;
-        }
-      ).unref?.();
-      this.chatPending.set(request_id, { resolve, reject, timer });
-    });
+    return this.awaitSilence(this.chatPending, request_id);
   }
 
   /**
@@ -1649,7 +2097,7 @@ export class WsClient {
    * ```
    */
   sendChatMessage(opts: ChatSendOptions): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({
       type: "send_message",
@@ -1658,6 +2106,7 @@ export class WsClient {
       content: opts.content,
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
+      ...(opts.system !== undefined ? { system: opts.system } : {}),
     });
     return p;
   }
@@ -1681,7 +2130,7 @@ export class WsClient {
    * ```
    */
   editChatMessage(messageId: string, content: string): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "edit_message", request_id, message_id: messageId, content });
     return p;
@@ -1705,7 +2154,7 @@ export class WsClient {
    * ```
    */
   deleteChatMessage(messageId: string): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "delete_message", request_id, message_id: messageId });
     return p;
@@ -1731,9 +2180,35 @@ export class WsClient {
    * ```
    */
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "recalc_roll", request_id, message_id: messageId, roll_id: rollId, ops });
+    return p;
+  }
+
+  /** GM-only reveal or conceal of a stored message. Resolves/rejects like
+   * `sendChatMessage`; the server rejects a non-GM sender, an unknown or deleted
+   * message, or a whisper naming a non-member via a correlated `chat_error`.
+   * @param messageId The message whose audience changes.
+   * @param audience The replacement readership.
+   * @returns Resolves (void) once the revision is accepted; rejects with the
+   * server's player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.reviseAudience("msg-1", { kind: "public" });
+   * ```
+   */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "revise_audience", request_id, message_id: messageId, audience });
     return p;
   }
 
@@ -1756,7 +2231,7 @@ export class WsClient {
    * ```
    */
   drawTable(opts: DrawTableOptions): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({
       type: "draw_table",
@@ -1767,6 +2242,216 @@ export class WsClient {
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
     });
+    return p;
+  }
+
+  /** GM-only: ask the server to tell every connected client to open a shared note. Resolves/
+   * rejects like `sendChatMessage`; a refusal (not a GM, unknown note, note not shared with
+   * players, rate limit) rejects via a correlated `chat_error`.
+   * @param noteId The `note` document to present.
+   * @returns Resolves (void) once the request is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.presentNote("note-1");
+   * ```
+   */
+  presentNote(noteId: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "present_note", request_id, note_id: noteId });
+    return p;
+  }
+
+  /** Register a correlated door toggle: resolves (success-assumed) when no
+   * `door_toggle_error` arrives within the window, rejects with the server's reason when one
+   * does — the same asymmetric settle shape as `trackChatOp` (success is the broadcast Event
+   * echo, which carries no `request_id` correlation).
+   * @param request_id The toggle's correlation id (already sent on the wire by the caller).
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no error; rejects immediately
+   * if a matching `door_toggle_error` arrives first.
+   * @example
+   * ```
+   * // called from toggleDoor; not part of the public API
+   * declare const request_id: string;
+   * const p = this.trackDoorToggle(request_id);
+   * ```
+   */
+  private trackDoorToggle(request_id: string): Promise<void> {
+    return this.trackSilenceSettled(this.doorPending, request_id);
+  }
+
+  /** Register a correlated request whose only reply is a refusal: resolves (success-assumed)
+   * when the silence window elapses, rejects when the matching refusal frame settles the entry
+   * in `pending`. With no open transport the frame cannot be sent, so it rejects at once with
+   * `NotConnectedError` instead of resolving success after the window. The shared body of
+   * `trackDoorToggle`, `choosePortal`, `openPortal` and `placeEffect`.
+   * @param pending The map the request is registered in, keyed by `request_id`.
+   * @param request_id The request's correlation id (already sent on the wire by the caller).
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no refusal; rejects when the
+   * refusal handler rejects the entry, or immediately when there is no transport.
+   * @example
+   * ```
+   * // called from trackDoorToggle; not part of the public API
+   * declare const request_id: string;
+   * const p = this.trackSilenceSettled(this.doorPending, request_id);
+   * ```
+   */
+  private trackSilenceSettled(pending: SilencePending, request_id: string): Promise<void> {
+    if (!this.transport) return Promise.reject(new NotConnectedError());
+    return this.awaitSilence(pending, request_id);
+  }
+
+  /** Register `request_id` in `pending` and settle it by silence: the entry resolves once the
+   * window elapses with no refusal, and a refusal or a disconnect rejects it through the stored
+   * `reject`. The timer is unref'd where supported so it never keeps a test's event loop alive.
+   * The one body behind `trackChatOp` and `trackSilenceSettled`.
+   * @param pending The map the request is registered in, keyed by `request_id`.
+   * @param request_id The request's correlation id.
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no refusal; rejects when the
+   * refusal handler or a disconnect rejects the entry.
+   * @example
+   * ```
+   * // called from trackChatOp and trackSilenceSettled; not part of the public API
+   * declare const request_id: string;
+   * const p = this.awaitSilence(this.chatPending, request_id);
+   * ```
+   */
+  private awaitSilence(pending: SilencePending, request_id: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(request_id);
+        resolve();
+      }, CHAT_ERROR_WINDOW_MS);
+      // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
+      // call reaches it where present without taking a `@types/node` dependency.
+      (
+        timer as unknown as {
+          /** Node-only: detach the timer from keeping the event loop alive. */
+          unref?: () => void;
+        }
+      ).unref?.();
+      pending.set(request_id, { resolve, reject, timer });
+    });
+  }
+
+  /** Answer a portal offer: pick destination `choice` or decline with `null`. Silence-based
+   * success like `toggleDoor`: the broadcast Event of the teleport's commit confirms an accept
+   * and a decline replies nothing; only a refusal replies (`portal_choice_error`), rejecting
+   * with the server's reason (`SessionPausedError` when the session pause refused the accept).
+   * @param offerId The offer being answered (`PortalOfferNotice.offerId`).
+   * @param choice The chosen option's `index`, or `null` to decline.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.choosePortal("offer-1", 0);
+   * ```
+   */
+  choosePortal(offerId: string, choice: number | null): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.portalPending, request_id);
+    this.send({ type: "choose_portal", request_id, offer_id: offerId, choice });
+    return p;
+  }
+
+  /** Ask the server to re-issue the offer for a token standing in a portal-choice region. The
+   * offer arrives through `WsClientHandlers.onPortalOffer`; a refusal rejects with the server's
+   * reason like `choosePortal`.
+   * @param token The token that stands in the portal region.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.openPortal("token-1");
+   * ```
+   */
+  openPortal(token: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.portalPending, request_id);
+    this.send({ type: "open_portal", request_id, token });
+    return p;
+  }
+
+  /** Request a door toggle on the named wall. Resolves/rejects like `sendChatMessage`:
+   * silence-based success, a correlated `door_toggle_error` rejects with the server's reason
+   * (uniform "door rejected" for a non-GM — the refusal class is deliberately not
+   * disclosed). The server authorizes positionally (reach + visibility, or GM standing); the
+   * client-side reach pre-check in the scene-tools select tool is advisory UX only, never
+   * the authority.
+   * @param sceneId The scene the wall is on (checked server-side against the wall's own
+   * parent, never trusted to select).
+   * @param wallId The wall whose door state flips.
+   * @param to The target state (`closed`/`open`; `locked` is GM-only).
+   * @returns Resolves (void) once the toggle is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.toggleDoor("scene-1", "wall-1", "open");
+   * ```
+   */
+  toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackDoorToggle(request_id);
+    this.send({ type: "toggle_door", request_id, scene_id: sceneId, wall_id: wallId, to });
+    return p;
+  }
+
+  /** Ask the server to place a module-declared effect over an area. Silence-based success like
+   * `toggleDoor`: the broadcast Event of the region create confirms it and only a refusal replies
+   * (`place_effect_error`), rejecting with the server's reason (uniform "placement rejected" for
+   * a non-GM). The frame carries the area and the caster only; the effect set is the module
+   * manifest's, applied by the server, so no client input can choose what a placement does.
+   * @param module The installed module's folder id that declares the placement.
+   * @param placement The placement declaration id within that module.
+   * @param sceneId The scene the region is created on.
+   * @param shape The area the player chose, scene units.
+   * @param caster The caster token id, required when the declaration's `who` is `caster_owner`.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.placeEffect("spells", "fireball", "scene-1", { kind: "circle", points: [0, 0, 3] }, "token-1");
+   * ```
+   */
+  placeEffect(module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.placePending, request_id);
+    this.send({ type: "place_effect", request_id, module, placement, scene_id: sceneId, shape, ...(caster ? { caster } : {}) });
     return p;
   }
 
@@ -1791,7 +2476,7 @@ export class WsClient {
    *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
-   * await client.combat({ type: "combat_advance", request_id: crypto.randomUUID(), combat_id: "c1" });
+   * await client.combat({ type: "combat_advance", request_id: randomUuid(), combat_id: "c1" });
    * ```
    */
   combat(
@@ -1807,12 +2492,12 @@ export class WsClient {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<void>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.combatPending.delete(msg.request_id);
-        reject(new Error("combat request timeout"));
+        reject(new RequestTimeoutError("combat request timeout"));
       }, timeoutMs);
       this.combatPending.set(msg.request_id, { resolve, reject, timer, seq: null });
       this.send(msg);
@@ -1822,7 +2507,7 @@ export class WsClient {
   /**
    * Send one of the three merge intent frames (`merge_pull`/`merge_push`/`merge_revert`).
    * Resolves with the correlated `merge_result`'s `WireMergeOutcome`; rejects with a
-   * `MergeIntentError` on a correlated `merge_error`, or a plain `Error` on timeout/disconnect.
+   * `MergeIntentError` on a correlated `merge_error`, or a `RequestTimeoutError` on timeout / `NotConnectedError` on disconnect.
    * A one-shot correlated request/reply, the same shape as `pathfind`/`search` — unlike
    * `combat`/chat ops, the reply carries the actual computed outcome rather than confirming via
    * the broadcast `event` echo.
@@ -1838,7 +2523,7 @@ export class WsClient {
    *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
-   * await client.merge({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: "c1" });
+   * await client.merge({ type: "merge_revert", request_id: randomUuid(), child_id: "c1" });
    * ```
    */
   merge(
@@ -1854,12 +2539,12 @@ export class WsClient {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<WireMergeOutcome>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.mergePending.delete(msg.request_id);
-        reject(new Error("merge request timeout"));
+        reject(new RequestTimeoutError("merge request timeout"));
       }, timeoutMs);
       this.mergePending.set(msg.request_id, { resolve, reject, timer });
       this.send(msg);

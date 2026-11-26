@@ -34,7 +34,7 @@ test("a click on empty canvas places a light with the documented defaults", () =
     expect(op.doc.engine).toMatchObject({
       x: 103,
       y: 48,
-      emission: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+      emission: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
     });
   }
 });
@@ -45,7 +45,7 @@ test("clicking a light marker selects it into the shared editing selection (no i
     x: 200,
     y: 200,
     elevation: null,
-    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
   expect(tool.onPointerDown({ x: 200, y: 200 }, ev)).toBe(true);
@@ -61,7 +61,7 @@ test("dragging a selected light repositions it with the raw stored position as O
     x: 200,
     y: 200,
     elevation: null,
-    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
   expect(tool.onPointerDown({ x: 200, y: 200 }, ev)).toBe(true);
@@ -94,7 +94,7 @@ test("a light out of marker tolerance is not picked (a click beside it places in
     x: 200,
     y: 200,
     elevation: null,
-    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+    emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
   expect(tool.onPointerDown({ x: 200, y: 300 }, ev)).toBe(true); // 100 units away

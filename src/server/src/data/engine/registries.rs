@@ -1,13 +1,15 @@
-//! Singleton config-document engine bands: `channel-registry`,
-//! `faction-registry`, `condition-registry`, `chat-settings`, `dice-settings`.
-//! Field shapes mirror the client's re-exported `Channel`, `FactionStance`,
-//! `Faction`, `Condition`, `ChatSettingsEngine`, `DiceSettingsEngine`, and
-//! `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value type).
+//! This module defines the engine bands of the singleton config documents.
 //!
-//! `chat::settings::ChatContentPolicy` is a type alias onto
-//! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`
-//! directly. Both bodies live on the `engine` band, ingress-validated same as
-//! every other engine-defined doc_type (see `chat::settings::ChatContentPolicy`).
+//! The doc_types are `channel-registry`, `faction-registry`, `condition-registry`, `chat-settings`
+//! and `dice-settings`.
+//!
+//! The client's `Channel`, `FactionStance`, `Faction`, `Condition`, `ChatSettingsEngine`,
+//! `DiceSettingsEngine` and `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value
+//! type) are the TypeScript types generated from these structs and enums.
+//!
+//! `chat::settings::ChatContentPolicy` is a type alias onto `ChatSettingsEngine`, and
+//! `chat::settings::resolve_dice_context` reads `DiceSettingsEngine` directly. Both bodies live on
+//! the `engine` band, ingress-validated like every other engine-defined doc_type.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -22,7 +24,7 @@ use uuid::Uuid;
 
 use super::MAX_CHANNEL_CHARS;
 
-/// A chat channel's display config (mirrors the client's `Channel`).
+/// A chat channel's display config (exported to the client as `Channel`).
 ///
 /// # Examples
 ///
@@ -117,7 +119,7 @@ impl ChannelRegistryEngine {
     }
 }
 
-/// A faction's stance toward the party (mirrors the client's `FactionStance`).
+/// A faction's stance toward the party (exported to the client as `FactionStance`).
 ///
 /// # Examples
 ///
@@ -139,7 +141,7 @@ pub enum FactionStance {
     Hostile,
 }
 
-/// A faction's display + stance (mirrors the client's `Faction`). `color`
+/// A faction's display + stance (exported to the client as `Faction`). `color`
 /// is "#rrggbb" (the token border color).
 ///
 /// # Examples
@@ -212,9 +214,8 @@ impl FactionRegistryEngine {
         Ok(())
     }
 
-    /// Default three-faction world seed (friendly / neutral / hostile). The
-    /// engine definition — the client's faction UI mirrors these ids and
-    /// colors rather than declaring its own seed.
+    /// Default three-faction world seed (friendly / neutral / hostile); the
+    /// client declares no seed of its own.
     ///
     /// # Examples
     ///
@@ -258,7 +259,7 @@ impl FactionRegistryEngine {
     }
 }
 
-/// A status condition's display (mirrors the client's `Condition`). `icon`
+/// A status condition's display (exported to the client as `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
 ///
 /// # Examples
@@ -266,8 +267,9 @@ impl FactionRegistryEngine {
 /// ```
 /// use shadowcat::data::engine::Condition;
 ///
-/// let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None };
+/// let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None, overlay: false };
 /// assert!(condition.fx.is_none()); // no built-in token-art effect declared
+/// assert!(!condition.overlay); // renders as a badge chip only
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -284,6 +286,12 @@ pub struct Condition {
     #[serde(default)]
     #[ts(optional)]
     pub fx: Option<ConditionFx>,
+    /// `true` marks the condition as an overlay: the first overlay condition in a token's
+    /// effective condition order also renders as one large centered glyph over the token, in
+    /// addition to its badge chip. Presentational only — the server never reads it. Absent =
+    /// `false`.
+    #[serde(default)]
+    pub overlay: bool,
 }
 
 impl Condition {
@@ -365,7 +373,8 @@ impl ConditionRegistryEngine {
     }
 
     /// Default nine-condition emoji-glyph world seed. The engine definition —
-    /// the client's conditions UI renders whatever the registry holds.
+    /// the client's conditions UI renders whatever the registry holds. `dead` and
+    /// `unconscious` carry `overlay: true` (drawn over the token art); the rest are badges.
     ///
     /// # Examples
     ///
@@ -375,6 +384,8 @@ impl ConditionRegistryEngine {
     /// let s = ConditionRegistryEngine::seed();
     /// assert_eq!(s.conditions.len(), 9);
     /// assert_eq!(s.conditions["dead"].icon, "💀");
+    /// assert!(s.conditions["dead"].overlay && s.conditions["unconscious"].overlay);
+    /// assert!(!s.conditions["prone"].overlay);
     /// ```
     pub fn seed() -> Self {
         let entries: [(&str, &str, &str); 9] = [
@@ -396,6 +407,7 @@ impl ConditionRegistryEngine {
                     name: name.to_string(),
                     icon: icon.to_string(),
                     fx: None,
+                    overlay: matches!(id, "dead" | "unconscious"),
                 },
             );
         }
@@ -403,7 +415,26 @@ impl ConditionRegistryEngine {
     }
 }
 
-/// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).
+/// The engine body of the world's singleton `module-settings` document. The band is intentionally
+/// empty: every module's world-scoped settings live in the document's opaque `system` band, keyed
+/// by module id at the top level, so the server never interprets them.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::ModuleSettingsEngine;
+///
+/// let engine: ModuleSettingsEngine = serde_json::from_value(serde_json::json!({})).unwrap();
+/// assert_eq!(engine, ModuleSettingsEngine {});
+/// // deny_unknown_fields: a smuggled key is rejected, fail-closed.
+/// assert!(serde_json::from_value::<ModuleSettingsEngine>(serde_json::json!({ "x": 1 })).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ModuleSettingsEngine {}
+
+/// GM-configured chat content policy (exported to the client as `ChatSettingsEngine`).
 /// Every field optional/absent-safe; a partial body is a valid engine band.
 ///
 /// # Examples
@@ -433,6 +464,15 @@ pub struct ChatSettingsEngine {
     /// `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
     /// an explicit GM override.
     pub link_previews: Option<bool>,
+    /// Whether players who are not party to a blind roll a player made still see that it
+    /// happened (a card saying a blind roll was made, never its formula or result). It never
+    /// applies to a GM's blind roll. Absent means `false`: the message is invisible to every
+    /// player except its roller; the GM always sees it.
+    pub blind_visible_to_players: Option<bool>,
+    /// Whether the owner of the actor a GM's blind roll is attributed to sees that the roll
+    /// happened. It is the only setting that shows a GM's blind roll to a player. Absent means
+    /// `false`.
+    pub blind_visible_to_actor_owner: Option<bool>,
 }
 
 /// World-default dice aggregation mode (`DiceSettingsEngine.mode`).
@@ -504,10 +544,10 @@ pub struct ChannelDiceOverride {
     pub direction: DiceDirectionSetting,
 }
 
-/// GM-configured ambient dice-notation context (mirrors the client's
+/// GM-configured ambient dice-notation context (exported to the client as
 /// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
 /// or absent body fills the rest with the safe default (Total + HighWins,
-/// empty `channel_overrides`).
+/// empty `channel_overrides`, no `sound`).
 ///
 /// # Examples
 ///
@@ -533,8 +573,8 @@ pub struct DiceSettingsEngine {
     /// independently-optional fields (see `ChannelDiceOverride`'s doc).
     #[serde(default)]
     pub channel_overrides: BTreeMap<String, ChannelDiceOverride>,
-    /// The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, wired
-    /// through `ctx.audio.playOneShot` once `AudioApi` exists); `None` = silent.
+    /// The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, played
+    /// through `AudioApi.playOneShot`); `None` = silent.
     /// A bare `Uuid` like every other asset reference in `chat::mod` (e.g.
     /// `Segment::Image::asset_id`) — no separate existence check at this layer, the asset
     /// endpoint 404s on a dangling id the same way an image segment's would.
@@ -544,10 +584,10 @@ pub struct DiceSettingsEngine {
 }
 
 impl DiceSettingsEngine {
-    /// Ingress validation beyond serde shape. Today `sound` is a bare `Uuid` — already
-    /// exhaustively checked by the type itself — so this always succeeds; it exists as the
-    /// home for the next `DiceSettingsEngine` field that needs a runtime check, the same
-    /// reason `ChannelRegistryEngine`/`ConditionRegistryEngine` each carry one.
+    /// Ingress validation beyond serde shape. `sound` is a bare `Uuid`, fully checked by the
+    /// type itself, so this always succeeds; it exists as the home for the next
+    /// `DiceSettingsEngine` field that needs a runtime check, the same reason
+    /// `ChannelRegistryEngine`/`ConditionRegistryEngine` each carry one.
     ///
     /// # Examples
     ///

@@ -1,6 +1,7 @@
-//! Live search subscriptions over real WS clients against an ephemeral in-process
-//! server. A subscriber receives `search_update` when a matching readable doc
-//! appears, and never receives a document it cannot read (no-op suppressed).
+//! Live search subscriptions over real WS clients against an ephemeral in-process server.
+//!
+//! A subscriber receives `search_update` when a matching readable doc appears, and never receives a
+//! document it cannot read (no-op suppressed).
 //!
 //! The harness prelude mirrors `ws_convergence` (each `tests/*.rs` is its own
 //! crate, so the helpers are replicated rather than imported).
@@ -47,6 +48,13 @@ async fn spawn() -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::new(
+            std::env::temp_dir(),
+            shadowcat::trash::TrashRetention::Disabled,
+        )),
     };
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -227,6 +227,33 @@ test("draw a wall via the tool rail; the wall renders", async ({
   });
 });
 
+test("vertex snap mode lands a dragged wall's endpoints on grid vertices", async ({
+  page,
+  account,
+}) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Vertex Snap World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+
+  // The seeded scene is square/100 and the default camera is 1:1, so canvas-local pixels
+  // are scene units: the press at (105,98) sits just off the (100,100) vertex, and the
+  // release at (298,104) just off (300,100).
+  await page.getByTestId("snap-mode-toggle").click();
+  await page.getByTestId("tool-wall").click();
+  await dragScenePath(page, { x: 105, y: 98 }, [{ x: 298, y: 104 }], 3);
+  await expect(host).toHaveAttribute("data-wall-count", "1", {
+    timeout: 15_000,
+  });
+  // Both endpoints resolved to the nearest cell VERTEX — under the default center mode the
+  // same drag would have stored the two cell centers (150,50)>(250,150) instead.
+  await expect(host).toHaveAttribute("data-wall-segments", "100,100>300,100");
+});
+
 test("the vision SceneDerived channel reaches the mask slot (GM mode=all)", async ({
   page,
   account,

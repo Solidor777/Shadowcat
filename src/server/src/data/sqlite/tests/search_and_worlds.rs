@@ -1,7 +1,8 @@
-//! FTS index sync and search-result redaction/pagination, world capability
-//! requirements and enabled-module sets, admin/user-account setup, world
-//! creation/membership/permission-context resolution, and world export/import
-//! round trips through a tar bundle.
+//! These tests cover search, worlds and accounts in the SQLite repository.
+//!
+//! They check FTS index sync and search-result redaction/pagination, world capability requirements
+//! and enabled-module sets, admin/user-account setup, world creation/membership/permission-context
+//! resolution, and world export/import, including a round trip through a tar bundle.
 
 use super::*;
 
@@ -426,6 +427,73 @@ async fn search_score_unaffected_by_gm_only_match_non_gm() {
         plain_hit.score, hidden_hit.score,
         "GM-only text repeating the query term shifted a non-GM searcher's score"
     );
+}
+
+#[tokio::test]
+async fn search_never_matches_recipients_tiered_text_for_anyone() {
+    // The public partition is built once per document from a viewer-less
+    // `Access`, so text under a `Visibility::Recipients` tier is absent from
+    // it for every searcher, including a listed recipient and the GM.
+    use crate::auth::role::ServerRole;
+    use crate::data::command::Operation;
+    use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let alice = r
+        .create_user("alice", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let alice_ctx = PermissionContext {
+        user_id: alice,
+        world_role: WorldRole::Player,
+    };
+
+    let mut d = tests_doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "name": "Wolf Pack", "whisper": "zzquux" }),
+    );
+    d.scope = Scope::World { world_id: w.id };
+    d.permissions.property_overrides.insert(
+        "/system/whisper".into(),
+        Visibility::Recipients {
+            recipients: vec![alice],
+        },
+    );
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: d.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    for (who, ctx) in [("alice", &alice_ctx), ("gm", &gm_ctx)] {
+        let page = r.search(ctx, w.id, "zzquux", 10, None, &[]).await.unwrap();
+        assert!(
+            page.hits.is_empty(),
+            "{who} matched recipient-only text through search"
+        );
+    }
+    let control = r
+        .search(&alice_ctx, w.id, "wolf", 10, None, &[])
+        .await
+        .unwrap();
+    assert_eq!(control.hits.len(), 1, "the document itself must be found");
 }
 
 #[tokio::test]
@@ -884,6 +952,23 @@ async fn user_by_username_and_admin_exists() {
 }
 
 #[tokio::test]
+async fn user_by_id_matches_user_by_username_and_misses_unknown_ids() {
+    use crate::auth::role::ServerRole;
+    let r = repo().await;
+    let id = r
+        .create_user("user-one", Some("phc-hash"), ServerRole::User, 100)
+        .await
+        .unwrap();
+    let by_id = r.user_by_id(id).await.unwrap().unwrap();
+    let by_name = r.user_by_username("user-one").await.unwrap().unwrap();
+    assert_eq!(by_id.id, by_name.id);
+    assert_eq!(by_id.username, by_name.username);
+    assert_eq!(by_id.password_hash, by_name.password_hash);
+    assert_eq!(by_id.server_role, ServerRole::User);
+    assert!(r.user_by_id(Uuid::new_v4()).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn settings_get_set_round_trip() {
     let r = repo().await;
     assert!(r.get_setting("k").await.unwrap().is_none());
@@ -1204,8 +1289,12 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
     assert_ne!(target_owner, owner);
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    let summary = target.import_world(import_data).await.unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     assert_eq!(summary.world_id, w.id);
     assert_eq!(summary.skipped_members, 0);
@@ -1348,7 +1437,10 @@ async fn import_world_nulls_owner_when_username_unresolvable() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     // `gm4` (the sole world_members row) also doesn't exist on target.
     assert_eq!(summary.skipped_members, 1);
 
@@ -1392,7 +1484,10 @@ async fn import_world_rejects_world_id_collision_before_writing_any_row() {
         staged_siblings: vec![],
     };
 
-    let err = r.import_world(import_data).await.unwrap_err();
+    let err = r
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Conflict(_)));
 
     // Zero partial state: still exactly the one original document, not two.
@@ -1458,7 +1553,10 @@ async fn import_world_rejects_duplicate_singleton_document_before_writing_any_ro
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Conflict(_)));
 
     // Zero partial state: the whole transaction (including the `worlds`
@@ -1511,7 +1609,10 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.skipped_fog, 1);
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM explored_fog WHERE world_id = ?")
@@ -1520,6 +1621,38 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+/// The shared/pooled fog mode's entire migration-freedom mechanism: `set_explored`/
+/// `get_explored` need zero code change to serve the reserved `Uuid::nil()` sentinel key — they
+/// already accept a bare `Uuid`, and `explored_fog`'s primary key is unchanged.
+#[tokio::test]
+async fn set_and_get_explored_under_the_nil_sentinel_key_round_trips() {
+    let r = repo().await;
+    let world = uuid::Uuid::new_v4();
+    let scene = uuid::Uuid::new_v4();
+    r.set_explored(world, scene, "", uuid::Uuid::nil(), &[7, 8, 9])
+        .await
+        .unwrap();
+    assert_eq!(
+        r.get_explored(scene, "", uuid::Uuid::nil()).await.unwrap(),
+        Some(vec![7, 8, 9])
+    );
+    // A real user id stored alongside the sentinel is a distinct row -- confirms the sentinel
+    // does not collide with, or shadow, any real user's own explored memory.
+    let real_user = uuid::Uuid::new_v4();
+    r.set_explored(world, scene, "", real_user, &[1, 2, 3])
+        .await
+        .unwrap();
+    assert_eq!(
+        r.get_explored(scene, "", uuid::Uuid::nil()).await.unwrap(),
+        Some(vec![7, 8, 9]),
+        "the sentinel row is unaffected by a real user's own row"
+    );
+    assert_eq!(
+        r.get_explored(scene, "", real_user).await.unwrap(),
+        Some(vec![1, 2, 3])
+    );
 }
 
 #[tokio::test]
@@ -1572,7 +1705,10 @@ async fn import_world_inserts_world_invites_row() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    target.import_world(import_data).await.unwrap();
+    target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     let row: (String, String, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT secret_hash, role, created_by, consumed_by FROM world_invites WHERE id = ?",
@@ -1599,7 +1735,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
     // `/owner` is a structural envelope field, not one of the four
     // content bands `redaction_target` classifies — the same pointer
     // `redaction_target_refuses_every_structural_envelope_field` pins in
-    // `permission.rs`.
+    // the `permission` module.
     doc.permissions.property_overrides.insert(
         "/owner".to_string(),
         crate::data::document::Visibility::GmOnly,
@@ -1644,7 +1780,10 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::BadPath(_)));
 
     // Transaction did not commit: neither the world nor its document exist.
@@ -1665,7 +1804,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
 /// `import_world` runs `validate_document_id_tree` over every row (a bundle is untrusted
 /// input, same posture as a live Create/Update) -- a row whose document carries a v1-shaped
 /// (time-based) id is rejected before anything is written, mirroring the wire-level Create
-/// rejection `tests/document_id_and_name_ingress.rs` pins for a live connection.
+/// rejection the document id and name ingress tests pin for a live connection.
 #[tokio::test]
 async fn import_world_rejects_a_document_with_a_non_v4_v7_id() {
     let src = repo().await;
@@ -1720,7 +1859,10 @@ async fn import_world_rejects_a_document_with_a_non_v4_v7_id() {
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, DataError::OpFailed(ref m) if m.contains("v4 or v7")),
         "a bundle row with a non-v4/v7 id must be rejected, got {err:?}"
@@ -1837,13 +1979,17 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
         .await
         .unwrap();
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
     assert_eq!(
         import_data.staged_siblings.len(),
         1,
         "only the thumb travelled"
     );
-    target.import_world(import_data).await.unwrap();
+    target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     let got = target.get_asset(asset_id).await.unwrap().unwrap();
     assert_eq!(got.folder_id, Some(folder.id));
@@ -1967,7 +2113,10 @@ async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-cycle", vec![a, b]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Sqlx(_)));
 
     let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
@@ -1997,7 +2146,10 @@ async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-dup-id", vec![first, second, child]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     match &err {
         DataError::OpFailed(m) => assert!(
             m.contains(&dup_id.to_string()),
@@ -2029,7 +2181,10 @@ async fn import_world_rejects_a_self_parented_note() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-self", vec![note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::OpFailed(m) if m == "document cannot be its own parent"));
 
     let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
@@ -2055,7 +2210,10 @@ async fn import_world_rejects_a_note_parented_to_an_actor() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-wrong-type", vec![actor, note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "note parent must be a note in the same world")
     );
@@ -2084,7 +2242,10 @@ async fn import_world_rejects_a_parented_combat_document() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-combat", vec![parent, combat]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "a combat document cannot have a parent")
     );
@@ -2121,7 +2282,10 @@ async fn import_world_accepts_a_child_note_sorting_before_its_parent() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-order", vec![child.clone(), parent]);
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.world_id, world_id);
 
     let stored_parent: Option<String> =
@@ -2151,7 +2315,10 @@ async fn import_world_accepts_a_valid_asset_folder_tree() {
     // Child listed before its parent, same ordering hazard as the note test
     // above, over the OTHER doc_type `check_parent_placement` covers.
     let import_data = placement_import_data(world_id, "gm-folders", vec![child, root]);
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.world_id, world_id);
 
     let stored_parent: Option<String> =
@@ -2187,7 +2354,10 @@ async fn import_world_rejects_a_document_whose_own_scope_names_a_different_world
     };
 
     let import_data = placement_import_data(world_id, "gm-scope-orphan", vec![note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
     );
@@ -2231,7 +2401,10 @@ async fn import_world_rejects_when_only_the_parent_document_has_a_foreign_scope(
     let child = note_doc(202, world_id, "child", Some(parent.id));
 
     let import_data = placement_import_data(world_id, "gm-scope-parent", vec![parent, child]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
     );
@@ -2375,7 +2548,10 @@ async fn import_world_refuses_a_bundle_document_a_validator_rejects() {
         .unwrap()
         .with_modules_dir(dir.path());
     let err = target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .unwrap_err();
     let DataError::OpFailed(msg) = err else {
@@ -2426,12 +2602,15 @@ async fn import_world_rejects_a_schema_violating_bundle_before_any_validator_run
         .unwrap()
         .with_modules_dir(dir.path());
     let err = target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .unwrap_err();
     assert!(
         matches!(err, DataError::SchemaViolation { .. }),
-        "a tier-2 violation must surface as the structural error, never DataError::Validator: {err:?}"
+        "a structural-schema violation must surface as the structural error, never DataError::Validator: {err:?}"
     );
 }
 
@@ -2458,7 +2637,10 @@ async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
         .unwrap()
         .with_modules_dir(dir.path());
     target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .expect("a bundle whose documents pass their declared validators imports cleanly");
 
@@ -2479,4 +2661,276 @@ async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
         .await
         .unwrap()
         .is_some());
+}
+
+/// A scene with fog on two levels for one user must round-trip with BOTH levels intact.
+/// INVARIANT: `level_id` is part of `explored_fog`'s primary key, so the bundle row must carry it.
+/// A bundle row without it gives two levels of one scene the same identity, and the import's
+/// second insert then violates that key (SQLite code 1555, "UNIQUE constraint failed") — which
+/// aborts the whole import transaction rather than collapsing to one level.
+#[tokio::test]
+async fn fog_on_two_levels_of_one_scene_round_trips_with_both_levels_intact() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-two-level", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src
+        .create_world_owned("Two Level World", gm, 0)
+        .await
+        .unwrap();
+    let scene = crate::test_ids::test_uuid(50);
+    src.set_explored(w.id, scene, "l1", gm, &[1, 1, 1])
+        .await
+        .unwrap();
+    src.set_explored(w.id, scene, "l2", gm, &[2, 2, 2])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    target
+        .create_user("gm-two-level", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
+    assert_eq!(summary.skipped_fog, 0);
+
+    let target_gm = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE username = ?")
+        .bind("gm-two-level")
+        .fetch_one(target.pool())
+        .await
+        .unwrap();
+    let l1 = target
+        .get_explored(scene, "l1", Uuid::parse_str(&target_gm).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let l2 = target
+        .get_explored(scene, "l2", Uuid::parse_str(&target_gm).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(l1, vec![1, 1, 1]);
+    assert_eq!(l2, vec![2, 2, 2]);
+}
+
+/// A Shared-mode scene's pool row (keyed by the reserved `Uuid::nil()` sentinel) must round-trip
+/// through export/import WITHOUT a username, never dropped by an inner join against `users` and
+/// never counted as a skipped/unresolvable row.
+#[tokio::test]
+async fn shared_pool_fog_row_round_trips_without_a_username() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-pool", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("Pool World", gm, 0).await.unwrap();
+    let scene = crate::test_ids::test_uuid(51);
+    src.set_explored(w.id, scene, "", Uuid::nil(), &[9, 9, 9])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let pool_row = export_data
+        .fog
+        .iter()
+        .find(|r| r.scene_id == scene)
+        .expect("the pool row must be present in the export, not dropped");
+    assert!(
+        pool_row.pool,
+        "the row's user_id is nil, so pool must be true"
+    );
+    assert_eq!(
+        pool_row.username, None,
+        "a pool row carries no username to export"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    target
+        .create_user("gm-pool", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
+    assert_eq!(
+        summary.skipped_fog, 0,
+        "a pool row must never be counted as skipped"
+    );
+    let pooled = target.get_explored(scene, "", Uuid::nil()).await.unwrap();
+    assert_eq!(pooled, Some(vec![9, 9, 9]));
+}
+
+/// An orphan `explored_fog` row (a real, non-nil `user_id` with no matching `users` row —
+/// theoretically reachable since the table carries no FK) is classified `pool: false` at export
+/// (never merged into the pool because its username happens to be absent too) and is
+/// skipped-and-counted at import, exactly like an unresolvable `world_members` row — never
+/// silently absorbed.
+#[tokio::test]
+async fn orphan_fog_row_is_classified_apart_from_the_pool_and_skipped_and_counted() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-orphan", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("Orphan World", gm, 0).await.unwrap();
+    let scene = crate::test_ids::test_uuid(52);
+    // A real, non-nil, non-existent user id — simulates a dangling row this FK-less table
+    // permits in principle, without relying on `delete_user`'s own purge behavior.
+    let ghost = crate::test_ids::test_uuid(0xFEED);
+    src.set_explored(w.id, scene, "", ghost, &[3, 3, 3])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let orphan_row = export_data
+        .fog
+        .iter()
+        .find(|r| r.scene_id == scene)
+        .expect("the orphan row must still be present in the export, not silently dropped");
+    assert!(
+        !orphan_row.pool,
+        "a non-nil user_id must NEVER classify as the pool, even with no resolved username"
+    );
+    assert_eq!(orphan_row.username, None);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
+    assert_eq!(
+        summary.skipped_fog, 1,
+        "the orphan row is skipped-and-counted, not silently absorbed"
+    );
+    assert!(
+        target
+            .get_explored(scene, "", Uuid::nil())
+            .await
+            .unwrap()
+            .is_none(),
+        "an orphan row must never be merged into the pool bucket"
+    );
+}
+
+/// A failed asset-file finalize trashes both the files already renamed to their final names and
+/// the staged files still waiting. Replacing either discard with an outright removal leaves its
+/// entry out of the trash; dropping the first leaves the finalized file in the asset directory;
+/// dropping the second leaves the staged file there.
+#[tokio::test]
+async fn import_world_trashes_finalized_and_staged_files_when_a_rename_fails() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-rename-fail", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src
+        .create_world_owned("W-rename-fail", gm, 0)
+        .await
+        .unwrap();
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let first_id = crate::test_ids::test_uuid(701);
+    let missing_id = crate::test_ids::test_uuid(702);
+    let last_id = crate::test_ids::test_uuid(703);
+    let first_staged = dir.path().join(format!("{first_id}.a.import-tmp"));
+    let missing_staged = dir.path().join(format!("{missing_id}.b.import-tmp"));
+    let last_staged = dir.path().join(format!("{last_id}.c.import-tmp"));
+    std::fs::write(&first_staged, b"first").unwrap();
+    std::fs::write(&last_staged, b"last").unwrap();
+
+    let import_data = crate::data::world_bundle::WorldImportData {
+        manifest: export_data.manifest.clone(),
+        documents: export_data.documents.clone(),
+        events: export_data.events.clone(),
+        members: export_data.members.clone(),
+        invites: export_data.invites.clone(),
+        assets: export_data.assets.clone(),
+        fog: export_data.fog.clone(),
+        settings: export_data.settings.clone(),
+        // The middle file does not exist, so its rename fails after the first one succeeded.
+        staged_assets: vec![
+            (first_id, first_staged),
+            (missing_id, missing_staged),
+            (last_id, last_staged.clone()),
+        ],
+        staged_siblings: vec![],
+    };
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = crate::trash::Trash::new(
+        trash_dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+    let target = repo().await;
+    let err = target.import_world(import_data, &trash).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("failed to finalize imported asset file"),
+        "unexpected error: {err}"
+    );
+
+    let mut names: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    let mut expected = vec![
+        first_id.to_string(),
+        last_staged
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    expected.sort();
+    assert_eq!(names, expected);
+    assert!(!dir.path().join(first_id.to_string()).exists());
+    assert!(!last_staged.exists());
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

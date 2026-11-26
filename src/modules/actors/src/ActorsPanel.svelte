@@ -1,16 +1,24 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type FacingVision, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission, type BarAttribute, type BarDisplayMode } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
   import TokenLightControl from "./TokenLightControl.svelte";
   import TokenVisionControl from "./TokenVisionControl.svelte";
+  import TokenFacingVisionControl from "./TokenFacingVisionControl.svelte";
+  import FacingVisionControl from "./FacingVisionControl.svelte";
   import TokenMovementControl from "./TokenMovementControl.svelte";
-  import TokenElevationControl from "./TokenElevationControl.svelte";
+  import TokenDispositionControl from "./TokenDispositionControl.svelte";
+  import TokenIdentityHiddenControl from "./TokenIdentityHiddenControl.svelte";
+  import TokenQuickEdit from "./TokenQuickEdit.svelte";
+  import TokenRotationLockControl from "./TokenRotationLockControl.svelte";
   import TokenEmissionControl from "./TokenEmissionControl.svelte";
+  import TokenBarsControl from "./TokenBarsControl.svelte";
+  import BarsEditor from "./BarsEditor.svelte";
+  import BarModeSelect from "./BarModeSelect.svelte";
   import TokenVisualControl from "./TokenVisualControl.svelte";
 
   const ctx = getAppContext();
@@ -101,12 +109,20 @@
   /** The create form's pending vision-mode assignments (empty = the new actor has no senses).
    * Read via `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingVision = $state<VisionAssignment[]>([]);
+  /** The create form's pending facing-limited field of view (`null` = the new actor sees all
+   * round). Read via `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingFacing = $state<FacingVision | null>(null);
   /** The create form's pending carried light (`null` = the new actor emits nothing). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingLight = $state<LightEmission | null>(null);
   /** The create form's pending movement-type tags (empty = the new actor has none). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingMovement = $state<string[]>([]);
+  /** The create form's pending attribute bars (empty = the new actor draws none). Read via
+   * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingBars = $state<BarAttribute[]>([]);
+  /** The create form's pending nameplate mode (`null` = the server default, hover). */
+  let pendingNameplateMode = $state<BarDisplayMode | null>(null);
 
   // The visual-kind editor is a child component; it reports its current built visual (or null
   // when incomplete) via `onBuild`, and the host consumes it at create time + resets it after.
@@ -141,14 +157,36 @@
    * face-swap palette (`FaceSwapPalette`), the ownership override control
    * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), the carried-light
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
-   * the movement-tag override control (`TokenMovementControl`), the elevation control
-   * (`TokenElevationControl`), and the per-token emission/visual override controls
+   * the movement-tag override control (`TokenMovementControl`), the disposition override control
+   * (`TokenDispositionControl`), the GM-only secret-identity toggle
+   * (`TokenIdentityHiddenControl`), the rotation-lock control (`TokenRotationLockControl`), the
+   * facing-vision control (`TokenFacingVisionControl`), and the per-token emission/visual override controls
    * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
     if (ids.size === 0) return null;
     return ctx.documents.query("token").find((t) => ids.has(t.id))?.id ?? null;
+  });
+
+  /** The selected token's id when exactly one token is selected, else `null`: the quick-edit
+   * section (`TokenQuickEdit`: elevation, condition toggles, bar nudges) acts on one token, and
+   * its condition palette follows the whole selection, so it renders only for a single one. */
+  const quickEditTokenId = $derived(ctx.tokenSelection.ids.size === 1 ? selectedTokenId : null);
+
+  /** The id of the first token on the viewed scene linked to each actor (`engine.actor_id`), keyed
+   * by actor id; an actor with no token there has no entry. One token query per recompute, read by
+   * every row's "locate on scene" action and its enablement. */
+  const locatedTokenIds = $derived.by((): Map<string, string> => {
+    subscribe();
+    const located = new Map<string, string>();
+    const sceneId = ctx.viewedSceneId;
+    if (sceneId === null) return located;
+    for (const tok of ctx.documents.query("token")) {
+      const actorId = (tok.engine as TokenEngine | undefined)?.actor_id;
+      if (tok.parent_id === sceneId && actorId && !located.has(actorId)) located.set(actorId, tok.id);
+    }
+    return located;
   });
 
   const factionOptions = $derived.by((): [string, Faction][] => {
@@ -238,6 +276,35 @@
     ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/vision", old: visionOf(a), value: next.length > 0 ? next : null }])]);
   }
 
+  /** The actor row's raw stored facing-limited field of view (`engine.facing_vision`), or `null`
+   * when the key is absent. This RAW read is the OCC pre-image for `commitFacing`'s update.
+   * @param a The actor document to read.
+   * @returns The raw stored value, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row facing-vision editor
+   * declare const a: WireDocument;
+   * facingOf(a); // a.engine.facing_vision ?? null
+   * ```
+   */
+  const facingOf = (a: WireDocument): FacingVision | null =>
+    (a.engine as ActorEngine | undefined)?.facing_vision ?? null;
+
+  /** Dispatch a whole-payload `/engine/facing_vision` update on actor `a` (the value is one
+   * nested object). `old` is the raw stored value.
+   * @param a The actor document.
+   * @param next The new value, or `null` to clear it (the actor sees all round again).
+   * @example
+   * ```
+   * // private helper; wired to the per-row facing-vision editor's onCommit
+   * declare const a: WireDocument;
+   * commitFacing(a, { arc: 90, near: 0 });
+   * ```
+   */
+  function commitFacing(a: WireDocument, next: FacingVision | null): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/facing_vision", old: facingOf(a), value: next }])]);
+  }
+
   /** The actor row's raw stored movement-type tags (`engine.movement`), or `null` when the key
    * is genuinely absent. This RAW read is the OCC pre-image for `commitMovement`'s update —
    * never a resolved/defaulted value.
@@ -268,6 +335,63 @@
    */
   function commitMovement(a: WireDocument, next: string[]): void {
     ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/movement", old: movementOf(a), value: next }])]);
+  }
+
+  /** The actor row's raw stored attribute bars (`engine.bars`), or `null` when the key is absent.
+   * This RAW read is the OCC pre-image for `commitBars`'s update.
+   * @param a The actor document to read.
+   * @returns The raw stored bar list, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row bars editor
+   * declare const a: WireDocument;
+   * barsOf(a); // a.engine.bars ?? null
+   * ```
+   */
+  const barsOf = (a: WireDocument): BarAttribute[] | null =>
+    (a.engine as ActorEngine | undefined)?.bars ?? null;
+
+  /** Dispatch a whole-payload `/engine/bars` update on actor `a` (the list is one nested value,
+   * so one write carries every bar's change). `old` is the raw stored list; an empty list
+   * normalizes to `null` (canonical absent — matches the create form).
+   * @param a The actor document.
+   * @param next The new bar list.
+   * @example
+   * ```
+   * // private helper; wired to the per-row bars editor's onCommit
+   * declare const a: WireDocument;
+   * commitBars(a, []);
+   * ```
+   */
+  function commitBars(a: WireDocument, next: BarAttribute[]): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/bars", old: barsOf(a), value: next.length > 0 ? $state.snapshot(next) : null }])]);
+  }
+
+  /** The actor row's raw stored nameplate mode (`engine.nameplate_mode`), or `null` when absent.
+   * @param a The actor document to read.
+   * @returns The raw stored mode, or `null` when absent (the server treats absent as hover).
+   * @example
+   * ```
+   * // private helper; read by the per-row nameplate-mode select
+   * declare const a: WireDocument;
+   * nameplateModeOf(a); // a.engine.nameplate_mode ?? null
+   * ```
+   */
+  const nameplateModeOf = (a: WireDocument): BarDisplayMode | null =>
+    (a.engine as ActorEngine | undefined)?.nameplate_mode ?? null;
+
+  /** Dispatch a `/engine/nameplate_mode` update on actor `a`; `old` is the raw stored mode.
+   * @param a The actor document.
+   * @param next The chosen mode.
+   * @example
+   * ```
+   * // private helper; wired to the per-row nameplate-mode select
+   * declare const a: WireDocument;
+   * commitNameplateMode(a, "always");
+   * ```
+   */
+  function commitNameplateMode(a: WireDocument, next: BarDisplayMode): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/nameplate_mode", old: nameplateModeOf(a), value: next }])]);
   }
 
   // Rows come from two sources — a store-resolved document and a search hit
@@ -366,6 +490,9 @@
       aura: $state.snapshot(pendingAura),
       sound: $state.snapshot(pendingSound),
       vfx: $state.snapshot(pendingVfx),
+      ...(pendingFacing ? { facing_vision: $state.snapshot(pendingFacing) } : {}),
+      ...(pendingBars.length > 0 ? { bars: $state.snapshot(pendingBars) } : {}),
+      ...(pendingNameplateMode ? { nameplate_mode: pendingNameplateMode } : {}),
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -378,8 +505,11 @@
     sizeW = 1;
     sizeH = 1;
     pendingVision = [];
+    pendingFacing = null;
     pendingLight = null;
     pendingMovement = [];
+    pendingBars = [];
+    pendingNameplateMode = null;
     pendingAura = null;
     pendingSound = null;
     pendingVfx = null;
@@ -387,26 +517,33 @@
   }
 </script>
 
-<section class="actors">
+<section class="actors" data-tour="actors.panel">
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
-  <TokenElevationControl tokenId={selectedTokenId} />
+  <TokenQuickEdit tokenId={quickEditTokenId} />
+  <TokenRotationLockControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
   <TokenVisionControl tokenId={selectedTokenId} />
+  <TokenFacingVisionControl tokenId={selectedTokenId} />
   <TokenMovementControl tokenId={selectedTokenId} />
+  <TokenDispositionControl tokenId={selectedTokenId} />
+  <TokenIdentityHiddenControl tokenId={selectedTokenId} />
   <TokenEmissionControl tokenId={selectedTokenId} />
+  <TokenBarsControl tokenId={selectedTokenId} />
   <TokenVisualControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
+    data-tour="actors.search"
     type="search"
     placeholder={t("actors.search")}
     aria-label={t("actors.search")}
     bind:value={query}
   />
-  <ul class="list">
+  <ul class="list" data-tour="actors.list">
     {#each visibleActors as a (a.id)}
+      {@const locatedId = locatedTokenIds.get(a.id) ?? null}
       <li>
         <button
           type="button"
@@ -415,6 +552,16 @@
         >{actorDisplayName({ name: a.name, displayName: (a.engine as DisplayNameEngineShape | undefined)?.displayName })}</button>
         <button type="button" class="open-sheet" onclick={() => ctx.openDocument({ docId: a.id })}>
           {t("actors.openSheet")}
+        </button>
+        <!-- Pans the camera to (and follows) this actor's token on the viewed scene; disabled
+             while the actor has none there. -->
+        <button
+          type="button"
+          class="locate-on-scene"
+          disabled={locatedId === null}
+          onclick={() => locatedId !== null && ctx.scene.panToToken(locatedId)}
+        >
+          {t("actors.locateOnScene")}
         </button>
         {#if ctx.role === "gm"}
           <button type="button" class="hide-toggle" onclick={() => toggleHidden(a)}>
@@ -469,11 +616,29 @@
             <span>{t("actors.visionModes")}</span>
             <VisionAssignmentsEditor value={visionOf(a) ?? []} modes={visionModes} onCommit={(next) => commitVision(a, next)} />
           </div>
+          <!-- Per-row facing-vision editor; commits whole-payload /engine/facing_vision updates
+               with the raw stored value as the OCC pre-image. -->
+          <div class="facing-edit" aria-label={t("actors.facingVision")}>
+            <span>{t("actors.facingVision")}</span>
+            <FacingVisionControl value={facingOf(a)} onCommit={(next) => commitFacing(a, next)} />
+          </div>
           <!-- Per-row movement-tag editor; commits whole-payload /engine/movement updates with
                the raw stored list as the OCC pre-image. -->
           <div class="movement-edit" aria-label={t("actors.movementTags")}>
             <span>{t("actors.movementTags")}</span>
             <MovementTagsEditor value={movementOf(a) ?? []} onCommit={(next) => commitMovement(a, next)} />
+          </div>
+          <!-- Per-row nameplate mode and attribute-bar editor; commit /engine/nameplate_mode and
+               whole-payload /engine/bars updates with the raw stored values as the OCC pre-image. -->
+          <div class="bars-edit" aria-label={t("actors.bars")}>
+            <span>{t("actors.bars")}</span>
+            <label>{t("actors.nameplateMode")}
+              <BarModeSelect
+                value={nameplateModeOf(a) ?? "hover"} label={t("actors.nameplateMode")} testId="actor-nameplate-mode"
+                onChange={(mode) => mode !== null && commitNameplateMode(a, mode)}
+              />
+            </label>
+            <BarsEditor bars={barsOf(a) ?? []} onCommit={(next) => commitBars(a, next)} />
           </div>
           <!-- Per-row carried-light toggle + editor; commits whole-payload /engine/light updates. -->
           <label>
@@ -486,7 +651,7 @@
             {t("actors.carriedLight")}
           </label>
           {#if lightOf(a)}
-            <LightEmissionEditor value={lightOf(a)!} onCommit={(next) => commitLight(a, next)} />
+            <LightEmissionEditor value={lightOf(a)!} carriedByToken onCommit={(next) => commitLight(a, next)} />
           {/if}
           <button type="button" class="edit-visual" onclick={() => { editingVisualId = editingVisualId === a.id ? null : a.id; editedVisual = null; }}>
             {t("actors.editVisual")}
@@ -543,9 +708,23 @@
       <span>{t("actors.visionModes")}</span>
       <VisionAssignmentsEditor value={pendingVision} modes={visionModes} onCommit={(next) => (pendingVision = next)} />
     </div>
+    <div class="facing-edit">
+      <span>{t("actors.facingVision")}</span>
+      <FacingVisionControl value={pendingFacing} onCommit={(next) => (pendingFacing = next)} />
+    </div>
     <div class="movement-edit">
       <span>{t("actors.movementTags")}</span>
       <MovementTagsEditor value={pendingMovement} onCommit={(next) => (pendingMovement = next)} />
+    </div>
+    <div class="bars-edit">
+      <span>{t("actors.bars")}</span>
+      <label>{t("actors.nameplateMode")}
+        <BarModeSelect
+          value={pendingNameplateMode ?? "hover"} label={t("actors.nameplateMode")} testId="create-nameplate-mode"
+          onChange={(mode) => (pendingNameplateMode = mode)}
+        />
+      </label>
+      <BarsEditor bars={pendingBars} onCommit={(next) => (pendingBars = next)} />
     </div>
     {#if ctx.role === "gm"}
       <label>
@@ -558,7 +737,7 @@
         {t("actors.carriedLight")}
       </label>
       {#if pendingLight}
-        <LightEmissionEditor value={pendingLight} onCommit={(next) => (pendingLight = next)} />
+        <LightEmissionEditor value={pendingLight} carriedByToken onCommit={(next) => (pendingLight = next)} />
       {/if}
     {/if}
     <VisualKindEditor bind:this={visualEditor} conditionOptions={conditionOptions} onBuild={(v) => (pendingVisual = v)} />
@@ -594,7 +773,8 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .open-sheet {
+  .open-sheet,
+  .locate-on-scene {
     min-height: 44px;
     padding: var(--space-1) var(--space-2);
     border: 1px solid var(--border);
@@ -603,7 +783,8 @@
     color: var(--text-primary);
     cursor: pointer;
   }
-  .open-sheet:focus-visible {
+  .open-sheet:focus-visible,
+  .locate-on-scene:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
@@ -636,11 +817,13 @@
     flex-direction: column;
     gap: var(--space-1);
   }
-  .vision-edit {
+  .vision-edit,
+  .facing-edit {
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
+  .bars-edit,
   .movement-edit {
     display: flex;
     flex-direction: column;

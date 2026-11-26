@@ -1,17 +1,17 @@
-import { consoleLogger } from "@shadowcat/core";
-import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
+import { consoleLogger, parseChatHistory, pushChatHistory as pushBoundedChatHistory, type KeybindingOverrides } from "@shadowcat/core";
+import { defaultUiState, getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
 import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
 import { COOLDOWN_MS } from "./uiStatePersistCooldown";
 
 const logger = consoleLogger();
-let state: UiState = { global: { locale: "en", lastWorld: null }, worlds: {} };
+let state: UiState = defaultUiState();
 let loaded = false;
 let observing = false;
 
 // Leading-edge debounce with a trailing catch-up (ui_state changes are user-paced;
 // the leading edge persists promptly, the trailing flush captures a change made
-// during the cooldown). See [[debounce-leading-edge-not-trailing-rearm]].
+// during the cooldown).
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 
@@ -24,11 +24,11 @@ let persistInFlight: Promise<void> | null = null;
  * settling always resolves every waiting caller together, once. */
 let persistQueued: Promise<void> | null = null;
 
-/** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, or
- * `"theme"`). */
+/** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, `"theme"`, or
+ * `"keybindings"`). */
 type GlobalField = keyof UiState["global"];
-/** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
- * `"chatRead"`). */
+/** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"`, `"chatRead"`,
+ * `"chatHistory"` or `"viewedLevel"`). */
 type WorldKey = keyof UiState["worlds"][string];
 
 /** Leaf-key dirty tracking: persist() sends ONLY the individual fields/keys
@@ -153,6 +153,9 @@ function copyGlobalField(
     case "theme":
       patch.theme = g.theme;
       return;
+    case "keybindings":
+      patch.keybindings = g.keybindings;
+      return;
     default:
       field satisfies never;
   }
@@ -197,6 +200,9 @@ function copyWorldKey(
       return;
     case "chatRead":
       slice.chatRead = w.chatRead;
+      return;
+    case "chatHistory":
+      slice.chatHistory = w.chatHistory;
       return;
     case "viewedLevel":
       slice.viewedLevel = w.viewedLevel;
@@ -498,9 +504,10 @@ export async function loadSessionState(): Promise<UiState> {
   // `ThemeController.serialize`'s output so the change subscriber below
   // compares against a canonical baseline. The mirror is overwritten on every
   // load, whatever a previous tab or session left behind.
-  theme.load(state.global.theme);
-  state.global.theme = theme.serialize();
-  if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, state.global.theme);
+  theme.load(state.global.theme as PersistedTheme | undefined);
+  const canonicalTheme = theme.serialize();
+  state.global.theme = canonicalTheme;
+  if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, canonicalTheme);
   loaded = true;
   // Observe future locale changes (switcher, etc.) and persist them — once for the
   // process lifetime (load runs again on re-login; the singleton must not stack
@@ -559,6 +566,32 @@ export function setLastWorld(id: string | null): void {
   if (state.global.lastWorld === id) return;
   state.global.lastWorld = id;
   dirty.global.add("lastWorld");
+  schedulePersist();
+}
+
+/** Reads the account's saved keybinding overrides.
+ * @returns The saved overrides keyed `"<moduleId>:<bindingId>"`; empty when none are saved.
+ * @example
+ * ```
+ * const overrides = getKeybindings();
+ * ```
+ */
+export function getKeybindings(): KeybindingOverrides {
+  return state.global.keybindings ?? {};
+}
+
+/** Stores the account's keybinding overrides, marks them dirty, and schedules a persist. A no-op
+ * (no dirty mark, no persist) when `overrides` equals the stored value.
+ * @param overrides - The full override set (`KeybindingsController.serializeOverrides`).
+ * @example
+ * ```
+ * setKeybindings({ "ducking:push-to-talk": "keyv" });
+ * ```
+ */
+export function setKeybindings(overrides: KeybindingOverrides): void {
+  if (JSON.stringify(getKeybindings()) === JSON.stringify(overrides)) return;
+  state.global.keybindings = overrides;
+  dirty.global.add("keybindings");
   schedulePersist();
 }
 
@@ -621,6 +654,35 @@ export function setChatRead(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.chatRead = blob;
   markWorldDirty(world, "chatRead");
+  schedulePersist();
+}
+
+/** Reads a world's persisted composer sent-text history.
+ * @param world - World id.
+ * @returns The stored entries, oldest first; empty when the world has none.
+ * @example
+ * ```
+ * const history = getChatHistory("w1");
+ * ```
+ */
+export function getChatHistory(world: string): string[] {
+  return parseChatHistory(state.worlds[world]?.chatHistory);
+}
+
+/** Appends one sent text to a world's composer history (bounded by `pushChatHistory` in
+ * `@shadowcat/core`), marks it dirty, and schedules a persist. Creates the world's entry if
+ * absent.
+ * @param world - World id.
+ * @param text - The raw typed text that was sent.
+ * @example
+ * ```
+ * pushChatHistory("w1", "/roll 1d20");
+ * ```
+ */
+export function pushChatHistory(world: string, text: string): void {
+  const w = (state.worlds[world] ??= {});
+  w.chatHistory = pushBoundedChatHistory(getChatHistory(world), text);
+  markWorldDirty(world, "chatHistory");
   schedulePersist();
 }
 

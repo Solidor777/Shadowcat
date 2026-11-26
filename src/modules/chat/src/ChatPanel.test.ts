@@ -446,7 +446,7 @@ describe("ChatPanel — unread tab badge", () => {
         documents: store,
         store,
         contributions: registryWithCard(),
-        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => null, setChatRead },
+        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => null, setChatRead, getChatHistory: () => [], pushChatHistory: () => {} },
       }),
     });
     const messages = root.querySelector(".messages") as HTMLElement;
@@ -471,7 +471,7 @@ describe("ChatPanel — unread tab badge", () => {
         documents: store,
         store,
         contributions: registryWithCard(),
-        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => ({ general: { createdAt: 1, id: "m1" } }), setChatRead: () => {} },
+        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => ({ general: { createdAt: 1, id: "m1" } }), setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
       }),
     });
     await vi.waitFor(() => expect(chatUnreadBadge.get()).toBe(1)); // only m2 is newer than the persisted marker

@@ -1,6 +1,8 @@
-//! `validate_bounds` cap-by-cap truth table, and `vfx_permitted` over a stub
-//! `Repository` (canned doc + defaults, every other method unreachable) — the
-//! spectator short-circuit is pinned by a `get_document` call count.
+//! These tests check the truth tables of `validate_bounds` and `vfx_permitted`.
+//!
+//! `validate_bounds` is tested cap by cap, and `vfx_permitted` over a stub `Repository` (canned
+//! doc and defaults, every other method unreachable) — the spectator short-circuit is pinned by a
+//! `get_document` call count.
 
 use super::*;
 use crate::data::command::{Operation, UnsequencedCommand, WriteOrigin};
@@ -253,6 +255,9 @@ impl Repository for StubRepo {
     ) -> Result<Option<Uuid>, DataError> {
         unimplemented!()
     }
+    async fn last_whisper_to(&self, _world: Uuid, _user: Uuid) -> Result<Option<Uuid>, DataError> {
+        unimplemented!()
+    }
     async fn world_cap_defaults(&self, _world: Uuid) -> Result<WorldCapDefaults, DataError> {
         Ok(self.defaults.clone())
     }
@@ -290,7 +295,7 @@ impl Repository for StubRepo {
     async fn list_members(
         &self,
         _world: Uuid,
-    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    ) -> Result<Vec<crate::data::repository::WorldMemberRow>, DataError> {
         unimplemented!()
     }
     async fn reset_validator_fault_streak(&self, _world: Uuid, _module: &str) {
@@ -317,12 +322,24 @@ impl Repository for StubRepo {
     }
     async fn get_link_preview_cache(
         &self,
+        _world_id: Uuid,
         _url: &str,
     ) -> Result<Option<LinkPreviewCacheRow>, DataError> {
         unimplemented!()
     }
     async fn upsert_link_preview_cache(
         &self,
+        _world_id: Uuid,
+        _url: &str,
+        _title: Option<&str>,
+        _description: Option<&str>,
+        _fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        unimplemented!()
+    }
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        _world_id: Uuid,
         _url: &str,
         _title: Option<&str>,
         _description: Option<&str>,
@@ -332,6 +349,7 @@ impl Repository for StubRepo {
     }
     async fn set_link_preview_cache_image(
         &self,
+        _world_id: Uuid,
         _url: &str,
         _image_asset_id: Uuid,
     ) -> Result<(), DataError> {

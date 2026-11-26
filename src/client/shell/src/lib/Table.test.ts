@@ -44,6 +44,7 @@ const welcomeFrame = {
   capability_requirements: [],
   contract_declarations: [],
   schema_declarations: [],
+  online_users: [],
 };
 
 function mockConnect(): Connect {
@@ -73,7 +74,7 @@ test("the logout handler logs out, resets session state, then navigates in that 
     props: { onContext: (c: AppContext) => { ctx = c; } },
   });
 
-  render(Table, { props: { session, leaveWorld: vi.fn(), serverRole: "user" } });
+  render(Table, { props: { session, leaveWorld: vi.fn(), serverRole: "user", tls: null } });
   await vi.waitFor(() => expect(ctx).toBeTruthy());
 
   const order: string[] = [];
@@ -100,6 +101,59 @@ test("the logout handler logs out, resets session state, then navigates in that 
   session.leave();
 });
 
+test("AppContext reads serverRole, tls and leaveWorld live, so a prop that changes after mount reaches consumers", async () => {
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  let ctx!: AppContext;
+  session.contributions.contribute({
+    id: "app-context-capture",
+    contract: "shadowcat.surface:root",
+    component: AppContextCapture,
+    props: { onContext: (c: AppContext) => { ctx = c; } },
+  });
+
+  const firstLeave = vi.fn();
+  const { rerender } = render(Table, { props: { session, leaveWorld: firstLeave, serverRole: "user", tls: null } });
+  await vi.waitFor(() => expect(ctx).toBeTruthy());
+  expect(ctx.serverRole).toBe("user");
+  expect(ctx.tls).toBeNull();
+
+  const status = { enabled: true } as unknown as NonNullable<AppContext["tls"]>;
+  const secondLeave = vi.fn();
+  await rerender({ session, leaveWorld: secondLeave, serverRole: "admin", tls: status });
+  expect(ctx.serverRole).toBe("admin");
+  expect(ctx.tls).toBe(status);
+  ctx.leaveWorld();
+  expect(secondLeave).toHaveBeenCalledOnce();
+  expect(firstLeave).not.toHaveBeenCalled();
+
+  session.leave();
+});
+
+test("Table fails loudly when its session prop is swapped instead of the Table being remounted", async () => {
+  const make = async () => {
+    const s = new WorldSession({ selfId: "u1", connect: mockConnect(), modules: [], logger: silentLogger });
+    await s.enter("w1");
+    await vi.waitFor(() => expect(s.role).toBe("player"));
+    return s;
+  };
+  const first = await make();
+  const second = await make();
+  const { rerender } = render(Table, { props: { session: first, leaveWorld: vi.fn(), serverRole: "user", tls: null } });
+  await expect(
+    rerender({ session: second, leaveWorld: vi.fn(), serverRole: "user", tls: null }),
+  ).rejects.toThrow("different session");
+  first.leave();
+  second.leave();
+});
+
 test("AppContext.combat is the session's own combat controller", async () => {
   const session = new WorldSession({
     selfId: "u1",
@@ -118,7 +172,7 @@ test("AppContext.combat is the session's own combat controller", async () => {
     props: { onContext: (c: AppContext) => { ctx = c; } },
   });
 
-  render(Table, { props: { session, leaveWorld: vi.fn(), serverRole: "user" } });
+  render(Table, { props: { session, leaveWorld: vi.fn(), serverRole: "user", tls: null } });
   await vi.waitFor(() => expect(ctx).toBeTruthy());
 
   expect(ctx.combat).toBe(session.combat);

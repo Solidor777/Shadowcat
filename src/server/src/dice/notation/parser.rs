@@ -1,25 +1,22 @@
+//! This module is the recursive-descent parser that turns dice notation into a `RollSpec`.
+//!
+//! `parse` lexes its input and then parses the tokens.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::dice::notation::lexer::{describe_token, lex, Token};
-use crate::dice::notation::{ModeKind, ParseContext, ParseError};
+use crate::dice::notation::{
+    ModeKind, ParseContext, ParseError, MAX_EXPR_JSON_DEPTH, MAX_NESTING_DEPTH,
+};
 use crate::dice::spec::{
     BinOp, Comparator, ConstTerm, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind,
-    Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, RollSpec, SuccessConfig,
+    Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, Parity, RollSpec, SuccessConfig,
     SuccessRule, Tier, TotalConfig,
 };
 
-/// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
-/// nested `(...)` groups or a `-` chain) is bounded ONLY by input length --
-/// there is no explicit depth counter or recursion-depth cap in this parser.
-/// A caller exposing `parse` to untrusted input relies entirely on its own
-/// length cap to keep worst-case nesting (and therefore stack usage) bounded.
-/// Chat's `chat::MAX_MESSAGE_CHARS = 4096` caps a single formula at
-/// well under that, so worst-case nesting is roughly ~2k levels (each `(` or
-/// unary `-` costs at least 2 input chars) -- a few thousand light recursive-
-/// descent frames, safe on all three target OSes' default thread stacks.
-/// Re-evaluate with an explicit depth counter if any future caller ever
-/// exposes this parser to longer untrusted input than that.
+/// Parser state for one `parse` call: the token stream, the cursor and the roll-level scratch
+/// fields. `factor` counts its recursion depth and refuses past `MAX_NESTING_DEPTH`.
 struct P {
     /// The full token stream.
     toks: Vec<Token>,
@@ -58,6 +55,8 @@ struct P {
     /// Crit-fail trigger from an `xf<N>[:<lost>[:<counter>]][!]`. Same sharing/mode-gating as
     /// `crit_success`.
     crit_fail: Option<CritFail>,
+    /// Current `factor` recursion depth, checked against `MAX_NESTING_DEPTH`.
+    depth: usize,
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
@@ -96,10 +95,14 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         tiers: Vec::new(),
         crit_success: None,
         crit_fail: None,
+        depth: 0,
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
         return Err(ParseError::Trailing(p.toks[p.pos].to_string()));
+    }
+    if !fits_json_depth(&expr, MAX_EXPR_JSON_DEPTH) {
+        return Err(ParseError::TooDeeplyNested);
     }
 
     // Explicit cs/cf forces SuccessCount; otherwise the ambient mode governs.
@@ -142,6 +145,38 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         direction: ctx.direction,
         mode,
     })
+}
+
+/// Whether `expr` serializes to at most `budget` JSON levels (object and array nesting, as
+/// `serde_json` counts for its read limit).
+///
+/// A leaf is measured by serializing it, so its dice modifiers are counted exactly. A composite
+/// node adds the levels its externally tagged variant takes: `Neg` one, `Bin` and `BestOf` two,
+/// `Call` three. The recursion stops at `budget` levels, so a chain of thousands of terms costs
+/// no more stack than one at the limit.
+fn fits_json_depth(expr: &Expr, budget: usize) -> bool {
+    match expr {
+        Expr::Dice(_) | Expr::Const(_) => {
+            serde_json::to_value(expr).is_ok_and(|v| value_depth(&v) <= budget)
+        }
+        Expr::Neg(inner) => budget > 1 && fits_json_depth(inner, budget - 1),
+        Expr::Bin { lhs, rhs, .. } => {
+            budget > 2 && fits_json_depth(lhs, budget - 2) && fits_json_depth(rhs, budget - 2)
+        }
+        Expr::Call { args, .. } => {
+            budget > 3 && args.iter().all(|a| fits_json_depth(a, budget - 3))
+        }
+        Expr::BestOf(args) => budget > 2 && args.iter().all(|a| fits_json_depth(a, budget - 2)),
+    }
+}
+
+/// The object and array nesting depth of `value`: a scalar is 0, `{"a": 1}` is 1.
+fn value_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(items) => 1 + items.iter().map(value_depth).max().unwrap_or(0),
+        serde_json::Value::Object(map) => 1 + map.values().map(value_depth).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 impl P {
@@ -225,6 +260,19 @@ impl P {
     /// dice factors continue into `modifiers`; `fn_call` is `ident '(' expr (',' expr)*
     /// ')'` (see `fn_call`).
     fn factor(&mut self) -> Result<Expr, ParseError> {
+        // Every recursion (`-`, `(`, function arguments) re-enters through here, so one counter
+        // bounds them all. A failed parse is abandoned, so the early return needs no decrement.
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err(ParseError::TooDeeplyNested);
+        }
+        let factor = self.factor_unbounded();
+        self.depth -= 1;
+        factor
+    }
+
+    /// The body of `factor`, without the nesting-depth accounting.
+    fn factor_unbounded(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Token::Minus) => {
                 self.bump();
@@ -298,13 +346,16 @@ impl P {
     /// always carries an argument count its `name` accepts (exact for a fixed-arity function,
     /// at least the minimum for a variadic one such as `min`/`max`).
     fn fn_call(&mut self, name: String) -> Result<Expr, ParseError> {
+        // `None` is `best`, whose arity is variable and which is an `Expr::BestOf` node rather
+        // than an `FnName`, so `FnName::arity` stays fixed per variant.
         let fn_name = match name.as_str() {
-            "floor" => FnName::Floor,
-            "ceil" => FnName::Ceil,
-            "round" => FnName::Round,
-            "abs" => FnName::Abs,
-            "min" => FnName::Min,
-            "max" => FnName::Max,
+            "floor" => Some(FnName::Floor),
+            "ceil" => Some(FnName::Ceil),
+            "round" => Some(FnName::Round),
+            "abs" => Some(FnName::Abs),
+            "min" => Some(FnName::Min),
+            "max" => Some(FnName::Max),
+            "best" => None,
             other => {
                 return Err(ParseError::Unexpected(format!(
                     "unknown function '{other}'"
@@ -335,6 +386,12 @@ impl P {
                 )))
             }
         }
+        let Some(fn_name) = fn_name else {
+            if args.len() < 2 {
+                return Err(ParseError::BestOfRequiresTwoArgs);
+            }
+            return Ok(Expr::BestOf(args));
+        };
         let required = fn_name.arity();
         if !fn_name.accepts_arg_count(args.len()) {
             let qualifier = if matches!(fn_name, FnName::Min | FnName::Max) {
@@ -357,6 +414,8 @@ impl P {
     /// reroll, comparator targets); `sides` feeds default explode targets.
     fn modifiers(&mut self, sides: i32) -> Result<Vec<GroupModifier>, ParseError> {
         let mut mods = Vec::new();
+        // Index in `mods` of this group's single `Clamp`, once an `mn`/`mx` token has created it.
+        let mut clamp_slot: Option<usize> = None;
         loop {
             match self.peek() {
                 Some(Token::Bang) => {
@@ -393,6 +452,42 @@ impl P {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
                             self.success = Some(SuccessRule::Numeric { comp, target });
+                        }
+                        "cse" | "cso" => {
+                            if self.success.is_some() {
+                                return Err(ParseError::DuplicateSuccessRule);
+                            }
+                            let parity = if id == "cse" {
+                                Parity::Even
+                            } else {
+                                Parity::Odd
+                            };
+                            self.success = Some(SuccessRule::Parity(parity));
+                        }
+                        "mn" | "mx" => {
+                            let n = self.expect_int()?;
+                            // One `Clamp` per group, placed where its first token appeared, so
+                            // `mn1mx5` and `mx5mn1` build the same modifier in the same slot.
+                            let slot = match clamp_slot {
+                                Some(slot) => slot,
+                                None => {
+                                    mods.push(GroupModifier::Clamp {
+                                        min: None,
+                                        max: None,
+                                    });
+                                    let slot = mods.len() - 1;
+                                    clamp_slot = Some(slot);
+                                    slot
+                                }
+                            };
+                            let GroupModifier::Clamp { min, max } = &mut mods[slot] else {
+                                unreachable!("clamp_slot always indexes the Clamp modifier")
+                            };
+                            let bound = if id == "mn" { min } else { max };
+                            if bound.is_some() {
+                                return Err(ParseError::DuplicateClamp);
+                            }
+                            *bound = Some(n);
                         }
                         "t" => {
                             let n = self.expect_int()?;

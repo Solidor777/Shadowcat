@@ -1,15 +1,25 @@
+//! This module provides the DB-backed session store, the per-scheme session layers, and the
+//! `AuthUser`/`AdminUser` extractors.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use axum::http::{Request, Response};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use tower::{Layer, Service};
 use tower_sessions::cookie::time::{Duration, OffsetDateTime};
 use tower_sessions::cookie::{Key, SameSite};
-use tower_sessions::service::SignedCookie;
+use tower_sessions::service::{SessionManager, SignedCookie};
 use tower_sessions::session::{Id, Record};
 use tower_sessions::session_store::{self, ExpiredDeletion, SessionStore};
 use tower_sessions::{Expiry, Session, SessionManagerLayer};
@@ -19,6 +29,7 @@ use crate::auth::role::ServerRole;
 use crate::config::Config;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::error::AppError;
+use crate::http::scheme::{request_scheme, RequestScheme};
 use crate::http::AppState;
 
 /// Session-record key the logged-in identity is stored under.
@@ -214,9 +225,8 @@ impl ExpiredDeletion for SqlxSqliteStore {
     }
 }
 
-/// Interval between session-table sweeps. Sessions expire on 7-day inactivity,
-/// so a daily sweep bounds table growth with ample margin.
-const SESSION_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
+/// Interval between housekeeping sweeps of the session, invite and link-preview cache tables.
+const HOUSEKEEPING_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
 
 /// Retention past `expires_at` before a spent invite row is deleted. Consumed
 /// and revoked rows also age out through this: every row carries the 7-day
@@ -240,36 +250,34 @@ pub(crate) async fn sweep_spent_invites(
     Ok(res.rows_affected())
 }
 
-/// Spawn a background task that periodically deletes expired session rows
-/// and spent world-invite rows. Housekeeping, not correctness: expired rows
-/// are already unloadable/unredeemable; the sweep bounds unbounded table
-/// growth. Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A
-/// failed sweep is logged and retried next tick — it never aborts the server.
+/// Spawns a background task that deletes expired session rows, spent world-invite rows and
+/// expired link-preview cache rows, bounding the growth of those tables. It sweeps once at startup,
+/// then every `HOUSEKEEPING_SWEEP_PERIOD`. A failed sweep is logged and retried next tick; it
+/// never aborts the server.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::auth::session::spawn_session_sweep;
+/// use shadowcat::auth::session::spawn_housekeeping_sweep;
 /// use shadowcat::data::sqlite::SqliteRepository;
 ///
 /// # #[tokio::main] async fn main() {
 /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-/// spawn_session_sweep(&repo); // background task; does not block the caller
+/// spawn_housekeeping_sweep(&repo); // background task; does not block the caller
 ///
 /// // The async runtime keeps serving other work while the sweep task is live.
 /// repo.set_setting("probe", "ok").await.unwrap();
 /// assert_eq!(repo.get_setting("probe").await.unwrap().as_deref(), Some("ok"));
 /// # }
 /// ```
-pub fn spawn_session_sweep(repo: &SqliteRepository) {
-    // Synchronous fn (no `open_read_pool().await` available here) and this
-    // sweep only ever calls `delete_expired` (a write), never `load`/
-    // `id_exists` — the write pool suffices for both arguments; this is the
-    // one deliberate exception to "every caller passes a real read pool".
+pub fn spawn_housekeeping_sweep(repo: &SqliteRepository) {
+    // Synchronous fn (no `open_read_pool().await` available here) and the store is only used
+    // for `delete_expired` (a write), never `load`/`id_exists` — the write pool suffices for both
+    // arguments; this is the one deliberate exception to "every caller passes a real read pool".
     let store = SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone());
     let pool = repo.pool().clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SESSION_SWEEP_PERIOD);
+        let mut interval = tokio::time::interval(HOUSEKEEPING_SWEEP_PERIOD);
         loop {
             interval.tick().await; // first tick completes immediately
             if let Err(e) = store.delete_expired().await {
@@ -281,6 +289,9 @@ pub fn spawn_session_sweep(repo: &SqliteRepository) {
                 .as_millis() as i64;
             if let Err(e) = sweep_spent_invites(&pool, now).await {
                 tracing::warn!(error = %e, "invite sweep failed");
+            }
+            if let Err(e) = crate::chat::sweep_expired_link_previews(&pool, now).await {
+                tracing::warn!(error = %e, "link-preview cache sweep failed");
             }
         }
     });
@@ -427,9 +438,185 @@ pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> any
     Ok(key)
 }
 
-/// Build the signed, DB-backed session layer. Cookie is `Secure` whenever
-/// `Config::is_exposed()` is true (so loopback dev over http still works, but a
-/// loopback bind declared `behind_tls_proxy` gets a `Secure` cookie too).
+/// Session cookie name on plain-HTTP requests.
+pub const SESSION_COOKIE_PLAIN: &str = "sc_sid";
+/// Session cookie name on HTTPS requests. The `__Host-` prefix makes a browser refuse to store
+/// the cookie unless it is `Secure`, has `Path=/` and no `Domain`, and blocks a plain-HTTP network
+/// attacker from planting a cookie into the HTTPS session.
+pub const SESSION_COOKIE_TLS: &str = "__Host-sc_sid";
+
+/// The two per-scheme session layers over one store and one signing key, dispatched per request on
+/// `http::scheme::request_scheme`. `tower-sessions` fixes `Secure` once per layer and hands its
+/// cookie controller no request, so the scheme decision cannot live inside it: a single static
+/// `Secure` value would break either LAN plain-HTTP login (`Secure` on) or HTTPS session
+/// protection (`Secure` off).
+///
+/// Distinct cookie names per scheme (`SESSION_COOKIE_PLAIN` / `SESSION_COOKIE_TLS`) are required
+/// because cookies are not port-isolated: a non-`Secure` cookie cannot overwrite an existing
+/// `Secure` cookie of the same name, so one shared name would let a plain-HTTP login fail to
+/// replace an HTTPS session cookie on the same host. Consequence: one session per scheme.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::session_layer;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let layer = session_layer(&repo, &Config::default()).await.unwrap();
+/// let _router = axum::Router::<()>::new().layer(layer);
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct SchemeSessionLayer {
+    /// Layer for plain-HTTP requests.
+    http: SessionManagerLayer<SqlxSqliteStore, SignedCookie>,
+    /// Layer for HTTPS requests.
+    https: SessionManagerLayer<SqlxSqliteStore, SignedCookie>,
+    /// Trusted-proxy list source for the scheme decider.
+    config: Arc<Config>,
+}
+
+/// One of the two wrapped session services (each already includes its `CookieManager`).
+type SessionService<S> =
+    tower_cookies::CookieManager<SessionManager<S, SqlxSqliteStore, SignedCookie>>;
+
+/// The service `SchemeSessionLayer` produces: it forwards each request to the plain-HTTP or the
+/// HTTPS session service according to `http::scheme::request_scheme`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::{session_layer, SchemeSession};
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use tower::Layer;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let layer = session_layer(&repo, &Config::default()).await.unwrap();
+/// let inner = tower::service_fn(|_req: axum::extract::Request| async {
+///     Ok::<_, std::convert::Infallible>(axum::response::Response::new(axum::body::Body::empty()))
+/// });
+/// let _service: SchemeSession<_> = layer.layer(inner);
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct SchemeSession<S> {
+    /// Plain-HTTP flavour.
+    http: SessionService<S>,
+    /// HTTPS flavour.
+    https: SessionService<S>,
+    /// Trusted-proxy list source for the scheme decider.
+    config: Arc<Config>,
+}
+
+impl<S> Layer<S> for SchemeSessionLayer
+where
+    S: Clone,
+{
+    type Service = SchemeSession<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        SchemeSession {
+            http: self.http.layer(inner.clone()),
+            https: self.https.layer(inner),
+            config: self.config.clone(),
+        }
+    }
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SchemeSession<S>
+where
+    S: Service<Request<ReqBody>, Response = Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send,
+    S::Error: Send,
+    ReqBody: Send + 'static,
+    ResBody: Default + Send + 'static,
+{
+    type Response = Response<ResBody>;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.http.poll_ready(cx) {
+            Poll::Ready(Ok(())) => self.https.poll_ready(cx),
+            other => other,
+        }
+    }
+
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+        let scheme = request_scheme(req.extensions(), req.headers(), &self.config);
+        match scheme {
+            RequestScheme::Http => Box::pin(self.http.call(req)),
+            RequestScheme::Https => {
+                let fut = self.https.call(req);
+                Box::pin(async move {
+                    let mut res = fut.await?;
+                    normalise_host_cookies(res.headers_mut());
+                    Ok(res)
+                })
+            }
+        }
+    }
+}
+
+/// Rewrites every `Set-Cookie` naming a `__Host-` cookie to carry `Secure; Path=/; HttpOnly;
+/// SameSite=Lax` and no `Domain`. `tower-sessions` builds its removal cookie from the cookie
+/// PARSED FROM THE REQUEST (name and value only, then `Path`/`Domain` added), so a logout removal
+/// would otherwise lack `Secure`, and a browser ignores a `__Host-` `Set-Cookie` without it: the
+/// cookie would never be deleted. One normaliser over every HTTPS-flavour `Set-Cookie` (set and
+/// removal alike) is the single mechanism guaranteeing the prefix's requirements.
+///
+/// # Examples
+///
+/// ```
+/// use axum::http::{header, HeaderMap, HeaderValue};
+/// use shadowcat::auth::session::normalise_host_cookies;
+///
+/// let mut h = HeaderMap::new();
+/// h.append(header::SET_COOKIE, HeaderValue::from_static("__Host-sc_sid=; Max-Age=0; Path=/"));
+/// normalise_host_cookies(&mut h);
+/// let v = h.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+/// assert!(v.contains("Secure") && v.contains("HttpOnly") && v.contains("SameSite=Lax"));
+/// ```
+pub fn normalise_host_cookies(headers: &mut axum::http::HeaderMap) {
+    use axum::http::header::SET_COOKIE;
+    use axum::http::HeaderValue;
+    let rewritten: Vec<HeaderValue> = headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|raw| {
+            let Ok(text) = raw.to_str() else {
+                return raw.clone();
+            };
+            if !text.starts_with("__Host-") {
+                return raw.clone();
+            }
+            let Ok(mut cookie) = tower_sessions::cookie::Cookie::parse(text.to_owned()) else {
+                return raw.clone();
+            };
+            cookie.set_secure(true);
+            cookie.set_http_only(true);
+            cookie.set_same_site(SameSite::Lax);
+            cookie.set_path("/");
+            cookie.unset_domain();
+            HeaderValue::from_str(&cookie.to_string()).unwrap_or_else(|_| raw.clone())
+        })
+        .collect();
+    headers.remove(SET_COOKIE);
+    for v in rewritten {
+        headers.append(SET_COOKIE, v);
+    }
+}
+
+/// Build the signed, DB-backed per-scheme session layer: plain-HTTP requests get a non-`Secure`
+/// `sc_sid` cookie (browsers refuse to store a `Secure` cookie set from a non-secure,
+/// non-loopback origin, which would make LAN login impossible), HTTPS requests get a
+/// `Secure` `__Host-sc_sid` cookie. Which applies is decided per request by
+/// `http::scheme::request_scheme`.
 ///
 /// # Examples
 ///
@@ -448,16 +635,24 @@ pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> any
 pub async fn session_layer(
     repo: &SqliteRepository,
     config: &Config,
-) -> anyhow::Result<SessionManagerLayer<SqlxSqliteStore, SignedCookie>> {
+) -> anyhow::Result<SchemeSessionLayer> {
     let read_pool = repo.open_read_pool().await?;
     let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
     store.migrate().await?;
     let key = load_or_create_key(repo, config).await?;
-    Ok(SessionManagerLayer::new(store)
-        .with_secure(config.is_exposed())
-        .with_same_site(SameSite::Lax)
-        .with_expiry(Expiry::OnInactivity(Duration::days(7)))
-        .with_signed(key))
+    let base = |secure: bool, name: &'static str| {
+        SessionManagerLayer::new(store.clone())
+            .with_secure(secure)
+            .with_name(name)
+            .with_same_site(SameSite::Lax)
+            .with_expiry(Expiry::OnInactivity(Duration::days(7)))
+            .with_signed(key.clone())
+    };
+    Ok(SchemeSessionLayer {
+        http: base(false, SESSION_COOKIE_PLAIN),
+        https: base(true, SESSION_COOKIE_TLS),
+        config: Arc::new(config.clone()),
+    })
 }
 
 #[cfg(test)]

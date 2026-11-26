@@ -1,6 +1,6 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks } from "@shadowcat/core";
-import type { WorldRole } from "@shadowcat/types";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, BarsLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, PortalOfferNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
+import type { RegionShape, TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -9,6 +9,9 @@ import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
+import type { SnapModePreference } from "./snapModePreference.svelte";
+import type { StageView } from "./stageView.svelte";
+import type { ShareRulerPreference } from "./shareRulerPreference.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 import type { PerformanceController } from "./performance.svelte";
 
@@ -23,6 +26,28 @@ export type PluralFunc = (key: string, count: number, params?: Record<string, st
 /** Locale-aware string comparator shape, matching `I18n.compare` (framework-neutral; the Svelte
  * adapter supplies a reactive implementation). */
 export type CompareFunc = (a: string, b: string) => number;
+
+/** The handle `AppContext.notifyProgress` returns for one in-flight operation. */
+export interface ProgressNotification {
+  /** The notification's id in the shared notification center. */
+  id: string;
+  /** Replaces the notification's message and/or progress in place; a no-op once dismissed.
+   * @param patch The fields to replace. */
+  update: (patch: Partial<Pick<Notification, "message" | "progress">>) => void;
+  /** Removes the notification; a no-op once removed. */
+  dismiss: () => void;
+}
+
+/** One world member's display profile, from the roster. A member absent from
+ * `AppContext.memberProfiles` has no profile set. */
+export interface MemberProfile {
+  /** Colour accent as `#rrggbb`, or `null` when unset. */
+  colour: string | null;
+  /** Pronouns display text, or `null` when unset. */
+  pronouns: string | null;
+  /** URL of the member's avatar image (`avatarUrl` in `@shadowcat/core`), or `null` when unset. */
+  avatar: string | null;
+}
 
 /** Options for `AppContext.subscribeScene`. Shares its one field's shape with `@shadowcat/shell`'s
  * `SubscribeSceneOpts` by coincidence, not by a package-boundary dependency — check that type too
@@ -62,6 +87,13 @@ export interface ChatApi {
    * @returns Resolves once the recalc is accepted; rejects on a non-GM sender
    * or server refusal. */
   recalc(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void>;
+  /** GM-only reveal or conceal: replace a stored message's audience. Same
+   * correlated-rejection contract as `send`/`edit`/`delete`/`recalc`.
+   * @param messageId - Id of the message whose audience changes.
+   * @param audience - The replacement readership.
+   * @returns Resolves once the revision is accepted; rejects on a non-GM sender
+   * or server refusal. */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void>;
   /** Draw one or more rows from a `table` document, posted as one chat message.
    * Same correlated-rejection contract as `send`/`edit`/`delete`/`recalc`.
    * @param opts - Draw options.
@@ -131,6 +163,13 @@ export interface AppContext {
    * confers it. Advisory: it decides whether an admin-only control is
    * rendered; the server re-checks every request. */
   serverRole: "admin" | "user";
+  /** The server's published TLS status (`GET /api/config`), or `null` while it is unread or when
+   * reading it failed. Reactive: the shell retries a failed read with backoff and again on every
+   * WebSocket welcome (first connect and reconnects) while it is still `null`, so read it at use
+   * time rather than caching it.
+   * Advisory: it decides which explanatory message a secure-context-only feature shows
+   * (`https-access` in `@shadowcat/core` derives the addresses); it grants nothing. */
+  tls: TlsStatus | null;
   /** The current user's id (ownership checks). */
   selfId: string;
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
@@ -158,6 +197,8 @@ export interface AppContext {
    * controls. **GM ⇒ always true, unconditionally.** Never derives a delete affordance from
    * `doc.owner` — the `owner` field is a separate ownership OVERRIDE, distinct from the
    * DocRole `owner` grant `grantAuthor` sets, which is what actually carries `core:delete`.
+   * The one exception is a token: its effective owner (the per-token `owner` override, else the
+   * linked actor's owner) holds `core:delete` on that token and nothing else.
    * Advisory-only — the server re-checks independently at `apply_intent`.
    * @param doc - The document the caller wants to delete.
    * @returns Whether delete controls should render as enabled. */
@@ -176,8 +217,25 @@ export interface AppContext {
    * @param level Severity, driving visual treatment; defaults to `"warning"` (the class of message
    * this channel exists for is more often a warning than a pure info toast). */
   notify: (message: string, level?: NotificationLevel) => void;
+  /** Shows an info-level progress notification and returns the handle that ends it. Writes to the
+   * same notification center as `notify`; the host never auto-dismisses it, so the caller MUST call
+   * `dismiss` when the operation settles (success or failure).
+   * @param message The message text, already resolved/interpolated.
+   * @param progress The starting progress: `{ value, max }` for a determinate bar, or
+   * `{ value: null, max: 0 }` for an operation with no incremental signal. */
+  notifyProgress: (message: string, progress: NotificationProgress) => ProgressNotification;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
+  /** userId → display profile (colour accent, pronouns, avatar URL) for the world's members,
+   * refreshed with `members` on every (re)connect. The signed-in user's own profile editor writes
+   * its saved values here so the roster shows them without a reconnect. A member with no entry
+   * has nothing set. */
+  memberProfiles: Map<string, MemberProfile>;
+  /** userId → whether that member currently has a live connection to this world, kept current by
+   * the server's presence transitions and seeded from each Welcome's online set. Once the roster
+   * has loaded every member has an entry; before that, an absent key means unknown, never
+   * offline. */
+  presence: ReadonlyMap<string, boolean>;
   /** Translate a key to the active locale's string. */
   t: TFunc;
   /** Select a plural-category message for `count` — see `I18n.plural`. Every module that needs
@@ -236,6 +294,11 @@ export interface AppContext {
    * movement gate collides with, stated by the server. Getter — reactive when read through a
    * `documents.subscribe` bridge, and `EMPTY_FOOTPRINTS` until the first frame arrives. */
   footprints: FootprintLookup;
+  /** The server's resolved token nameplates and bars, from the `"bars"` derived channel. The
+   * server evaluated every number and decided who receives each value; the client draws what
+   * arrives and `EMPTY_BARS` until the first frame. Getter — reactive when read through a
+   * `documents.subscribe` bridge. */
+  bars: BarsLookup;
   /** The scene THIS client renders + subscribes to. Players follow
    * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
    * reactive when read through a `documents.subscribe` bridge. */
@@ -267,12 +330,44 @@ export interface AppContext {
    * surface (composer, chat-card roll buttons) resolves against; the one-shot `speakAsToken`
    * takes precedence when pending. See `SpeakAs`'s class doc. */
   speakAs: SpeakAs;
+  /** The session's snap-MODE preference (cell-center, nearest-vertex or nearest-edge) for scene-tool
+   * placement. Client-local GM authoring state: never persisted to a document and never
+   * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
+   * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */
+  snapModePreference: SnapModePreference;
+  /** The stage camera as reactive state: a stage overlay projects scene points to the canvas's
+   * pixel space through `sceneToScreen` and re-runs on every pan and zoom. `Stage` writes it
+   * from the render engine's applied transform. See `StageView`. */
+  stageView: StageView;
+  /** Whether THIS user broadcasts their measure-tool drags to the other members (the shared
+   * live ruler). Client-local and per-user: never a document field and never sent itself —
+   * only the ruler's route travels, and only while it is on, plus the one terminating stop
+   * that ends a ruler already shown when it is switched off. Defaults to off. `ToolRail`
+   * writes it; the measure tool reads it. See `ShareRulerPreference`. */
+  shareRuler: ShareRulerPreference;
+  /** Broadcast this user's live ruler on `scene` to the other members; `active: false` (or an
+   * empty `points`) ends it. Takes an explicit `scene` so a stop reaches the scene the ruler
+   * was started on. Fire-and-forget: the server re-authorizes scene READ and bounds the point
+   * count, the coordinates and the send rate. A list over `RULER_LIMITS.maxPoints` vertices, or
+   * a non-finite coordinate (JSON carries `NaN` and `Infinity` as `null`, which the server
+   * rejects as malformed), is answered with a generic `error` to this connection; a finite
+   * coordinate beyond `RULER_LIMITS.maxCoord`, an unreadable scene, an over-budget rate or an
+   * over-long `origin` is dropped silently. Every connection in the room receives `points`
+   * unclipped; the sending connection drops its own frame on receipt. */
+  sendRulerUpdate: (scene: string, points: [number, number][], active: boolean) => void;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Broadcast a transient emote over `token` on the currently-viewed scene. The server
    * re-authorizes effective ownership (GM exempt) and drops an over-reaching send
    * silently, so callers may offer this client-advisory only. */
   sendEmote: (token: string, emote: string) => void;
+  /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+   * and/or one `level`. Fire-and-forget: the server re-authorizes `WorldRole.Gm` and refuses
+   * a non-GM sender or a scene outside this world with a generic error, so callers may offer
+   * this client-advisory only. Every connection's next `"vision"` push (including the
+   * caller's own) reflects the cleared memory once the server's `explored_fog_reset`
+   * broadcast arrives — no local state to update. */
+  resetExploredFog: (scene: string, opts?: ResetExploredFogOptions) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
    * with the computed path + cost, rejects on unreachable or timeout. Thin
    * transport mirror — no client-side path logic. `token`, when given, names the
@@ -288,12 +383,32 @@ export interface AppContext {
   /** Request server-authoritative move execution for `tokenId` along `path` on
    * `scene`. Resolves with the broadcast `MoveStream` on success; rejects on server
    * rejection or timeout. Animation is broadcast-driven for all viewers via onMoveStream;
-   * the resolve value signals success only. */
+   * the resolve value signals success only. `gesture` is an optional identity shared by every
+   * request one user gesture issues (a multi-token drag); each outcome carries it back so
+   * `onMoveOutcome`'s consumer raises one notice per gesture. */
   moveRequest: (
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ) => Promise<MoveStream>;
+  /** Request a door toggle on the named wall (`closed`↔`open`; `locked` is GM-only). The
+   * server authorizes positionally (an effectively-controlled token near and in sight of the
+   * door, plus engine-tier visibility on the wall document — or GM standing); the client's
+   * own reach pre-check is advisory UX only. Resolution is silence-based like the chat ops:
+   * the broadcast Event echo confirms success; only a rejection replies (a correlated
+   * `door_toggle_error`, which rejects this promise with the server's player-presentable
+   * reason). */
+  toggleDoor: (sceneId: string, wallId: string, to: DoorState) => Promise<void>;
+  /** Ask the server to place a module-declared effect (`placements` in the module manifest) over
+   * the area `shape`. The request carries the area and the caster only; the effect set is the
+   * manifest's and the server authorizes the sender against the declaration's `who`, so no
+   * client input chooses what a placement does. Resolution is silence-based like `toggleDoor`:
+   * the broadcast Event of the region create confirms success; only a rejection replies (a
+   * correlated `place_effect_error`, which rejects this promise with the server's
+   * player-presentable reason). `caster` is required when the declaration's `who` is
+   * `caster_owner`. */
+  placeEffect: (module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string) => Promise<void>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: {
     /** Scene the ping was placed on. */
@@ -316,15 +431,34 @@ export interface AppContext {
     /** The emote glyph(s). */
     emote: string;
   }) => void) => () => void;
+  /** Subscribe to shared rulers on the viewed scene; returns an unsubscribe. The callback is
+   * not called for a frame this connection sent (it draws its own local preview), but is for the
+   * same user's frames from another connection. `points` arrive unclipped. */
+  onRuler: (cb: (msg: RulerNotice) => void) => () => void;
+  /** Subscribe to region-triggered scrolling-text overlays. Server-fired only (a region's own
+   * `TriggerEffect::ScrollingText`) — there is no client `send` counterpart, unlike `onEmote`/
+   * `sendEmote`. Returns an unsubscribe. */
+  onScrollingText: (cb: (msg: {
+    /** Token the overlay plays over. */
+    token: string;
+    /** The overlay text. */
+    text: string;
+  }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
-   * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
-   * unsubscribe. */
+   * read-only observability signal, not a broadcast of every scene viewer's moves. The `Stage`
+   * module is the single consumer that turns a `rejected` outcome into the player-visible
+   * notice, so no tool raises its own rejection notice. Returns an unsubscribe. */
   onMoveOutcome: (cb: (msg: {
     /** Token the move was requested for. */
     tokenId: string;
+    /** The `gesture` the request was issued with, when it had one. */
+    gesture?: object;
     /** `truncated` means the server stopped the move short (e.g. a movement-gate rejection
      * mid-path); `rejected` means no move happened at all. */
     outcome: "executed" | "truncated" | "rejected";
+    /** `true` on a `rejected` outcome the whole-session pause caused, so the consumer raises
+     * the paused notice instead of the generic refusal. */
+    paused?: boolean;
   }) => void) => () => void;
   /** Chat transport seam: send/edit/delete a chat message. NOT fire-and-forget — each frame
    * carries a `request_id` and a rejection correlates back to REJECT this promise with the
@@ -341,6 +475,16 @@ export interface AppContext {
    * @returns Resolves once the reconcile completes; never rejects (per-module failures are logged,
    * not thrown). */
   reconcileInstalledModules: () => Promise<void>;
+  /** The last known load or activation problem per module, keyed on the install folder id (the
+   * key `ModuleManager` lists installed modules by). A module with no entry has no known
+   * problem. This is the live `WorldSession.moduleStatus` map, not a copy, so reads inside a
+   * Svelte reactive scope track it. */
+  moduleStatus: ReadonlyMap<string, ModuleStatusEntry>;
+  /** The manifests of every module active in the running session, first-party included.
+   * `ModuleManager.svelte` hands them to `checkSatisfiability` as the modules that satisfy a
+   * candidate's dependencies and contracts without being toggled.
+   * @returns One manifest per active module. */
+  activeModuleManifests: () => ModuleManifest[];
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */
@@ -363,6 +507,12 @@ export interface AppContext {
     /** Persist the chat read-marker blob.
      * @param blob - The chat module's read-marker blob to persist. */
     setChatRead(blob: unknown): void;
+    /** The chat composer's sent-text history for this world, oldest first.
+     * @returns The persisted entries; empty if none were saved. */
+    getChatHistory(): string[];
+    /** Record one sent composer text, persisted per world and bounded in count and size.
+     * @param text - The raw typed text that was sent. */
+    pushChatHistory(text: string): void;
   };
   /** Imperative panel-host seam (open/close/focus/toggle by panel id) plus a
    * live read-only view (`minimized`/`metaMap`/`restore`) for surfaces that
@@ -400,6 +550,38 @@ export interface AppContext {
      * @param cb Called with each relayed one-shot.
      * @returns A function that removes this listener. */
     onVfx(cb: (msg: VfxNotice) => void): () => void;
+  };
+  /** Note presentation seam: a GM asks the server to open a shared note on every client, and
+   * every client subscribes to the resulting signal. */
+  notes: {
+    /** GM-only: ask the server to present a shared note to every connected client. The server
+     * refuses a non-GM, an unknown note, and a note not shared with players.
+     * @param noteId The `note` document to present.
+     * @returns Resolves once accepted; rejects with the server's reason otherwise. */
+    present(noteId: string): Promise<void>;
+  };
+  /** Portal seam: subscribe to the destination offers the server addresses to this connection,
+   * answer or decline one, and ask the server to re-issue the offer for a token. The client
+   * holds no destination data beyond what an offer carries and decides nothing about who may
+   * see or answer one: the server addresses the offer and refuses every unauthorized answer. */
+  portal: {
+    /** Subscribe to portal offers; returns an unsubscribe.
+     * @param cb Called with each offer.
+     * @returns A function that removes this listener. */
+    onOffer(cb: (msg: PortalOfferNotice) => void): () => void;
+    /** Pick destination `choice` of an offer.
+     * @param offerId The offer being answered.
+     * @param choice The chosen option's `index`.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    choose(offerId: string, choice: number): Promise<void>;
+    /** Decline an offer.
+     * @param offerId The offer being answered.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    decline(offerId: string): Promise<void>;
+    /** Ask the server to re-issue the offer for a token standing in a portal-choice region.
+     * @param token The token that stands in the portal region.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    open(token: string): Promise<void>;
   };
   /** Emit surface onto the shared `HookBus` for statically-declared (`CoreHooks`) hook names —
    * a component-facing counterpart to `ModuleContext.hooks`, which a module's `register` uses

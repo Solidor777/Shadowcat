@@ -1,5 +1,6 @@
-import type { Module } from "@shadowcat/core";
+import { TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import Composer from "./Composer.svelte";
+import { diceTour } from "./tour";
 
 /** Default composer for the singleton chat.composer surface: an auto-growing
  * textarea that sends via ctx.chat.send. Fills chat's declared singleton slot;
@@ -14,5 +15,6 @@ export const chatComposer: Module = {
   },
   register(ctx) {
     ctx.contributions.contribute({ id: "chat-composer:main", contract: "shadowcat.surface:chat.composer", component: Composer });
+    ctx.contributions.contribute({ id: "chat-composer:tour", contract: TOUR_CONTRACT, component: null, tour: diceTour });
   },
 };

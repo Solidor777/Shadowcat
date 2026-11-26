@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
-import type { SceneTool, SceneToolHost, Point } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, SnapMode, Point } from "@shadowcat/render";
 import { SceneInteractionBridge } from "./sceneInteraction";
 import { fakeSceneHost } from "./__fixtures__/fakeSceneHost";
 
@@ -121,6 +121,30 @@ test("setSnapEnabled forwards to the host (no-op when detached)", () => {
   bridge.setSnapEnabled(false);
   bridge.setSnapEnabled(true);
   expect(calls).toEqual([false, true]);
+});
+
+test("setSnapMode forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.setSnapMode("vertex")).not.toThrow(); // detached: no-op
+  const calls: SnapMode[] = [];
+  bridge.attach(fakeSceneHost({ setSnapMode: (mode) => calls.push(mode) }));
+  bridge.setSnapMode("vertex");
+  bridge.setSnapMode("center");
+  expect(calls).toEqual(["vertex", "center"]);
+});
+
+test("panToPoint and panToToken forward to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.panToPoint(1, 2)).not.toThrow(); // detached: no-op
+  expect(() => bridge.panToToken("tok1")).not.toThrow();
+  const calls: unknown[][] = [];
+  bridge.attach(fakeSceneHost({
+    panToPoint: (x, y, opts) => calls.push(["point", x, y, opts]),
+    panToToken: (id, opts) => calls.push(["token", id, opts]),
+  }));
+  bridge.panToPoint(10, 20, { durationMs: 100 });
+  bridge.panToToken("tok1");
+  expect(calls).toEqual([["point", 10, 20, { durationMs: 100 }], ["token", "tok1", undefined]]);
 });
 
 test("animateSamples forwards moverLight to the host", () => {

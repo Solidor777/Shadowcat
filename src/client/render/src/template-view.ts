@@ -1,7 +1,15 @@
 import type { ReadableDocuments, WireDocument, TemplateEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
-import { parseColor, circlePoints, conePoints, squarePoints } from "./geometry";
+import {
+  parseColor,
+  circlePoints,
+  conePoints,
+  squarePoints,
+  linePoints,
+  isDrawableConeAngle,
+  DEFAULT_CONE_ANGLE_DEGREES,
+} from "./geometry";
 import { sceneScopedDocs } from "./scene-scope";
 
 /** Templates render as translucent filled areas. */
@@ -76,15 +84,21 @@ export class TemplateView {
 
 /**
  * Tessellates a `template` doc's `engine.shape` into a flat-point `ShapeNodeSpec`. `x,y`
- * is always the anchor and `size` a radius/length (never a second corner): `circle` and
- * `cone` tessellate via `circlePoints`/`conePoints`; `rect` tessellates via `squarePoints`
- * — an axis-**rotated** square of side `2*size` centered at `(x,y)`, unlike
- * `DrawingView.toSpec`'s and `RegionView.toSpec`'s `"rect"` kind, which is an axis-aligned bbox
- * between two authored corners (the `"rect"` string means different geometry in each
- * file). `line` builds a 2-point open segment from `(x,y)` at `direction` degrees, length
- * `size`, and is the only kind that returns `closed:false` (and therefore no `fill`).
- * Returns `null` for a missing `engine.shape`, an unrecognized `kind`, or a non-numeric
- * `x`/`y`/`size`/`direction`. This is defense-in-depth, not a claim about any particular
+ * is always the anchor and `size` a radius/length (never a second corner): `circle`
+ * tessellates via `circlePoints`; `cone` via `conePoints`, its full aperture (the angle
+ * BETWEEN the two base corners) `angle ?? {@link DEFAULT_CONE_ANGLE_DEGREES}`; `rect`
+ * tessellates via `squarePoints` — an axis-**rotated** rectangle of sides `2*size` by
+ * `2*(width ?? size)` centered at `(x,y)` (forced-square exactly when `width` is absent),
+ * unlike `DrawingView.toSpec`'s and `RegionView.toSpec`'s `"rect"` kind, which is an
+ * axis-aligned bbox between two authored corners (the `"rect"` string means different
+ * geometry in each file). `line` builds a segment from `(x,y)` at `direction` degrees,
+ * length `size`, via `linePoints`: a bare open 2-point segment when `width` is absent or
+ * `0` (`closed:false`, no `fill`), or a
+ * closed rectangle of thickness `width` otherwise. Returns `null` for a missing
+ * `engine.shape`, an unrecognized `kind`, a non-numeric `x`/`y`/`size`/`direction`/authored
+ * `angle`/`width`, or an `angle` that fails `isDrawableConeAngle` (non-finite, or outside
+ * `(0.0, 180.0)`, matching `TemplateEngine::validate`'s own bound, since the optimistic store can
+ * hold engine data the server has not yet validated). This is defense-in-depth, not a claim about any particular
  * upstream conversion: the render layer draws the OPTIMISTIC view (`AppContext.documents`), so
  * a scene-tool bug that builds a Create op with a missing or non-numeric coordinate reaches
  * `templateShapeSpec` on the authoring client before the server has validated anything. Guarded
@@ -106,13 +120,23 @@ export class TemplateView {
 export function templateShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
-  const { kind, x, y, size, direction } = s.shape;
+  const { kind, x, y, size, direction, angle, width } = s.shape;
   // Checked on the RAW authored scalars, before tessellation — matching `regionShapeSpec` and
   // `WallView.toSpec`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
   // so a null `x` on a circle yields finite, plausible-looking geometry no later check can
   // distinguish from an authored shape. `direction` is included because `cone`/`rect`/`line`
-  // route it through `cos`/`sin`.
+  // route it through `cos`/`sin`. `angle`/`width` are optional (`number | null`) but must be
+  // finite when authored, for the same reason.
   if (![x, y, size, direction].every((n) => Number.isFinite(n))) return null;
+  // `angle`/`width` use loose null-checks: a genuine server document always carries the
+  // key (Option<f64> serializes to `null`, never omitted), but a pre-migration/legacy
+  // in-memory doc may omit it entirely (`undefined`) — both mean "absent, use the default".
+  if (width != null && !Number.isFinite(width)) return null;
+  // An out-of-`(0.0, 180.0)` cone angle is rejected the same as a non-finite one: the
+  // optimistic store can hold engine data the server has not yet validated/rejected — the same
+  // precedent `regionShapeSpec`'s own null-part guard documents. `isDrawableConeAngle` is the
+  // guard `templateToRegionShape` reads too.
+  if (!isDrawableConeAngle(angle)) return null;
   let points: number[];
   let closed = true;
   switch (kind) {
@@ -120,15 +144,15 @@ export function templateShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
       points = circlePoints(x, y, size);
       break;
     case "cone":
-      points = conePoints(x, y, size, direction);
+      points = conePoints(x, y, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES);
       break;
     case "rect":
-      points = squarePoints(x, y, size, direction);
+      points = squarePoints(x, y, size, direction, width ?? size);
       break;
     case "line": {
-      const a = (direction * Math.PI) / 180;
-      points = [x, y, x + size * Math.cos(a), y + size * Math.sin(a)];
-      closed = false;
+      const w = width ?? 0;
+      points = linePoints(x, y, size, direction, w);
+      closed = w > 0;
       break;
     }
     default:

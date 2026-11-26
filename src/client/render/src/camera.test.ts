@@ -43,3 +43,82 @@ test("sceneToScreen is the inverse of screenToScene", () => {
   expect(round.x).toBeCloseTo(s.x);
   expect(round.y).toBeCloseTo(s.y);
 });
+
+const VIEW = { width: 800, height: 600 };
+/** The scene point currently at the viewport center. */
+const centerOf = (c: Camera) => c.screenToScene({ x: VIEW.width / 2, y: VIEW.height / 2 });
+
+test("panTo_point_tweens_over_duration", () => {
+  const c = new Camera();
+  c.panTo({ x: 1000, y: 500 }, VIEW, { durationMs: 400, easing: "linear" });
+  // The tween has not moved the camera until a tick advances it.
+  expect(centerOf(c)).toEqual({ x: 400, y: 300 });
+  expect(c.tick(200, VIEW)).toBe(true);
+  expect(centerOf(c).x).toBeCloseTo(700);
+  expect(centerOf(c).y).toBeCloseTo(400);
+  expect(c.tick(200, VIEW)).toBe(true);
+  expect(centerOf(c).x).toBeCloseTo(1000);
+  expect(centerOf(c).y).toBeCloseTo(500);
+  // Finished: further ticks neither move nor ask for a re-apply.
+  expect(c.tick(16, VIEW)).toBe(false);
+});
+
+test("panTo applies the easing curve: easeInOut is behind linear at a quarter of the duration", () => {
+  const linear = new Camera();
+  linear.panTo({ x: 1000, y: 300 }, VIEW, { durationMs: 400, easing: "linear" });
+  linear.tick(100, VIEW);
+  const eased = new Camera();
+  eased.panTo({ x: 1000, y: 300 }, VIEW, { durationMs: 400, easing: "easeInOut" });
+  eased.tick(100, VIEW);
+  expect(centerOf(eased).x).toBeLessThan(centerOf(linear).x);
+});
+
+test("panTo_token_tracks_live_position_each_frame", () => {
+  const c = new Camera();
+  let token = { x: 1000, y: 300 };
+  c.panTo(() => token, VIEW, { durationMs: 400, easing: "linear" });
+  c.tick(100, VIEW); // a quarter of the way toward the position at THIS frame
+  expect(centerOf(c).x).toBeCloseTo(400 + (1000 - 400) * 0.25);
+  token = { x: 2000, y: 300 }; // the subject moves mid-pan
+  c.tick(300, VIEW); // the pan ends on where the subject is now, not where it was at the start
+  expect(centerOf(c).x).toBeCloseTo(2000);
+});
+
+test("panTo_respects_reduced_motion_by_snapping_instantly", () => {
+  const c = new Camera();
+  c.panTo({ x: 1000, y: 500 }, VIEW, { durationMs: 400, reducedMotion: true });
+  expect(centerOf(c)).toEqual({ x: 1000, y: 500 });
+  expect(c.tick(16, VIEW)).toBe(false); // no tween was started
+});
+
+test("panTo centers at the current zoom without changing it", () => {
+  const c = new Camera();
+  c.zoomAt(2, 0, 0);
+  c.panTo({ x: 100, y: 50 }, VIEW, { reducedMotion: true });
+  expect(c.transform().scale).toBeCloseTo(2);
+  expect(centerOf(c).x).toBeCloseTo(100);
+  expect(centerOf(c).y).toBeCloseTo(50);
+});
+
+test("a manual panBy or zoomAt cancels an in-flight pan", () => {
+  const byPan = new Camera();
+  byPan.panTo({ x: 1000, y: 500 }, VIEW, { durationMs: 400 });
+  byPan.panBy(5, 5);
+  expect(byPan.tick(100, VIEW)).toBe(false);
+  const byZoom = new Camera();
+  byZoom.panTo({ x: 1000, y: 500 }, VIEW, { durationMs: 400 });
+  byZoom.zoomAt(1.5, 10, 10);
+  expect(byZoom.tick(100, VIEW)).toBe(false);
+});
+
+test("a provider that reports its subject gone drops the pan; an unresolvable target is a no-op", () => {
+  const c = new Camera();
+  let present: { x: number; y: number } | undefined = { x: 1000, y: 500 };
+  c.panTo(() => present, VIEW, { durationMs: 400 });
+  present = undefined;
+  expect(c.tick(100, VIEW)).toBe(false);
+  expect(c.tick(100, VIEW)).toBe(false); // dropped, not retried
+  const unresolved = new Camera();
+  unresolved.panTo(() => undefined, VIEW, { reducedMotion: true });
+  expect(unresolved.transform()).toEqual({ x: 0, y: 0, scale: 1 });
+});

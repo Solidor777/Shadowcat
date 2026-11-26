@@ -1,16 +1,18 @@
-//! SSRF-guarded outbound HTTP fetcher for chat link previews — the server's
-//! FIRST outbound HTTP surface, so every guard here is load-bearing. The
-//! client never fetches link previews itself; ONLY the server fetches, behind
-//! this module's address guard, and stores the result.
+//! This module is the SSRF-guarded outbound HTTP fetcher for chat link previews.
 //!
-//! Guard order (each a hard fail-closed reject): URL validation (scheme +
-//! userinfo + host; a literal-IP host is checked against the blocked ranges
-//! HERE because hyper's connector short-circuits DNS for IP literals, so the
-//! resolver only ever sees `Host::Domain`) -> address validation for domain
-//! hosts (`GuardedResolver`, DNS-rebind-safe because reqwest connects to
-//! EXACTLY the IPs the resolver validated, no second resolution) -> manual
-//! per-hop redirect re-validation -> a single deadline over the whole redirect
-//! chain -> streamed size cap -> content-type check -> bounded text extraction.
+//! It is the server's only outbound HTTP client, so every guard here is load-bearing. The browser
+//! client never fetches link previews itself; ONLY the server fetches, behind this module's
+//! address guard, and stores the result.
+//!
+//! Each guard is a hard fail-closed reject. URL validation (`validate_url`) checks scheme, userinfo
+//! and host; a literal-IP host is checked against the blocked ranges THERE because hyper's
+//! connector short-circuits DNS for IP literals, so the resolver only ever sees `Host::Domain`.
+//! Address validation for domain hosts is `GuardedResolver`, DNS-rebind-safe because reqwest
+//! connects to EXACTLY the IPs the resolver validated, with no second resolution. `guarded_get`
+//! then re-validates every redirect hop manually, rejects a response whose content type is not the
+//! expected one, rejects a declared `Content-Length` over the cap, and streams the body under the
+//! size cap. The whole chain runs under one deadline (`fetch_preview_with_deadline`), and the
+//! preview fetch ends with bounded text extraction.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -31,37 +33,39 @@ use super::preview_cache::{
 use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
-/// A server-fetched preview. Stored verbatim by the ingest stage (a later
-/// checkpoint) as a `Segment::LinkPreview`; the client renders ONLY these
-/// stored strings and never fetches `url` itself.
+/// A server-fetched link preview. `enrich` copies `url`, `title`, `description` and
+/// `image_asset_id` into a `Segment::LinkPreview`. `image_url` is never stored on the segment;
+/// `enrich` queues or joins a `PendingEnrichment::PreviewImage` job for it when `image_url` is
+/// `Some` and the address has no asset id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
-    /// The URL the fetch ended on — redirects substitute it (`url = next` per
-    /// hop in `fetch_preview_inner`), so this is the post-redirect address,
-    /// not necessarily what the author posted.
+    /// The address the preview describes. A preview from `fetch_preview` carries the address the
+    /// fetch ended on, because `guarded_get` substitutes each redirect target (`url = next`). A
+    /// preview that `cached_or_fetch` builds from a persisted row carries the link's address in
+    /// the message, and an in-memory cache entry holds whichever of the two built it.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
     /// Extracted description, entity-decoded, capped at
     /// `MAX_DESCRIPTION_CHARS`; may be empty.
     pub description: String,
-    /// A candidate `og:image`/canonical-image URL extracted (never fetched)
-    /// by THIS fetch — `Some` only on a genuinely fresh scrape, always
-    /// `None` on a cache-tier hit (see `image_asset_id`'s doc for why a
-    /// cache hit carries the asset id instead, never the raw URL). Never
-    /// persisted or serialized to any wire type — purely an in-process
-    /// signal from `enrich` to its `PendingEnrichment::PreviewImage` queue.
+    /// A candidate `og:image`/canonical-image URL extracted (never fetched) by the fetch that
+    /// built this preview. `None` for a preview that `cached_or_fetch` builds from a persisted
+    /// row, whose image state is the row's `image_asset_id` instead, while the in-memory cache
+    /// stores and returns the whole preview, `image_url` included. Never persisted or serialized
+    /// to any wire type — purely an in-process signal from `enrich` to its
+    /// `PendingEnrichment::PreviewImage` queue.
     pub image_url: Option<String>,
-    /// The already-known asset id for this URL's image, populated ONLY from
-    /// a persisted-cache hit (`cached_or_fetch`) whose row already carries
-    /// one — a fresh fetch never sets this (an image URL alone is not yet
-    /// an asset). Mutually exclusive with `image_url` by construction.
+    /// The asset id `cached_or_fetch` reads from the candidate's persisted `link_preview_cache`
+    /// row; `fetch_preview` leaves it `None`. `enrich` also sets it on a preview that ends on an
+    /// address another candidate's preview already has an asset id for, so it can be `Some`
+    /// together with `image_url`.
     pub image_asset_id: Option<Uuid>,
 }
 
-/// Cap on distinct URLs previewed per message. First-seen
-/// order, applied to the DEDUPED candidate list — a message pasting the same
-/// link four times still counts it once toward this cap.
+/// Cap on the distinct preview candidates `enrich` collects per message, plain URLs and oEmbed
+/// posts together. Candidates are taken in the order the sanitized HTML segments list them, and
+/// a link pasted four times counts once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
 
 /// Cap on distinct inline chat images (Markdown/HTML image sources
@@ -142,38 +146,57 @@ pub struct LinkPreviewDeps<'a> {
 }
 
 /// Borrow-bundle of everything `enrich` needs beyond `segments`/`user`/the
-/// two timestamps: the document repository (the persisted `link_preview_cache`
-/// tier) alongside the existing fetch-dependency bundle. Keeps `enrich`'s own
-/// parameter count from crossing the too-many-arguments threshold now that a
-/// persisted-cache lookup needs a repository handle in addition to the
-/// in-memory cache. Not stored — constructed inline at each call site.
+/// two timestamps: the world the message belongs to and the document repository (the persisted
+/// `link_preview_cache` tier) alongside the existing fetch-dependency bundle. Keeps `enrich`'s
+/// own parameter count from crossing the too-many-arguments threshold. Not stored — constructed
+/// inline at each call site.
 pub struct EnrichDeps<'a> {
+    /// The world of the message being enriched: the scope of every cache read and write.
+    pub world_id: Uuid,
     /// The document repository, for the persisted `link_preview_cache` tier.
     pub repo: &'a dyn crate::data::repository::Repository,
     /// The shared preview-fetch HTTP client, in-memory cache, and rate limiter.
     pub fetch: LinkPreviewDeps<'a>,
 }
 
-/// Two-tier cache lookup for `url`: the in-memory `cache` (fast path, no
-/// await beyond a mutex) first, then the persisted `link_preview_cache`
-/// table (survives a restart) on a miss — checked BEFORE any network fetch
+/// Two-tier cache lookup for `url` in `world_id`: the in-memory `cache` first, then the persisted
+/// `link_preview_cache` table (survives a restart) on a miss — checked BEFORE any network fetch
 /// is attempted, so a cold-started process can reuse a still-fresh row
-/// rather than re-fetching every URL seen since the process last started.
+/// rather than re-fetching every URL seen since the process last started. Both tiers are scoped
+/// to the world, so an outcome or asset id of another world is never returned.
 /// `None` return means BOTH tiers missed (or a persisted row expired past
-/// its TTL) and the caller must actually fetch. A persisted hit backfills
-/// the in-memory tier so a repeat within the same process's uptime skips
-/// the DB entirely.
+/// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
+/// memory hit with a preview takes the persisted row's current asset id, which costs one row read
+/// per such hit; when the row is absent the hit counts as a miss, so the caller's fetch writes the
+/// row again. A failed persisted-row read leaves a memory hit as cached and counts as a miss when
+/// no hit exists.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
+    world_id: Uuid,
     url: &str,
     now: Instant,
     now_ms: i64,
 ) -> Option<Option<LinkPreview>> {
-    if let Some(hit) = cache.get(url, now) {
+    if let Some(mut hit) = cache.get(world_id, url, now) {
+        // The persisted row owns the asset id: a background job records one on it, and deleting
+        // the asset nulls it, neither updating this entry.
+        if let Some(preview) = hit.as_mut() {
+            match repo.get_link_preview_cache(world_id, url).await {
+                Ok(Some(row)) => preview.image_asset_id = row.image_asset_id,
+                Ok(None) => return None,
+                Err(e) => tracing::warn!(?e, %url, "link-preview cache row read failed"),
+            }
+        }
         return Some(hit);
     }
-    let row = repo.get_link_preview_cache(url).await.ok().flatten()?;
+    let row = match repo.get_link_preview_cache(world_id, url).await {
+        Ok(row) => row?,
+        Err(e) => {
+            tracing::warn!(?e, %url, "link-preview cache row read failed");
+            return None;
+        }
+    };
     let is_negative = row.title.is_none() && row.description.is_none();
     let ttl_ms = if is_negative {
         NEGATIVE_TTL.as_millis() as i64
@@ -203,7 +226,7 @@ async fn cached_or_fetch(
     let backfill_at = now
         .checked_sub(Duration::from_millis(age_ms.max(0) as u64))
         .unwrap_or(now);
-    cache.insert(url.to_string(), outcome.clone(), backfill_at);
+    cache.insert(world_id, url.to_string(), outcome.clone(), backfill_at);
     Some(outcome)
 }
 
@@ -217,14 +240,17 @@ async fn cached_or_fetch(
 /// each through `cached_or_fetch` (a hit reuses the cached outcome; a miss is
 /// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
 /// `JoinSet` so the total added latency is one fetch's worth, not N serial
-/// fetches. Each successful fetch APPENDS one `Segment::LinkPreview` to the
-/// END of `segments` (existing segments are never reordered or removed); a
-/// failure or a rate-limited URL degrades silently to no card (a failure is
-/// still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't
-/// re-fetch; a rate-limited miss is NOT cached, so a later minute may still
-/// succeed). `now_ms` drives the rate limiter's sliding window; `now` drives
-/// the cache's TTL — both must be consistent with the caller's clock but are
-/// deliberately separate types/precisions, matching each dependency's own
+/// fetches. Each successful preview APPENDS one `Segment::LinkPreview` to the END of `segments`
+/// in the candidates' message order (existing segments are never reordered or removed). A
+/// candidate whose preview ends on an address for which another candidate's preview already holds
+/// an asset id reuses that id, records it on its own cache row, and queues no job. That write
+/// does not take `PreviewFetchLocks`, which would make the send wait on a background fetch;
+/// `set_link_preview_cache_image` leaves an id already on the row, so a concurrent job's write
+/// does not replace it. A failure or a rate-limited URL degrades silently to no card (a failure
+/// is still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't re-fetch; a
+/// rate-limited miss is NOT cached, so a later minute may still succeed). `now_ms` drives the
+/// rate limiter's sliding window; `now` drives the cache's TTL — both must be consistent with the
+/// caller's clock but are deliberately separate types/precisions, matching each dependency's own
 /// clock source.
 ///
 /// Returns any `PendingEnrichment` jobs the caller must run AFTER its own
@@ -251,6 +277,7 @@ pub async fn enrich(
     scan_previews: bool,
 ) -> Vec<PendingEnrichment> {
     let EnrichDeps {
+        world_id,
         repo,
         fetch: LinkPreviewDeps {
             client,
@@ -290,19 +317,25 @@ pub async fn enrich(
         }
     }
 
-    let mut previews: Vec<LinkPreview> = Vec::with_capacity(urls.len());
-    let mut misses: Vec<String> = Vec::new();
-    for url in urls {
-        match cached_or_fetch(repo, cache, &url, now, now_ms).await {
-            Some(Some(preview)) => previews.push(preview),
+    // Each preview travels with the candidate URL its cache rows are keyed on: a fresh fetch
+    // carries the address it ended on in `LinkPreview.url` (normalized, and post-redirect when
+    // it redirected), while `link_preview_cache` is written and read under the candidate.
+    // The leading index is the candidate's position in `urls`; sorting by it below makes segment
+    // order, job `cache_urls` order and the winning `image_url` independent of the order the
+    // concurrent fetches complete in.
+    let mut previews: Vec<(usize, String, LinkPreview)> = Vec::with_capacity(urls.len());
+    let mut misses: Vec<(usize, String)> = Vec::new();
+    for (index, url) in urls.into_iter().enumerate() {
+        match cached_or_fetch(repo, cache, world_id, &url, now, now_ms).await {
+            Some(Some(preview)) => previews.push((index, url, preview)),
             Some(None) => {} // live cached negative: skip silently, no re-fetch
-            None => misses.push(url),
+            None => misses.push((index, url)),
         }
     }
 
     if !misses.is_empty() {
         let mut set = tokio::task::JoinSet::new();
-        for url in misses {
+        for (index, url) in misses {
             // Rate-limit-gated BEFORE spawning the fetch task — a rejected
             // URL never touches the network and is never cached (a fresh
             // minute may still succeed for it).
@@ -312,18 +345,19 @@ pub async fn enrich(
             let client = client.clone();
             set.spawn(async move {
                 let result = fetch_preview(&client, &url).await;
-                (url, result)
+                (index, url, result)
             });
         }
         while let Some(joined) = set.join_next().await {
-            let Ok((url, result)) = joined else {
+            let Ok((index, url, result)) = joined else {
                 continue; // a joined task panicking is not this stage's failure mode to surface
             };
             match result {
                 Ok(preview) => {
-                    cache.insert(url.clone(), Some(preview.clone()), now);
+                    cache.insert(world_id, url.clone(), Some(preview.clone()), now);
                     if let Err(e) = repo
                         .upsert_link_preview_cache(
+                            world_id,
                             &url,
                             Some(&preview.title),
                             Some(&preview.description),
@@ -337,12 +371,12 @@ pub async fn enrich(
                         // at risk, which is worth an operator-visible signal.
                         tracing::warn!(?e, %url, "link-preview cache persist failed");
                     }
-                    previews.push(preview);
+                    previews.push((index, url, preview));
                 }
                 Err(_) => {
-                    cache.insert(url.clone(), None, now);
+                    cache.insert(world_id, url.clone(), None, now);
                     if let Err(e) = repo
-                        .upsert_link_preview_cache(&url, None, None, now_ms)
+                        .upsert_link_preview_cache(world_id, &url, None, None, now_ms)
                         .await
                     {
                         tracing::warn!(?e, %url, "link-preview negative-cache persist failed");
@@ -352,28 +386,79 @@ pub async fn enrich(
         }
     }
 
-    for preview in previews {
+    previews.sort_by_key(|(index, _, _)| *index);
+    // A candidate whose preview ended on an address that another preview of this message already
+    // has an asset id for reuses that id instead of queueing a job.
+    let mut known_assets: std::collections::HashMap<String, Uuid> =
+        std::collections::HashMap::new();
+    for (_, _, preview) in &previews {
         if let Some(asset_id) = preview.image_asset_id {
-            segments.push(Segment::LinkPreview {
-                url: preview.url,
-                title: preview.title,
-                description: preview.description,
-                image_asset_id: Some(asset_id),
-            });
-        } else {
-            if let Some(image_url) = preview.image_url.clone() {
-                pending.push(PendingEnrichment::PreviewImage {
-                    preview_url: preview.url.clone(),
-                    image_url,
-                });
+            known_assets.entry(preview.url.clone()).or_insert(asset_id);
+        }
+    }
+    for (_, cache_url, preview) in &mut previews {
+        if preview.image_asset_id.is_none() {
+            if let Some(&asset_id) = known_assets.get(&preview.url) {
+                if let Err(e) = repo
+                    .set_link_preview_cache_image(world_id, cache_url, asset_id)
+                    .await
+                {
+                    tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
+                }
+                preview.image_asset_id = Some(asset_id);
             }
-            segments.push(Segment::LinkPreview {
-                url: preview.url,
-                title: preview.title,
-                description: preview.description,
-                image_asset_id: None,
+        }
+    }
+    // Candidates whose previews ended on the same address share one job, so the image is fetched
+    // and asset-ified once and the asset id is recorded on each of those candidates' cache rows,
+    // including a candidate whose own preview carried no image URL.
+    for (_, _, preview) in &previews {
+        let Some(image_url) = &preview.image_url else {
+            continue;
+        };
+        if preview.image_asset_id.is_some() {
+            continue;
+        }
+        let queued = pending.iter().any(|p| {
+            matches!(p, PendingEnrichment::PreviewImage { preview_url, .. }
+                if *preview_url == preview.url)
+        });
+        // The image fetch is its own outbound GET, charged here for a cached preview and a
+        // fresh one alike; a refused job leaves the card without its image.
+        if !queued && rate.check(user, now_ms, PREVIEW_FETCH_PER_MIN) {
+            pending.push(PendingEnrichment::PreviewImage {
+                cache_urls: Vec::new(),
+                preview_url: preview.url.clone(),
+                title: preview.title.clone(),
+                description: preview.description.clone(),
+                image_url: image_url.clone(),
             });
         }
+    }
+    for (_, cache_url, preview) in &previews {
+        if preview.image_asset_id.is_some() {
+            continue;
+        }
+        for job in pending.iter_mut() {
+            if let PendingEnrichment::PreviewImage {
+                cache_urls,
+                preview_url,
+                ..
+            } = job
+            {
+                if *preview_url == preview.url {
+                    cache_urls.push(cache_url.clone());
+                }
+            }
+        }
+    }
+    for (_, _, preview) in previews {
+        segments.push(Segment::LinkPreview {
+            url: preview.url,
+            title: preview.title,
+            description: preview.description,
+            image_asset_id: preview.image_asset_id,
+        });
     }
 
     // Inline chat images: `image_urls` already passed `policy.images()` inside
@@ -1583,16 +1668,16 @@ pub async fn fetch_json_bytes(
     }
 }
 
-/// Guard #1: scheme MUST be exactly http/https; reject a URL carrying
-/// `userinfo` (credential confusion); reject a missing/empty host; and — the
-/// SSRF-critical part — validate any literal-IP host HERE, directly. A URL
-/// whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
-/// like `2130706433`/`0x7f000001`, which parse to `Host::Ipv4`) never reaches
-/// `GuardedResolver`: hyper-util's connector short-circuits DNS for IP-literal
-/// hosts, so `is_blocked_ip` would otherwise never be consulted and reqwest
-/// would connect straight to a blocked address. Only `Host::Domain` proceeds to
-/// the resolver. Run on the initial URL AND on every redirect hop's resolved
-/// `Location`, so this closes the literal-IP door on redirects too.
+/// Validates a URL before any outbound fetch; `guarded_get` runs it on the initial URL and on
+/// every redirect hop's resolved `Location`.
+///
+/// The scheme must be exactly http or https. A URL carrying `userinfo` is rejected (credential
+/// confusion), as is a missing or empty host. A literal-IP host is checked against the blocked
+/// ranges here, directly. The `url` crate parses decimal and hex spellings such as `2130706433`
+/// and `0x7f000001` to `Host::Ipv4`. A URL with an IP-literal host never reaches
+/// `GuardedResolver`, because hyper-util's connector skips DNS for IP-literal hosts. Without
+/// this check `is_blocked_ip` would never be consulted and reqwest would connect straight to a
+/// blocked address. Only `Host::Domain` proceeds to the resolver.
 fn validate_url(url: &Url) -> Result<(), PreviewError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(PreviewError::BadScheme);

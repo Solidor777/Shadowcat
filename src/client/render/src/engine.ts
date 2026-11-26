@@ -1,14 +1,15 @@
-import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS, EMPTY_BARS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, AssetResolver, FootprintLookup, BarsLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
-import type { TokenTweenConfig } from "./easing";
+import type { CameraTransform, VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
+import type { EasingMode, TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
-import { holdLightingCells, unionLightingInputs } from "./lighting";
-import { Camera } from "./camera";
+import { holdLightingCells, parseRenderHint, unionLightingInputs, type VisionTreatments } from "./lighting";
+import { Camera, type PanTarget } from "./camera";
 import { Compositor } from "./compositor";
+import { isTokenRevealed } from "./reveal";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
 import { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
@@ -20,8 +21,13 @@ import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
-import { EmoteView } from "./emote-view";
+import { EmoteView, type EmoteKind } from "./emote-view";
+import { RemoteRulerView } from "./remote-ruler-view";
 import { VfxView } from "./vfx-view";
+
+/** Stroke color of the authored-rectangle outline, `0xRRGGBB` (amber), fixed rather than themed so
+ * it stays distinct from the grid lines under every theme. */
+const BOUNDS_OUTLINE_COLOR = 0xd9a441;
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
@@ -100,12 +106,29 @@ export interface RenderEngineOpts {
    * suffix, or a plain distance) reaches anything outside the canvas, since the label itself
    * renders only as `DisplayBackend`-drawn canvas content with no other DOM presence. */
   onMeasureDrawn?: (label: string) => void;
+  /** Called after every camera transform push (host observability hook) with the scene point at
+   * the viewport center — how a host surfaces where the camera looks, which otherwise exists
+   * only as a WebGL transform. */
+  onCameraApplied?: (center: Point) => void;
+  /** Called after every camera transform push with the transform just applied
+   * (`screen = scene * scale + offset`) — how a host mirrors the camera into DOM that must stay
+   * anchored to scene points (a stage overlay), since the transform otherwise exists only on the
+   * backend's world container. */
+  onTransformApplied?: (transform: CameraTransform) => void;
+  /** Called after every applied fog mask (a derived frame, the GM fog preview, and each vision
+   * sweep step) — the signal a host re-asks {@link RenderEngine.isTokenRevealed} on, since the
+   * mask exists only as backend state. */
+  onVisibilityApplied?: () => void;
   /** Called on every painted lighting frame (host observability hook) with the frame the
    * backend was handed and whether a carried-light sweep is in flight — so a host can surface
    * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
   onLightingApplied?: (frame: LightingFrame, sweeping: boolean) => void;
+  /** Resolves a `custom` render hint's treatment name to the registered `VisionTreatmentMeta`
+   * (Stage → the `VISION_TREATMENT_CONTRACT` contributions). Absent ⇒ every `custom` hint
+   * resolves to no treatment. */
+  visionTreatments?: VisionTreatments;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
-   * Absent ⇒ the first scene, preserving single-scene behavior. */
+   * Absent ⇒ `resolveViewedScene` over `store`. */
   viewedSceneId?: () => string | null;
   /** Which level (of the viewed scene) to additionally scope by. From the host (Stage →
    * `ctx.viewedLevel`). Absent ⇒ every level, preserving pre-levels behavior. Also threaded
@@ -126,6 +149,17 @@ export interface RenderEngineOpts {
    * other-level token is absent entirely. `true` additionally renders every other-level token
    * on the viewed scene, ghosted (`TokenView`'s `GHOST_FX`). */
   ghostOtherLevels?: () => boolean;
+  /** Whether this viewer may see a token's facing-vision wedge (Stage → owner-or-GM). Absent ⇒
+   * no wedge is ever drawn, so another creature's facing is never revealed. */
+  facingWedgeVisible?: (doc: WireDocument) => boolean;
+  /** The server's resolved token nameplates and bars (Stage → `ctx.bars`). The engine computes
+   * no visibility and evaluates no formula: `TokenView` reads what the server delivered. Absent
+   * ⇒ nothing delivered, so no nameplate or bar draws. A new frame carries no store commit, so
+   * the host must call {@link RenderEngine.reapplyBars} to re-project. */
+  bars?: () => BarsLookup;
+  /** The localized label drawn for a delivered nameplate that names nothing (Stage → the
+   * `token.nameplateFallback` message). Absent ⇒ an empty label. */
+  nameplateFallbackLabel?: () => string;
   /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
    * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
    * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
@@ -181,6 +215,14 @@ export class RenderEngine implements SceneToolHost {
    * identity — grid RENDERING is unaffected, only the snap call chain every tool inherits
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
+  /** Which lattice point `snap` resolves to while `snapEnabled` — `"center"` (default) via
+   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`, `"edge"` via `Grid.snapEdge`. An orthogonal axis to `snapEnabled`:
+   * the mode selects the snap TARGET, never whether a snap happens. Pushed by the host
+   * through {@link setSnapMode}; every `ctx.scene.snap` caller inherits it. */
+  private snapMode: SnapMode = "center";
+  /** The easing curve the world's token-move animation resolved to ({@link setAnimation});
+   * camera pans reuse it so a world's chosen move easing governs both. */
+  private animationEasing: EasingMode = "easeInOut";
   /** Diffs the store's `scene`/background doc into backend nodes; one of the six views
    * {@link start}/{@link reapplyViewedScene} re-run per store commit or scene switch. */
   private readonly reconciler: SceneReconciler;
@@ -210,9 +252,21 @@ export class RenderEngine implements SceneToolHost {
   private lastVfxCount = 0;
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
+  /** Remote shared-ruler state, ticked each frame; drives `DisplayBackend.drawRulers`. */
+  private readonly remoteRulers = new RemoteRulerView();
+  /** Whether remote rulers were drawn last frame, so the ticker stops redrawing once idle. */
+  private rulersActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
    * Reassignable at runtime via {@link RenderEngine.setThemeColors} (a theme swap). */
   private gridColor: number;
+  /** The authored play-area size whose outline is shown, or `null` for none; set by
+   * {@link setAuthoredBounds}. */
+  private authoredBounds: {
+    /** Authored width, in grid cells. */
+    width: number;
+    /** Authored height, in grid cells. */
+    height: number;
+  } | null = null;
   /** Current CSS-pixel viewport size, set by {@link setViewport}; feeds the visible-scene-rect
    * computation in {@link redrawGrid}. */
   private viewport = { width: 0, height: 0 };
@@ -324,8 +378,8 @@ export class RenderEngine implements SceneToolHost {
    * STOP, this one the cells seen from the START, and the sweeping line of sight runs between
    * them. Cleared when the last vision sweep ends. */
   private lightingBeforeSweep: LightingInput | null = null;
-  /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
-   * unaffected. The single definition every view + reconciler + fog filter reads.
+  /** Resolved viewed scene, deferring to `resolveViewedScene` when the host supplies no
+   * `RenderEngineOpts.viewedSceneId`. The single definition every view + reconciler + fog filter reads.
    * @returns The viewed scene's document id, or `null` when no scene document exists yet.
    * @example
    * ```
@@ -334,7 +388,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   private readonly viewedScene = (): string | null =>
-    this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+    this.opts.viewedSceneId?.() ?? resolveViewedScene(this.opts.store);
   /** Resolved viewed level, falling back to `null` (every level) so pre-levels tests/hosts are
    * unaffected. The single definition every level-scoped view reads.
    * @returns The viewed level id, or `null` for every level.
@@ -400,7 +454,11 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion, opts.facingWedgeVisible, {
+      lookup: () => opts.bars?.() ?? EMPTY_BARS,
+      enabled: () => this.perf().nameplatesAndBars,
+      fallbackLabel: () => opts.nameplateFallbackLabel?.() ?? "",
+    });
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.vfxView = new VfxView(
       opts.store,
@@ -418,10 +476,10 @@ export class RenderEngine implements SceneToolHost {
     this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.templates = new TemplateView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.walls = new WallView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
-    this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel, (id) => this.tokens.transformOf(id));
     this.lights = new LightView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
-    this.compositor = new Compositor(this.backend);
-    this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
+    this.compositor = new Compositor(this.backend, () => this.opts.onVisibilityApplied?.());
+    this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0), opts.visionTreatments);
   }
 
   /** Wires the engine to its backend and store. In order: creates the backend's layer
@@ -471,7 +529,12 @@ export class RenderEngine implements SceneToolHost {
       this.flushPendingDerived();
     });
     this.backend.startTicker((dt) => {
+      // Camera tween first, so a tracked token's pan reads the position the token animator
+      // advanced on the PREVIOUS tick and then both land in this frame's render together.
+      if (this.camera.tick(dt, this.viewport)) this.applyCamera();
       this.tokens.tick(dt);
+      // After the token tween so an anchored region reads this frame's carrier transform.
+      this.regions.tick();
       this.vfxView.tick(dt);
       const vfxCount = this.vfxView.count();
       if (vfxCount !== this.lastVfxCount) {
@@ -492,6 +555,12 @@ export class RenderEngine implements SceneToolHost {
       if (glyphs.length > 0 || this.emotesActive) {
         this.backend.drawEmotes(glyphs);
         this.emotesActive = glyphs.length > 0;
+      }
+      const rulers = this.remoteRulers.tick(dt);
+      // Redraw only while remote rulers live (plus one final clear when they empty).
+      if (rulers.length > 0 || this.rulersActive) {
+        this.backend.drawRulers(rulers);
+        this.rulersActive = rulers.length > 0;
       }
       const perf = this.perf();
       const lastPerf = this.lastPerf;
@@ -516,7 +585,7 @@ export class RenderEngine implements SceneToolHost {
       // Live budget flips: the overlay and the token projection must react on THIS tick, not on
       // the next committed frame / document commit (which may never come).
       if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
-      if (lastPerf !== null && perf.tokenFx !== lastPerf.tokenFx) this.tokens.reconcile();
+      if (lastPerf !== null && (perf.tokenFx !== lastPerf.tokenFx || perf.nameplatesAndBars !== lastPerf.nameplatesAndBars)) this.tokens.reconcile();
       // Same live-flip shape for the VFX budget: a `vfx` knob toggle re-runs the view's
       // reconcile on this tick (it reads the flag fresh and tears every node down when off).
       if (lastPerf !== null && perf.vfx !== lastPerf.vfx) this.vfxView.reconcile();
@@ -769,6 +838,27 @@ export class RenderEngine implements SceneToolHost {
     this.opts.onDerivedApplied?.(eff);
   }
 
+  /** Whether the fog currently applied reveals a token at `at` — the same mask the canvas paints,
+   * including a vision sweep's progressive polygon and the GM fog preview. DOM drawn near a token
+   * (a chat bubble) gates on this so it never shows a position the canvas hides. A masked frame
+   * with no visible polygons reveals nothing (see `isTokenRevealed`); before the first visibility
+   * frame the compositor holds `mode: "all"` (no fog applied yet), so every token reads as
+   * revealed until a frame arrives.
+   * @param tokenId The token's document id.
+   * @param at The token's scene-coordinate position.
+   * @returns `true` when a viewer currently sees that position.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.isTokenRevealed("t1", { x: 150, y: 150 });
+   * ```
+   */
+  isTokenRevealed(tokenId: string, at: Point): boolean {
+    return isTokenRevealed(this.compositor.current(), tokenId, at);
+  }
+
   /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
    * GM can preview the player view. Client-only, with no server path; only adds fog to
    * the GM's own view, so it cannot leak.
@@ -816,6 +906,9 @@ export class RenderEngine implements SceneToolHost {
     }
     this.lightingBeforeLightSweep = null;
     this.lightingBeforeSweep = null;
+    // Remote rulers belong to the scene being left; the next update for the newly viewed scene
+    // redraws its own.
+    this.remoteRulers.clearAll();
     if (this.lastRawPayload !== undefined) {
       this.retargetLighting(this.toLighting(this.lastRawPayload));
       this.lastInput = this.toVisibility(this.lastRawPayload);
@@ -865,6 +958,35 @@ export class RenderEngine implements SceneToolHost {
    */
   reapplyTokenSelection(): void {
     this.tokens.reconcile();
+  }
+
+  /** Re-project every token after a new `"bars"` frame. A bars frame carries no document change,
+   * so no store commit drives a reconcile for it (the server recomputes derived channels after
+   * the event that changed them). Tokens only — no other view reads a bar.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyBars();
+   * ```
+   */
+  reapplyBars(): void {
+    this.tokens.reconcile();
+  }
+
+  /** Clear the hovered token when the pointer leaves the canvas, so a `"hover"`-mode nameplate or
+   * bar hides again. {@link dispatchPointerMove} sets the hovered token.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.clearHoveredToken();
+   * ```
+   */
+  clearHoveredToken(): void {
+    this.tokens.setHovered(null);
   }
 
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
@@ -1012,8 +1134,9 @@ export class RenderEngine implements SceneToolHost {
          * `scene::lighting::Band.min_illumination`, wire-keyed `min` by `compute_derived`. */
         min?: number;
       }[];
-      /** `renderHints` lookup table; indexed by a cell's packed `hint` field. */
-      renderHints?: string[];
+      /** `renderHints` lookup table of tagged `RenderHint` objects; indexed by a cell's packed
+       * `hint` field. Each entry is narrowed by `parseRenderHint`. */
+      renderHints?: unknown[];
       /** Per-token lit-cell groups. */
       lit?: {
         /** The scene id this cell group belongs to. */
@@ -1072,7 +1195,7 @@ export class RenderEngine implements SceneToolHost {
           )
           .map((b) => ({ name: b.name, min: b.min }))
       : [];
-    const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
+    const hints = Array.isArray(p.renderHints) ? p.renderHints.map(parseRenderHint) : [];
     return { cell: group.cell, bands, hints, cells };
   }
 
@@ -1215,14 +1338,16 @@ export class RenderEngine implements SceneToolHost {
     this.clearMeasure();
   }
 
-  /** `SceneToolHost.snap`: snap a scene point to the active grid's nearest CELL CENTER — for
-   * square grids, the containing cell's center; for hex, the nearest hex's center via
-   * axial-round-then-convert (`Grid.snap`; `Grid.axialToPixel` returns a hex center, the same
-   * method `Grid.hexLines` calls to get the origin it draws the six corners around — so this is a
-   * center, never a vertex, on either grid kind) — or the identity function when {@link
-   * setSnapEnabled} has disabled snapping for the current scene.
+  /** `SceneToolHost.snap`: snap a scene point to the active grid per the current snap mode —
+   * `"center"` (the default): the containing cell's center for square grids, the nearest hex's
+   * center via axial-round-then-convert for hex (`Grid.snap`; `Grid.axialToPixel` returns a hex
+   * center, the same method `Grid.hexLines` calls to get the origin it draws the six corners
+   * around — so center mode resolves a center, never a vertex, on either grid kind);
+   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`); `"edge"`: the nearest point on the
+   * nearest cell edge (`Grid.snapEdge`). The identity function when {@link
+   * setSnapEnabled} has disabled snapping for the current scene, regardless of mode.
    * @param p A scene-coordinate point.
-   * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled.
+   * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1232,7 +1357,18 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   snap(p: Point): Point {
-    return this.snapEnabled ? this.grid.snap(p) : p;
+    if (!this.snapEnabled) return p;
+    switch (this.snapMode) {
+      case "vertex": return this.grid.snapVertex(p);
+      case "edge": return this.grid.snapEdge(p);
+      case "center": return this.grid.snap(p);
+      // Exhaustiveness guard: a new `SnapMode` member fails to compile here rather than
+      // silently snapping to centers.
+      default: {
+        const _exhaustive: never = this.snapMode;
+        return _exhaustive;
+      }
+    }
   }
 
   /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
@@ -1250,6 +1386,25 @@ export class RenderEngine implements SceneToolHost {
    */
   setSnapEnabled(enabled: boolean): void {
     this.snapEnabled = enabled;
+  }
+
+  /** `SceneToolHost.setSnapMode`: select which lattice point {@link snap} resolves to while
+   * snapping is enabled — `"center"` (the default) routes through `Grid.snap` (cell centers),
+   * `"vertex"` through `Grid.snapVertex` (cell corners), `"edge"` through `Grid.snapEdge` (the
+   * nearest point on a cell edge). Orthogonal to {@link setSnapEnabled}:
+   * a snap-off scene stays identity under either mode. This is the single routing point —
+   * every tool that calls `ctx.scene.snap` inherits the mode with no per-tool change.
+   * @param mode The snap-target mode to apply.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setSnapMode("vertex");
+   * ```
+   */
+  setSnapMode(mode: SnapMode): void {
+    this.snapMode = mode;
   }
 
   /** `SceneToolHost.setDraggingToken`: mark a token as locally dragging (forwards to
@@ -1391,16 +1546,19 @@ export class RenderEngine implements SceneToolHost {
     }
   }
 
-  /** `SceneToolHost.addEmote`: spawn a transient emote glyph above `tokenId`'s current
-   * resolved position (a received or locally-originated emote). The anchor is read AT SPAWN
-   * from `TokenView.specOf` — the emote marks WHERE it was fired and never tracks a moving
-   * token — and an unknown/unrenderable token id is DROPPED: the relay is room-wide, so a
-   * recipient who cannot resolve the token renders no overlay. The rise is the active grid's
+  /** `SceneToolHost.addEmote`: spawn a transient emote overlay above `tokenId`'s current
+   * resolved position (a received or locally-originated emote/caption). The anchor is read AT
+   * SPAWN from `TokenView.specOf` — the overlay marks WHERE it was fired and never tracks a
+   * moving token — and an unknown/unrenderable token id is DROPPED: the relay is room-wide, so
+   * a recipient who cannot resolve the token renders no overlay. The rise is the active grid's
    * per-cell world distance (`Grid.worldUnitsPerCell`), the view's ONE cell-size source.
-   * Forwards to `EmoteView.add`; glyph rise/fade is driven by the ticker installed in
-   * `start()`.
-   * @param tokenId The token document id the emote plays over.
-   * @param emote The emote glyph(s).
+   * Forwards to `EmoteView.add`; overlay rise/fade is driven by the ticker installed in
+   * `start()`. `kind` is the PRODUCING call site's own declaration of which draw treatment it
+   * wants (`EmoteKind`'s own doc) — this method makes no guess from `emote`'s length.
+   * @param tokenId The token document id the overlay plays over.
+   * @param emote The emote glyph(s) or caption text.
+   * @param kind Which draw treatment the caller wants; defaults to `"glyph"`, which draws the
+   * player-emote glyph.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1408,13 +1566,49 @@ export class RenderEngine implements SceneToolHost {
    * declare const engine: RenderEngine;
    *
    * engine.addEmote("token-1", "😀");
+   * engine.addEmote("token-1", "You feel a chill.", "caption");
    * ```
    */
-  addEmote(tokenId: string, emote: string): void {
+  addEmote(tokenId: string, emote: string, kind: EmoteKind = "glyph"): void {
     const spec = this.tokens.specOf(tokenId);
     if (!spec) return;
     // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
-    this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
+    this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell(), kind);
+  }
+
+  /** Show or replace the remote shared ruler of one connection (`origin`) of `user`. Replaces
+   * only that connection's previous ruler, so one user measuring on two connections shows two
+   * rulers; an empty `points` clears it. The ruler expires on its own unless refreshed
+   * (`RULER_STALE_MS`). `points` arrive unclipped from the sender.
+   * @param user The measuring user's id.
+   * @param origin The sending connection's token (`RulerNotice.origin`).
+   * @param points The ruler's vertices in scene coordinates.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setRemoteRuler("user-a", "conn-1", [[0, 0], [70, 70]]);
+   * ```
+   */
+  setRemoteRuler(user: string, origin: string, points: [number, number][]): void {
+    this.remoteRulers.set(user, origin, points);
+  }
+
+  /** Remove the remote shared ruler of one connection (`origin`) of `user`, leaving every other
+   * connection's untouched.
+   * @param user The measuring user's id.
+   * @param origin The sending connection's token (`RulerNotice.origin`).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.clearRemoteRuler("user-a", "conn-1");
+   * ```
+   */
+  clearRemoteRuler(user: string, origin: string): void {
+    this.remoteRulers.clear(user, origin);
   }
 
   /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact
@@ -1451,6 +1645,46 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(spec);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.redrawGrid();
+    this.redrawBoundsOutline();
+  }
+
+  /** Show or hide the outline of the scene's authored play-area rectangle (the rectangle inside
+   * the margin). The host passes the size only for a viewer who should see it (the GM, on a scene
+   * with a margin); `null` removes it. The outline follows the active grid, so a later
+   * {@link setGrid} redraws it in the new grid's geometry.
+   * @param cells The authored width and height in grid cells, or `null` to hide the outline.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setAuthoredBounds({ width: 30, height: 20 });
+   * ```
+   */
+  setAuthoredBounds(cells: {
+    /** Authored width, in grid cells. */
+    width: number;
+    /** Authored height, in grid cells. */
+    height: number;
+  } | null): void {
+    this.authoredBounds = cells;
+    this.redrawBoundsOutline();
+  }
+
+  /** Draws (or clears) the authored-rectangle outline from {@link authoredBounds} and the active
+   * grid.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.redrawBoundsOutline();
+   * ```
+   */
+  private redrawBoundsOutline(): void {
+    const b = this.authoredBounds;
+    this.backend.drawBoundsOutline(
+      b ? this.grid.authoredOutline(b.width, b.height) : [],
+      BOUNDS_OUTLINE_COLOR,
+    );
   }
 
   /** Push animation config (speed + easing) to the token animator. Separate from setGrid
@@ -1465,7 +1699,64 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   setAnimation(cfg: TokenTweenConfig): void {
+    this.animationEasing = cfg.easing;
     this.tokens.setAnimationConfig(cfg);
+  }
+
+  /** `SceneToolHost.panToPoint`: tween the camera so scene point `(x,y)` is centered. The curve
+   * is the world's resolved token-move easing (the same `easing` {@link setAnimation} receives),
+   * so camera and token motion feel consistent; the performance budget's `reducedMotion` snaps
+   * the camera to the point instead. Forwards to `Camera.panTo`, then applies the camera so a
+   * snap shows without waiting for the next tick.
+   * @param x The scene x-coordinate to center.
+   * @param y The scene y-coordinate to center.
+   * @param opts Optional tween duration.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.panToPoint(500, 300, { durationMs: 300 });
+   * ```
+   */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void {
+    this.startPan({ x, y }, opts);
+  }
+
+  /** `SceneToolHost.panToToken`: tween the camera to center on token `tokenId`, re-reading the
+   * token's live tweened transform (`TokenView.transformOf`, the accessor the VFX emitters
+   * anchor to) every frame so a moving token is tracked. An untracked token is a no-op.
+   * @param tokenId The token document id to center on.
+   * @param opts Optional tween duration.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.panToToken("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
+  panToToken(tokenId: string, opts?: PanToOptions): void {
+    this.startPan(() => this.tokens.transformOf(tokenId), opts);
+  }
+
+  /** Starts a camera pan with the engine's resolved easing and reduced-motion budget, then
+   * applies the camera (a snap changes the transform immediately).
+   * @param target A scene point, or a live provider of one.
+   * @param opts Optional tween duration.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.startPan({ x: 500, y: 300 });
+   * ```
+   */
+  private startPan(target: PanTarget, opts?: PanToOptions): void {
+    this.camera.panTo(target, this.viewport, {
+      durationMs: opts?.durationMs,
+      easing: this.animationEasing,
+      reducedMotion: this.perf().reducedMotion,
+    });
+    this.applyCamera();
   }
 
   /** Has no production caller today (`WorldSession` drives route playback exclusively through
@@ -1855,6 +2146,8 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   dispatchPointerMove(screen: Point, ev: PointerEvent): void {
+    // Hover is tracked for every pointer, gesture or not: a mouse hovers with no button down.
+    this.tokens.setHovered(this.tokens.tokenAt(this.camera.screenToScene(screen)));
     if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
     if (this.toolGesture && this.activeTool) {
       this.activeTool.onPointerMove(this.camera.screenToScene(screen), ev);
@@ -1952,7 +2245,12 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   applyCamera(): void {
-    this.backend.setCameraTransform(this.camera.transform());
+    const transform = this.camera.transform();
+    this.backend.setCameraTransform(transform);
+    this.opts.onTransformApplied?.(transform);
+    this.opts.onCameraApplied?.(
+      this.camera.screenToScene({ x: this.viewport.width / 2, y: this.viewport.height / 2 }),
+    );
     this.redrawGrid();
   }
 

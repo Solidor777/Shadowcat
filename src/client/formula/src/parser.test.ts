@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFormula } from "./parser";
+import { isBareLeafReference, parseFormula } from "./parser";
 
 /** Builds a formula string whose parsed AST has exactly
  * `prefixNegs + 1 + 2 * plusOnes` nodes: `prefixNegs` unary-neg nodes,
@@ -66,6 +66,16 @@ describe("parseFormula", () => {
     });
   });
 
+  it("the deepest nesting that fits the length bound returns a cap error", () => {
+    const parens = "(".repeat(255) + "1" + ")".repeat(255);
+    const calls = "floor(".repeat(73) + "1" + ")".repeat(73);
+    const negs = "-".repeat(511) + "1";
+    for (const src of [parens, calls, negs]) {
+      expect(src.length).toBeLessThanOrEqual(512);
+      expect(parseFormula(src)).toMatchObject({ error: "cap" });
+    }
+  });
+
   describe("sad-path battery", () => {
     it("unterminated paren is a parse error", () => {
       expect(parseFormula("(1+2")).toMatchObject({ error: "parse" });
@@ -128,5 +138,22 @@ describe("parseFormula", () => {
 
   it("1e999 is not exponent notation — lexes as num(1) + word('e999'), a trailing-input parse error", () => {
     expect(parseFormula("1e999")).toMatchObject({ error: "parse" });
+  });
+});
+
+describe("isBareLeafReference", () => {
+  it("returns the dotted path of a bare reference, lowercased as the lexer emits it", () => {
+    expect(isBareLeafReference("hp")).toBe("hp");
+    expect(isBareLeafReference("hp.value")).toBe("hp.value");
+    expect(isBareLeafReference("  HP.Value ")).toBe("hp.value");
+  });
+
+  it("returns null for every other shape: operators, calls, literals, parse failures, non-strings", () => {
+    for (const src of ["hp.value + 2", "-hp.value", "max(a, b)", "2", "", "hp.", "1d20"]) {
+      expect(isBareLeafReference(src), src).toBeNull();
+    }
+    expect(isBareLeafReference(7)).toBeNull();
+    expect(isBareLeafReference(null)).toBeNull();
+    expect(isBareLeafReference(undefined)).toBeNull();
   });
 });

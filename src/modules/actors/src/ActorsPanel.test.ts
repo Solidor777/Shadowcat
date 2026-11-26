@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
-import { TokenSelection } from "@shadowcat/ui-kit";
+import { setAppContextForTest, fakeSceneHost } from "@shadowcat/ui-kit/test";
+import { DocumentStore, buildActorDoc, buildTokenDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { TokenSelection, SceneInteractionBridge } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
 // Suppress listAssets fetch: EmissionEditor calls listAssets($effect) which hits /api/... in jsdom.
@@ -648,6 +648,66 @@ describe("ActorsPanel — post-create visual editing", () => {
   });
 });
 
+describe("ActorsPanel — locate on scene", () => {
+  const actor = (id: string): WireDocument =>
+    buildActorDoc(
+      "w1",
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+      id,
+    );
+  const token = (id: string, sceneId: string, actorId: string | null): WireDocument =>
+    buildTokenDoc(
+      "w1", sceneId,
+      { x: 10, y: 20, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: actorId, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
+      id,
+    );
+  const realT = (k: string): string => ({ "actors.locateOnScene": "Locate on scene" })[k as "actors.locateOnScene"] ?? k;
+
+  it("pans the camera to the actor's token on the viewed scene", async () => {
+    const pans: string[] = [];
+    const scene = new SceneInteractionBridge();
+    scene.attach(fakeSceneHost({ panToToken: (id) => pans.push(id) }));
+    const store = storeWith(actor("a1"), token("t-other-scene", "S2", "a1"), token("t-here", "S1", "a1"));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, scene, viewedSceneId: "S1", t: realT }),
+    });
+    const button = getByRole("button", { name: /locate on scene/i });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(button);
+    expect(pans).toEqual(["t-here"]); // the token on the viewed scene, never the one on S2
+  });
+
+  it("reads the viewed scene's tokens once per render, however many actors are listed", () => {
+    const queriesFor = (actorCount: number): number => {
+      const ids = Array.from({ length: actorCount }, (_, i) => `a${i}`);
+      const store = storeWith(...ids.map(actor), ...ids.map((id) => token(`t-${id}`, "S1", id)));
+      const spy = vi.spyOn(store, "query");
+      const { unmount } = render(ActorsPanel, {
+        context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, viewedSceneId: "S1", t: realT }),
+      });
+      const calls = spy.mock.calls.filter(([type]) => type === "token").length;
+      unmount();
+      return calls;
+    };
+    expect(queriesFor(12)).toBe(queriesFor(2));
+  });
+
+  it("disables the action when the actor has no token on the viewed scene", async () => {
+    const pans: string[] = [];
+    const scene = new SceneInteractionBridge();
+    scene.attach(fakeSceneHost({ panToToken: (id) => pans.push(id) }));
+    const store = storeWith(actor("a1"), token("t-other-scene", "S2", "a1"), token("unlinked", "S1", null));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, scene, viewedSceneId: "S1", t: realT }),
+    });
+    const button = getByRole("button", { name: /locate on scene/i });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    await fireEvent.click(button);
+    expect(pans).toEqual([]);
+  });
+});
+
 describe("ActorsPanel — live search + open sheet", () => {  // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
   // the actual rendered label text, not the raw i18n key (the identity default the other
   // `describe` blocks rely on has no space between "open" and "Sheet").
@@ -788,7 +848,7 @@ describe("ActorsPanel — carried light", () => {
           {
             path: "/engine/light",
             old: null, // raw stored value: absent
-            new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+            new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
           },
         ],
       },
@@ -797,7 +857,7 @@ describe("ActorsPanel — carried light", () => {
 
   it("a row with an emission renders the field editor, which dispatches /engine/light with the raw stored emission as old", async () => {
     const dispatchIntent = vi.fn();
-    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
     const actor = buildActorDoc(
       "w1",
       "Troll",
@@ -855,7 +915,7 @@ describe("ActorsPanel — carried light", () => {
     const op = ops[0] as { op: string; doc: WireDocument };
     expect(op.op).toBe("create");
     expect((op.doc.engine as { light: unknown }).light).toEqual({
-      color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true,
+      color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true, rotation: 0, followTokenRotation: false,
     });
   });
 });
@@ -952,5 +1012,31 @@ describe("ActorsPanel — movement tags", () => {
     // `movement` is a required non-null array on the generated `ActorEngine` — an untouched
     // form creates an explicit empty list (never null, never a genuinely-absent key).
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.movement).toEqual([]);
+  });
+});
+
+describe("ActorsPanel — token quick-edit section", () => {
+  function twoTokens() {
+    const actor = buildActorDoc(
+      "w1",
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+      "act1",
+    );
+    const t1 = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    const t2 = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 0 }, { w: 100, h: 100 }, "tok2");
+    return storeWith(actor, t1, t2);
+  }
+
+  it("shows for exactly one selected token and for no other selection size", () => {
+    for (const [ids, shown] of [[[], false], [["tok1"], true], [["tok1", "tok2"], false]] as const) {
+      const tokenSelection = new TokenSelection();
+      tokenSelection.set([...ids]);
+      const { unmount } = render(ActorsPanel, {
+        context: setAppContextForTest({ role: "gm", world: "w1", documents: twoTokens(), dispatchIntent: vi.fn(), tokenSelection, canEdit: () => true }),
+      });
+      expect(screen.queryByTestId("token-quick-edit") !== null, ids.join()).toBe(shown);
+      unmount();
+    }
   });
 });

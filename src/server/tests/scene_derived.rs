@@ -306,6 +306,129 @@ async fn duplicate_scene_subscribe_id_is_rejected() {
         .contains("duplicate subscription id"));
 }
 
+/// A `reset_explored_fog` frame, scoped exactly as the caller states.
+fn reset_explored_fog_msg(
+    scene: u128,
+    user: Option<uuid::Uuid>,
+    level: Option<&str>,
+) -> tokio_tungstenite::tungstenite::Message {
+    tokio_tungstenite::tungstenite::Message::Text(
+        serde_json::json!({
+            "type": "reset_explored_fog",
+            "scene": shadowcat_test_support::test_doc_id(scene),
+            "user": user,
+            "level": level,
+        })
+        .to_string(),
+    )
+}
+
+/// The `explored` entry for `scene` in a masked `scene_derived` payload's cells, or `None`
+/// when the scene has no entry at all.
+fn explored_cells_for<'a>(
+    payload: &'a serde_json::Value,
+    scene: &serde_json::Value,
+) -> Option<&'a [serde_json::Value]> {
+    payload["payload"]["explored"]
+        .as_array()?
+        .iter()
+        .find(|e| &e["scene"] == scene)?["cells"]
+        .as_array()
+        .map(Vec::as_slice)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reset_explored_fog_broadcast_arms_every_connections_reeval_and_the_next_vision_push_is_empty(
+) {
+    // The genuinely novel piece of the reset-fog design: a GM's reset on ONE connection must
+    // arm the debounced scene-channel re-eval on a DIFFERENT connection (the player's), so the
+    // player's next "vision" push reflects the purged `explored_fog` rows without the player
+    // sending anything themselves.
+    let h = spawn().await;
+    let (player, cookie) = h.add_player("fogplayer").await;
+    let scene = json_uuid(10);
+
+    // GM: scene + a player-owned token at (50,50), lit by a bright light at the same point.
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([
+            create_doc_op(h.world, 10, None, "scene"),
+            create_owned_token_op(h.world, 11, 10, player, 50.0, 50.0),
+            create_light_op(h.world, 20, 10, 50.0, 50.0),
+        ]),
+    ))
+    .await
+    .unwrap();
+    let _ = drain_until_event(&mut gm).await;
+
+    // Player subscribes to "vision" → the token's cell is lit, so it gets marked explored.
+    let mut pws = h.connect_as(&cookie).await;
+    let _ = pws.next().await; // Welcome
+    pws.send(scene_subscribe(5, "vision")).await.unwrap();
+    let first = drain_until_type(&mut pws, "scene_derived").await;
+    let baseline = explored_cells_for(&first, &scene)
+        .expect("the lit token's scene has an explored entry")
+        .to_vec();
+    assert!(
+        !baseline.is_empty(),
+        "the player's currently-lit cell was marked explored"
+    );
+
+    // GM disables the light (`/engine/emission/enabled` → false). The scene goes dark: the
+    // player's next masked payload has NOTHING currently lit, but `explored` still echoes the
+    // PERSISTED memory (proving it survives a loss of current visibility, on the baseline path
+    // this test isolates the reset from).
+    gm.send(intent_msg(
+        2,
+        serde_json::json!([{
+            "op": "update",
+            "doc_id": shadowcat_test_support::test_doc_id(20),
+            "changes": [{
+                "path": "/engine/emission/enabled",
+                "old": true,
+                "new": false,
+                "remove": false,
+            }]
+        }]),
+    ))
+    .await
+    .unwrap();
+    let _ = drain_until_event(&mut gm).await;
+    let dark = drain_until_type(&mut pws, "scene_derived").await;
+    let lit = dark["payload"]["lit"][0]["cells"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        lit.is_empty(),
+        "nothing is currently lit once the light is disabled"
+    );
+    let remembered = explored_cells_for(&dark, &scene)
+        .expect("explored memory is still echoed while nothing is currently visible")
+        .to_vec();
+    assert_eq!(
+        remembered, baseline,
+        "persisted explored memory is unchanged by a loss of current visibility"
+    );
+
+    // GM resets the scene's explored fog. No `user`/`level` scope: every user's memory for the
+    // whole scene is cleared. The player never sends anything — the reset must reach them via
+    // the room-wide `ExploredFogReset` aux broadcast arming their OWN `reeval_deadline`.
+    gm.send(reset_explored_fog_msg(10, None, None))
+        .await
+        .unwrap();
+
+    let after_reset = drain_until_type(&mut pws, "scene_derived").await;
+    let post = explored_cells_for(&after_reset, &scene);
+    assert!(
+        post.is_none_or(|c| c.is_empty()),
+        "explored_fog rows were purged and nothing is currently visible to re-mark them; \
+         got {post:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_channel_errors() {
     let h = spawn().await;

@@ -1,8 +1,9 @@
-//! Integration proof: a restricted-audience message (`Audience::Whisper`
-//! / `Audience::GmOnly`) is invisible to anyone outside its audience on every
-//! egress path — broadcast, HTTP resync/load, and full-text search — and the
-//! GM's usual unconditional access is itself gated by that audience. Harness
-//! mirrors `chat_delivery`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
+//! Integration proof: a restricted-audience message (`Audience::Whisper` / `Audience::GmOnly`) is
+//! invisible to anyone outside its audience.
+//!
+//! That holds on every egress path — broadcast, HTTP resync/load, and full-text search — and the
+//! GM's usual unconditional access is itself gated by that audience. Harness mirrors
+//! `chat_delivery`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -48,6 +49,13 @@ async fn spawn() -> (Harness, Uuid) {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::new(
+            std::env::temp_dir(),
+            shadowcat::trash::TrashRetention::Disabled,
+        )),
     };
     let app = http::router(state).await;
 

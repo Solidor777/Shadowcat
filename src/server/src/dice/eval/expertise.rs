@@ -1,3 +1,8 @@
+//! This module allocates a roll's expertise budget across its dice with a bounded knapsack dynamic
+//! program.
+//!
+//! `allocate` is the entry point.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -16,17 +21,22 @@ use crate::dice::spec::{DieId, DieKind, Direction, SuccessConfig, SuccessRule};
 /// pushed up to `min`, even at `k == 0`. The `max(0, headroom)` term makes the move
 /// zero when the die is already at/past its better-end bound, so an out-of-range face
 /// is never dragged back across a bound; expertise only ever moves a die toward better.
+///
+/// The arithmetic runs in `i64`: `RecalcOp::ReplaceDie` can set any `i32` natural on a Numeric
+/// die, so `max - value` and `value - min` can exceed `i32`. The result is `value` or a face between
+/// `value` and the bound it moves toward, so it fits `i32`.
 fn adjust(direction: Direction, value: i32, min: i32, max: i32, k: u32) -> i32 {
-    let k = k as i32;
-    match direction {
-        Direction::HighWins => value + k.min((max - value).max(0)),
-        Direction::LowWins => value - k.min((value - min).max(0)),
-    }
+    let (v, k) = (i64::from(value), i64::from(k));
+    let moved = match direction {
+        Direction::HighWins => v + k.min((i64::from(max) - v).max(0)),
+        Direction::LowWins => v - k.min((v - i64::from(min)).max(0)),
+    };
+    moved as i32
 }
 
 /// Per-die value function `v_i(k)` for `k in 0..=e`: move the face `k` steps toward
 /// better, then score that single face — base success (0/1) + crit deltas — as a
-/// `(net_i, counter_i)` pair. `net_i = base + extra_successes − lost`;
+/// `(net_i, counter_i)` pair in `i64`. `net_i = base + extra_successes − lost`;
 /// `counter_i = positive_counter − negative_counter`. Direction is applied ONCE here
 /// (via the face move + the parse-time success comparator + `crit::score_die`); the
 /// DP over these pairs must not reapply it.
@@ -37,32 +47,35 @@ fn die_values(
     min: i32,
     max: i32,
     e: u32,
-) -> Vec<(i32, i32)> {
+) -> Vec<(i64, i64)> {
     (0..=e)
         .map(|k| {
             let f = adjust(direction, value, min, max, k);
             let base_success = match &cfg.success {
                 SuccessRule::Numeric { comp, target } => comp.test(f, *target),
+                // Parity reads the moved face's value, so expertise points can flip a die's
+                // parity exactly as they flip a numeric comparison.
+                SuccessRule::Parity(parity) => parity.test(f),
                 // die_values only ever runs over Numeric dice (expertise excludes
                 // Faces dice entirely); moving a Numeric face never changes symbols,
                 // so a HasSymbol rule can never fire here — exists only for exhaustiveness.
                 SuccessRule::HasSymbol(_) => false,
             };
-            let base = i32::from(base_success);
+            let base = i64::from(base_success);
             // die_values only ever runs over Numeric dice (see the
             // SuccessRule::HasSymbol arm above); a Numeric die never carries
             // symbols, so an empty slice is exact here, not a placeholder.
             let dc = crit::score_die(direction, f, &[], cfg);
             (
-                base + dc.extra_successes - dc.lost,
-                dc.positive_counter - dc.negative_counter,
+                base + i64::from(dc.extra_successes) - i64::from(dc.lost),
+                i64::from(dc.positive_counter) - i64::from(dc.negative_counter),
             )
         })
         .collect()
 }
 
 /// Component-wise pair addition (net successes, net counters).
-fn add(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
+fn add(a: (i64, i64), b: (i64, i64)) -> (i64, i64) {
     (a.0 + b.0, a.1 + b.1)
 }
 
@@ -79,13 +92,13 @@ fn add(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
 /// e.g. every allocation ties, this degrades to `k=0` everywhere — never spend a point
 /// that provably does nothing, even to satisfy "concentrate on the earliest die".)
 fn run_dp(
-    dies: &[Vec<(i32, i32)>],
+    dies: &[Vec<(i64, i64)>],
     e: u32,
-    better: impl Fn((i32, i32), (i32, i32)) -> bool,
-) -> (Vec<u32>, (i32, i32)) {
+    better: impl Fn((i64, i64), (i64, i64)) -> bool,
+) -> (Vec<u32>, (i64, i64)) {
     let e = e as usize;
     let n = dies.len();
-    let mut dp = vec![(0i32, 0i32); e + 1];
+    let mut dp = vec![(0i64, 0i64); e + 1];
     let mut choice = vec![vec![0u32; e + 1]; n];
     for i in 0..n {
         let vi = &dies[i];
@@ -120,12 +133,12 @@ fn run_dp(
 /// `value` (adjusted face) and `expertise` (points spent). No-op if budget is 0 or
 /// there are no kept dice.
 ///
-/// Two-pass clamp handling: the lexicographic pass maximizes RAW `(net, counter)`.
+/// Clamp handling: the lexicographic pass maximizes RAW `(net, counter)`.
 /// If `allow_negative` OR the achieved net ≥ 1, that pass equals the clamped-lex
 /// optimum (clamp is identity there). Otherwise every allocation clamps to net 0, so
-/// successes tie and the objective degenerates to pure counter-maximization — a second
-/// pass with the first key dropped. Both passes use the same lowest-index-first
-/// tie-break, so the result matches the brute-force oracle exactly.
+/// successes tie and the objective degenerates to pure counter-maximization — a
+/// counter-only pass with the first key dropped. Both passes use the same
+/// lowest-index-first tie-break, so the result matches the brute-force oracle exactly.
 ///
 /// # Examples
 ///
@@ -151,6 +164,7 @@ fn run_dp(
 ///     label: None,
 ///     symbols: vec![],
 ///     kind: None,
+///     best_of_branch: None,
 ///     ordered: true,
 /// }];
 /// let cfg = SuccessConfig {
@@ -211,12 +225,12 @@ pub fn allocate(
     // additive constant across every candidate allocation, so it never changes
     // which allocation is argmax within either pass — only the pass-choice
     // threshold cares about its absolute value.
-    let fixed: i32 = records
+    let fixed: i64 = records
         .iter()
         .filter(|r| r.kept && !bounds.contains_key(&r.id))
         .map(|r| crit::score_die_net(direction, cfg, r.value, &r.symbols).net())
         .sum();
-    let dies: Vec<Vec<(i32, i32)>> = kept
+    let dies: Vec<Vec<(i64, i64)>> = kept
         .iter()
         .map(|&idx| {
             let (min, max) = bounds[&records[idx].id];
@@ -224,7 +238,7 @@ pub fn allocate(
         })
         .collect();
 
-    let lex = |a: (i32, i32), b: (i32, i32)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
+    let lex = |a: (i64, i64), b: (i64, i64)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
     let (lex_alloc, (net, _)) = run_dp(&dies, e, lex);
     let allow_neg = cfg
         .crit_fail
@@ -235,7 +249,7 @@ pub fn allocate(
         lex_alloc
     } else {
         // All-failed region: successes all clamp to 0; maximize counters only.
-        let counter_only = |a: (i32, i32), b: (i32, i32)| a.1 > b.1;
+        let counter_only = |a: (i64, i64), b: (i64, i64)| a.1 > b.1;
         run_dp(&dies, e, counter_only).0
     };
 

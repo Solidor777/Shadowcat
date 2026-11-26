@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -31,6 +31,7 @@ import {
 } from "./check-skill-symbol-refs.mjs";
 import { listSkillDirs, defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 import { scrubGitEnv } from "./lib/run-git.mjs";
+import { makeRepo } from "./lib/temp-repo.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -42,6 +43,34 @@ const FIXTURE_ROOT = join(
   `shadowcat-${basename(fileURLToPath(import.meta.url), ".test.mjs")}-fixture`,
 );
 
+// `buildSymbolIndex` reads and parses every tracked source file, which is the expensive step of this
+// file, so the cases that only read the real index share one build.
+let realIndexBuild;
+/**
+ * The symbol index of this repository, built on first use and shared by the cases that only read it.
+ * @returns {ReturnType<typeof buildSymbolIndex>} the index.
+ * @example
+ * realIndex().declared.has("buildSymbolIndex");
+ */
+function realIndex() {
+  realIndexBuild ??= buildSymbolIndex(REPO_ROOT);
+  return realIndexBuild;
+}
+
+describe("buildSymbolIndex corpus line", () => {
+  // A library function prints nothing; the command passes a log so it still reports its corpus size
+  // (see `repoFiles`).
+  it("prints nothing unless the caller passes a log", () => {
+    const dir = makeRepo({ "src/client/a.ts": "export const a = 1;\n" });
+    const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+    buildSymbolIndex(dir);
+    expect(printed).not.toHaveBeenCalled();
+    printed.mockRestore();
+    const lines = [];
+    buildSymbolIndex(dir, undefined, (l) => lines.push(l));
+    expect(lines).toEqual(["corpus skill symbol index: 1 files"]);
+  });
+});
 
 describe("extractRustSymbols", () => {
   it("indexes fn/struct/enum/trait/const/static items bare and module-path-qualified", () => {
@@ -388,6 +417,11 @@ describe("rustModulePath", () => {
     expect(rustModulePath("/repo/src", "/repo/src/main.rs")).toEqual(["main"]);
   });
 
+  it("maps lib.rs and main.rs specially only directly under a root; a nested one is an ordinary module", () => {
+    expect(rustModulePath("/repo/src", "/repo/src/foo/lib.rs")).toEqual(["foo", "lib"]);
+    expect(rustModulePath("/repo/src", "/repo/src/foo/main.rs")).toEqual(["foo", "main"]);
+  });
+
   it("contributes no segment of its own for a mod.rs, but does for a plain file", () => {
     expect(rustModulePath("/repo/src", "/repo/src/chat/mod.rs")).toEqual(["chat"]);
     expect(rustModulePath("/repo/src", "/repo/src/data/sqlite.rs")).toEqual(["data", "sqlite"]);
@@ -448,25 +482,30 @@ describe("extractJsonDependencyNames", () => {
 // and an acknowledgement of it reports as also-declared on the strength of the spelling nobody
 // looked at.
 describe("a manifest dependency is a reference in BOTH its spellings", () => {
-  it(
-    "keeps no qualified dependency key in the declared half",
-    () => {
-      const manifest = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
-      const deps = extractJsonDependencyNames(manifest);
-      const qualified = [...extractJsonKeys(manifest)].filter(
-        (k) => k.includes(".") && deps.has(k.slice(k.lastIndexOf(".") + 1)),
-      );
-      expect(qualified.length, "the manifest declares no dependency to check").toBeGreaterThan(0);
-      const { symbols, declared } = buildSymbolIndex(REPO_ROOT);
-      expect(qualified.filter((k) => declared.has(k))).toEqual([]);
-      // Still INDEXED, so a citation of the qualified spelling resolves: only its half changed.
-      expect(qualified.filter((k) => !symbols.has(k))).toEqual([]);
-    },
-    // buildSymbolIndex parses every tracked source file in the repo from scratch (no cache) —
-    // comfortably under vitest's 5000ms default locally, but margin-negative on a loaded/cold-FS-
-    // cache CI runner. 20s leaves headroom without masking a genuine hang.
-    20_000,
-  );
+  it("keeps no qualified dependency key in the declared half", () => {
+    const manifest = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
+    const deps = extractJsonDependencyNames(manifest);
+    const qualified = [...extractJsonKeys(manifest)].filter(
+      (k) => k.includes(".") && deps.has(k.slice(k.lastIndexOf(".") + 1)),
+    );
+    expect(qualified.length, "the manifest declares no dependency to check").toBeGreaterThan(0);
+    const { symbols, declared } = realIndex();
+    expect(qualified.filter((k) => declared.has(k))).toEqual([]);
+    // Still INDEXED, so a citation of the qualified spelling resolves: only its half changed.
+    expect(qualified.filter((k) => !symbols.has(k))).toEqual([]);
+  });
+});
+
+// A skill documenting the connection lifecycle cites the harness that exercises it, so the index
+// reads the test-harness crate and the server's integration tests as well as the crate itself.
+describe("the Rust index covers the harness crate and the integration tests", () => {
+  it("declares a harness item, a harness method and an integration-test target", () => {
+    const { declared } = realIndex();
+    expect(declared.has("BareApp::one_buffer")).toBe(true);
+    expect(declared.has("throughput::Rung")).toBe(true);
+    expect(declared.has("egress_stall_h2")).toBe(true);
+    expect(declared.has("serve_router")).toBe(true);
+  });
 });
 
 describe("moduleNameOf", () => {
@@ -970,9 +1009,6 @@ describe("span conservation", () => {
       expect(result.conservationDelta).toBe(0);
       expect(result.conservationFailures).toEqual([]);
     },
-    // Same cost profile as the other full-repo-scan tests in this file: margin-negative against
-    // vitest's 5000ms default under CI load.
-    20_000,
   );
 });
 
@@ -1010,10 +1046,24 @@ describe("checkSkillSymbolRefs", () => {
 
   mkdirSync(join(repoRoot, "src", "server", "src", "scene"), { recursive: true });
   mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
+  for (const dir of ["test-support/src", "test-support/tests", "tests"]) {
+    mkdirSync(join(repoRoot, "src", "server", ...dir.split("/")), { recursive: true });
+  }
   writeFileSync(
     join(repoRoot, "src", "server", "src", "scene", "regions.rs"),
     "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n",
   );
+  // The declaration index reads TRACKED files only, so the fixture is a real repository whose index
+  // holds `regions.rs`; `stray.rs` is written and deliberately never added.
+  writeFileSync(
+    join(repoRoot, "src", "server", "src", "scene", "stray.rs"),
+    "impl StrayUntracked {\n    pub fn is_stray(&self) -> bool { true }\n}\n",
+  );
+  execFileSync("git", ["init", "-q"], { cwd: repoRoot, env: scrubGitEnv() });
+  execFileSync("git", ["add", "--", "src/server/src/scene/regions.rs"], {
+    cwd: repoRoot,
+    env: scrubGitEnv(),
+  });
   for (const dir of ["client", "modules", "types"])
     mkdirSync(join(repoRoot, "src", dir), { recursive: true });
   mkdirSync(join(repoRoot, "scripts"), { recursive: true });
@@ -1044,6 +1094,13 @@ describe("checkSkillSymbolRefs", () => {
       { file: skillFile, line: 1, token: "region_arrests" },
       { file: skillFile, line: 1, token: "fakeCamelCitation" },
     ]);
+  });
+
+  // A declaration in an untracked file would make a citation resolve here and fail on CI, which
+  // sees a clean checkout; the index reads tracked files only.
+  it("does not resolve a citation against a symbol declared only in an untracked file", () => {
+    const result = run("See `StrayUntracked::is_stray`.");
+    expect(result.broken.map((b) => b.token)).toEqual(["StrayUntracked::is_stray"]);
   });
 
   it("does not scan an untracked (vendored) skill directory", () => {

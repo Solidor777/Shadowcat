@@ -1,7 +1,8 @@
-//! Engine band for `system-defaults`: the active system module's declared
-//! defaults for every world setting. Resolved as the innermost non-engine
-//! layer of every settings chain (engine literal → system → world → scene).
-//! Every leaf is optional; absent and `null` both mean "fall through".
+//! This module defines the engine band for `system-defaults`.
+//!
+//! The band holds the active system module's declared defaults for every world setting. It is
+//! resolved as the innermost non-engine layer of every settings chain (engine literal →
+//! system → world → scene). Every leaf is optional; absent and `null` both mean "fall through".
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -11,7 +12,8 @@ use ts_rs::TS;
 
 use super::combat::CombatDefaults;
 use super::scene::{
-    DiagonalRule, EasingMode, EnvironmentLight, LightMode, MovementModel, MovementRestriction,
+    DiagonalRule, EasingMode, EnvironmentLight, FacingTurnRule, FogPooling, LightMode,
+    MovementModel, MovementRestriction,
 };
 
 /// `Option`-lifted twin of `WorldSceneDefaults`; a field added there without
@@ -57,6 +59,18 @@ pub struct SceneDefaultsOverlay {
     /// Overrides `WorldSceneDefaults.partial_cell_leniency`.
     #[ts(optional = nullable)]
     pub partial_cell_leniency: Option<bool>,
+    /// Overrides `WorldSceneDefaults.fog_pooling`.
+    #[ts(optional = nullable)]
+    pub fog_pooling: Option<FogPooling>,
+    /// Overrides `WorldSceneDefaults.auto_rotate_tokens`.
+    #[ts(optional = nullable)]
+    pub auto_rotate_tokens: Option<bool>,
+    /// Overrides `WorldSceneDefaults.facing_vision`.
+    #[ts(optional = nullable)]
+    pub facing_vision: Option<bool>,
+    /// Overrides `WorldSceneDefaults.facing_turn_rule`.
+    #[ts(optional = nullable)]
+    pub facing_turn_rule: Option<FacingTurnRule>,
 }
 
 /// `Option`-lifted twin of `Pathfinding`.

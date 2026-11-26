@@ -1,7 +1,9 @@
-//! Embedded-collection merge and revert: `merge3_embedded` correlates
-//! instance and template children by `source.id` (never by index) against
-//! the `base` snapshot's membership records; `revert_embedded` resets
-//! collections against the CURRENT template with no snapshot consulted.
+//! This module merges and reverts embedded collections.
+//!
+//! `merge3_embedded` correlates instance and template children by `source.id` (never by index)
+//! against the `base` snapshot's membership records; `revert_embedded` resets collections against
+//! the CURRENT template with no snapshot consulted. `restamp_subtree` deep-clones a template child
+//! into a fresh instance subtree, and both functions use it for template-added children.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -75,13 +77,12 @@ pub(crate) type MergedEmbedded = (BTreeMap<String, Vec<Document>>, Vec<MergeConf
 
 /// 3-way merge of the embedded collections, correlating instance↔template
 /// children by `source.id`↔`id`, using `base.embedded[coll][*].source_id` as
-/// the membership record. Pass 1 walks the instance children in order
-/// (instance-added kept, correlated children recursed or fail-safe kept,
-/// template-deleted children dropped when unchanged and conflicted when
-/// changed); pass 2 restamps template-added children in. Collection order is
-/// sorted, instance order is preserved within a collection (a template-side
-/// reorder does not reorder the instance's children), and template additions
-/// append after them.
+/// the membership record. The instance-children walk keeps instance-added children, recurses
+/// into correlated children (or keeps them fail-safe), and drops template-deleted children when
+/// unchanged and conflicts them when changed; the template-additions walk restamps
+/// template-added children in. Collection order is sorted, instance order is preserved within a
+/// collection (a template-side reorder does not reorder the instance's children), and template
+/// additions append after them.
 ///
 /// Visibility is resolved per correlated pair by IDENTITY: the recursive
 /// `merge3` asks `vis` about the exact `(t, cd)` documents it merges, and a
@@ -114,7 +115,7 @@ pub(crate) fn merge3_embedded(
             .collect();
         let mut out: Vec<Document> = Vec::new();
 
-        // Pass 1: walk instance children in order.
+        // Instance-children walk: every instance child in order.
         for cd in child_kids {
             let sid = cd.source.as_ref().map(|s| s.id);
             let correlated = sid.is_some_and(|id| {
@@ -184,8 +185,8 @@ pub(crate) fn merge3_embedded(
             }
         }
 
-        // Pass 2: template-added children (in template, absent from base, no
-        // instance copy).
+        // Template-additions walk: children in the template that are absent from base and have no
+        // instance copy.
         for t in parent_kids {
             if base_by_source.contains_key(t.id.to_string().as_str()) {
                 continue;

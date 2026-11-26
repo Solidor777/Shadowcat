@@ -271,10 +271,71 @@ pub(super) fn region_doc(
     )
 }
 
+/// A `region_doc` fixture that additionally authors `cost_by_tag`: per-movement-tag cost
+/// overrides alongside the flat `cost` fallback.
+pub(super) fn region_doc_with_tags(
+    id: u128,
+    parent: u128,
+    behavior: &str,
+    cost: f64,
+    cost_by_tag: &[(&str, f64)],
+    rect: (f64, f64, f64, f64),
+) -> Document {
+    let (x0, y0, x1, y1) = rect;
+    let by_tag: serde_json::Map<String, serde_json::Value> = cost_by_tag
+        .iter()
+        .map(|(tag, v)| ((*tag).to_string(), json!(v)))
+        .collect();
+    entity_doc_eng(
+        id,
+        parent,
+        "region",
+        json!({
+            "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            "behavior": behavior,
+            "cost": cost,
+            "cost_by_tag": by_tag,
+            "enabled": true,
+        }),
+    )
+}
+
+/// An `ambient_light` region doc fixture: rect `[x0,y0,x1,y1]`, enabled, carrying
+/// `ambient_override: { mode, level }` (`"darken" | "brighten" | "override"`).
+pub(super) fn ambient_region_doc(
+    id: u128,
+    parent: u128,
+    mode: &str,
+    level: f64,
+    rect: (f64, f64, f64, f64),
+) -> Document {
+    let (x0, y0, x1, y1) = rect;
+    entity_doc_eng(
+        id,
+        parent,
+        "region",
+        json!({
+            "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            "behavior": "ambient_light",
+            "cost": 1.0,
+            "enabled": true,
+            "ambient_override": { "mode": mode, "level": level },
+        }),
+    )
+}
+
+mod anchored_lighting_cache;
+mod anchored_regions;
 mod audibility;
+mod bars;
 mod combat_index;
+mod cone_and_window;
 mod cost_parity;
 mod ecs_and_footprints;
+mod facing_vision;
+mod padding;
 mod pathfind_and_vision;
+mod region_occluders;
 mod resolution_and_lighting;
+mod rotation_gate;
 mod system_defaults_layer;

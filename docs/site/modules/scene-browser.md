@@ -12,6 +12,7 @@ players render).
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `scene-browser:panel` | `shadowcat.panel` | `SceneBrowserPanel` | order 6, icon 🗺️, labelKey `sceneBrowser.tab`, **gmOnly**, launcher-closed |
+| `scene-browser:tour` | `shadowcat.tour` | none (tour data) | `scene-browser.intro`: GM audience, manual (replay only, because the panel is closed by default); steps on the anchors `scene-browser.panel`, `scene-browser.create`, `scene-browser.list`, and `scene-browser.actions` (first scene row; skipped while no scene exists) |
 
 ## Components
 
@@ -30,7 +31,7 @@ players render).
   game-settings); activation writes `world-settings.activeScene`.
 - `LevelsEditor` writes `world-settings.activeScene`'s sibling per-scene field
   `/engine/levels` directly (no separate config document); a level's id is
-  server-opaque (`crypto.randomUUID()`, generated client-side at author time,
+  server-opaque (`randomUuid()`, generated client-side at author time,
   never re-derived) and is what `AppContext.viewedLevel`/`LevelSwitcher`/scene-
   tools' elevation-band stamping all key on.
 

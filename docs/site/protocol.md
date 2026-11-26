@@ -54,8 +54,11 @@ The server validates (permissions, OCC, schema), applies, and broadcasts a
 [`WireCommand`](/api/ts/types/_shadowcat_core.WireCommand.html) inside an
 `event` frame whose `intent_id` echoes yours — or answers `reject` with a
 reason. **Broadcasts are filtered per recipient before transmission**: fields a
-user may not see are stripped server-side and never cross the wire
-(ARCHITECTURE invariant — redact-then-send, never send-then-hide).
+user may not see are stripped server-side and never cross the wire. Stripping is
+the default for game state, not an absolute: where fidelity needs it, game-state
+data is sent and hidden by the client's rendering (fog, redaction). Personal user
+information (IP addresses, account details, credentials) is never sent to a
+recipient who may not see it, whatever the cost to the experience.
 
 ## Frame catalog — server → client
 
@@ -63,7 +66,7 @@ Every `ServerMsg` variant:
 
 | Frame | Purpose |
 |---|---|
-| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, `role_capabilities`, contract/schema declarations |
+| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, `role_capabilities`, contract/schema declarations, and `online_users` (the members with a live connection in the world, your own included) |
 | `event` | One sequenced, per-recipient-filtered command (ops batch), with correlating `intent_id` when it answers yours |
 | `reject` | Your intent was refused; carries `intent_id` + reason — roll back the prediction |
 | `resync_begin` | Replay window opens (`from_seq`..`to_seq`, with source) |
@@ -79,9 +82,10 @@ Every `ServerMsg` variant:
 | `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
 | `emote` | A user's transient emote glyph over a token (includes your own echo) |
+| `ruler` | A member's shared live ruler: the route they are measuring, relayed unclipped to every connection in the room, the sender's own included. Recipients always see the canonical form: a stop (`active: false`) carries no points and an active frame carries at least one. `from` is stamped by the server; `origin` is the sending connection's token, relayed as given and not verified, and the originating client drops its own frame by it |
 | `vfx` | A relayed VFX one-shot at scene coords (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
-| `path_error` | Pathfind request failed |
+| `path_error` | Pathfind request failed: player-presentable `message` plus a typed `reason` (`unreachable`, `invalid` or `exceeded`); `unreachable` is also what the server reports for refusals it does not distinguish |
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
 | `move_stream` | Broadcast move animation: timed position samples (empty for a glow-only recipient), per-recipient-clipped mover vision, per-recipient-admitted carried-light timeline, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
@@ -90,6 +94,16 @@ Every `ServerMsg` variant:
 | `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
 | `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
 | `audio_error` | An `audio_transport` op was refused (not GM, unknown id, over cap, invalid gain) — connection-local, never broadcast |
+| `presence` | Out-of-band: a member's live-connection count crossed zero (`user`, `online`); transitions only, the starting snapshot is `welcome.online_users` |
+| `member_profile` | Out-of-band: a member's roster row (`user`, `username`, `colour`, `pronouns`, `has_avatar`), sent when they change their colour, pronouns or avatar (to every world they are seated in) and when they are seated in a world (to that world's live connections). A client adds a member it has not listed and updates one it has; avatar bytes come from the avatar route |
+| `modules_changed` | Out-of-band, no payload: a GM changed the world's enabled-module set; every connection re-fetches the set and reconciles its loaded modules |
+| `explored_fog_reset` | Out-of-band: a GM reset explored fog (`scene`, optional `user`, optional `level`); the receiving connection re-evaluates its `"vision"` channel |
+| `scrolling_text` | Out-of-band: a region-triggered floating text over a token (`scene`, `token`, `text`, `gm_only`); a `gm_only` frame reaches GM connections only |
+| `door_toggle_error` | A `toggle_door` request was refused; carries `request_id` and a `message` that is one uniform wording for a non-GM caller |
+| `place_effect_error` | A `place_effect` request was refused; carries `request_id` and a `message` that is one uniform wording for a non-GM caller |
+| `portal_offer` | Out-of-band: a portal region fired for a token (`offer_id`, `scene`, `token`, optional `prompt`, `options`, `gm_only`, `owner`); delivered to GM connections and, unless `gm_only`, to the token's effective owner |
+| `portal_choice_error` | A `choose_portal` or `open_portal` request was refused; carries `request_id`, a `message` that is one uniform wording for a non-GM caller, and `reason` (`paused` when the session pause refused it) |
+| `present_note` | Out-of-band: the GM presented a note (`note_id`, `presented_by`); carries no note content, so a recipient who cannot read the note cannot open it |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -105,16 +119,21 @@ Every `ClientMsg` variant:
 | `pong` | Liveness answer |
 | `search` | Full-text query (`limit`, cursor, `subscribe` for live updates); `doc_types` narrows to the listed types (≤16, refused above the cap) |
 | `unsubscribe` | End a live search |
-| `scene_subscribe` | Open a scene-derived channel |
+| `scene_subscribe` | Open a scene-derived channel (`request_id`, `channel`); `as_user` (GM only) views the channel as that user, and `level` scopes explored-fog accumulation for the `vision` channel |
 | `scene_unsubscribe` | Close it |
+| `reset_explored_fog` | GM only: purge explored-fog memory for a `scene`, optionally limited to one `user` and/or one `level`; answered by the `explored_fog_reset` broadcast |
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `emote` | Broadcast a transient emote glyph over a token you effectively own |
+| `ruler_update` | Broadcast your live measured route on a scene you can read, including as a read-only spectator. At most 256 vertices, every coordinate finite and within 1e9 in magnitude. A longer list, or a non-finite coordinate (JSON carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is answered with a generic `error` to you alone. A frame with a finite coordinate beyond the bound, an `origin` token over 64 bytes, a scene you cannot read, or past your per-user rate budget (720 frames a minute) is dropped silently. The `origin` token is chosen by the client and relayed unchanged so the sending connection can recognize its own frame; `active: false` or an empty route ends the ruler |
 | `play_vfx` | Fire a one-shot VFX at scene coords; rate-limited per user, spectators refused |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `recalc_roll` | GM only: apply `ops` to the roll named by `message_id` and `roll_id`, re-deriving it and appending a `recalc_history` entry |
+| `revise_audience` | GM only: replace a stored message's `audience` (`message_id`, `audience`) to reveal or conceal it |
+| `present_note` | GM only: tell every connected member's client to open a shared note (`request_id`, `note_id`); authors no document and is relayed as `present_note` |
 | `draw_table` | Draw one or more rows from a rollable `table` document, posted as one `MessageKind::Roll` message — see [Rollable tables](#rollable-tables) |
 | `combat_start` | Activate a combat |
 | `combat_pause` | Deactivate a combat, preserving its clock position |
@@ -127,6 +146,10 @@ Every `ClientMsg` variant:
 | `merge_pull` | Merge an instance's template into it — the server computes the 3-way merge and, when conflict-free, commits it |
 | `merge_push` | Merge a template into every same-world instance visible to the sender |
 | `merge_revert` | Reset an instance's mergeable bands to its template's current state (never conflicts) |
+| `toggle_door` | Flip a wall's door between closed and open (`request_id`, `scene_id`, `wall_id`, `to`); a non-GM must control a token near the door, and only a GM may set or clear `locked`. A refusal is `door_toggle_error` |
+| `place_effect` | Place the effect set a module declared over an area (`request_id`, `module`, `placement`, `scene_id`, `shape`, and `caster` when the declaration needs one); behavior and cost come from the manifest. A refusal is `place_effect_error` |
+| `choose_portal` | Answer a `portal_offer` (`request_id`, `offer_id`, `choice` = the option index, or `null` to decline); the token's owner or a GM only. A refusal is `portal_choice_error` |
+| `open_portal` | Re-issue the portal offer for a token standing in a portal region (`request_id`, `token`); the token's owner or a GM only. The offer arrives as `portal_offer` |
 | `audio_transport` | GM-only playlist/playback transport op (play/pause/seek/skip/gain) |
 | `audio_listen_as` | Set (or clear) this connection's spatial-audio listening token |
 
@@ -168,6 +191,13 @@ the same sanitizer `search` uses. The asset browser already re-lists on every
 `asset_changed` notice, so `q` is a plain filter under the caller's keyset
 sort — never a ranked, live-updating page.
 
+The same route takes `ids`, a comma-separated list of at most 100 asset ids, so a
+client that knows the assets it wants (the asset browser's favourites) fetches only
+those instead of the whole library. The ids are ANDed with the other filters and
+with the world scope: an id from another world, or one naming no asset, matches
+nothing; `ids=` with no id matches nothing; more than 100 ids, or one that is not
+a UUID, is a 400. A caller with more than 100 ids sends one request per 100.
+
 ## Rollable tables
 
 A `table` document (`TableEngine`: `draw` rule, `rows`, plain-text
@@ -191,7 +221,9 @@ a correlated `chat_error`, never a hard `reject`.
 ## Notes
 
 A `note` document (`NoteEngine`: author `source` markdown, a server-derived
-`body`, sibling `sort`) is authored/edited like any other document — plain
+`body`, sibling `sort`, and a page `kind` of `text`, `image`, `pdf` or `video`
+whose media kinds carry an `asset_id` shown above the caption, which is the
+`source`) is authored/edited like any other document — plain
 `Create`/`Update` through the generic engine-ingress gate, no dedicated wire
 frame. `body` is unconditionally overwritten on every Create/Update
 post-image: the server renders `source` through the same span grammar and

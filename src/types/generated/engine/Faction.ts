@@ -2,7 +2,7 @@
 import type { FactionStance } from "./FactionStance";
 
 /**
- * A faction's display + stance (mirrors the client's `Faction`). `color`
+ * A faction's display + stance (exported to the client as `Faction`). `color`
  * is "#rrggbb" (the token border color).
  *
  * # Examples

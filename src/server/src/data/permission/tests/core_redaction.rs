@@ -67,6 +67,7 @@ fn a_gm_recipient_is_unaffected_by_an_unclassifiable_override() {
         all: true,
         see_gm_only: true,
         is_owner: false,
+        user_id: Some(uuid::Uuid::from_u128(0xB)),
     };
     assert!(filter_properties(&d, &gm).is_ok());
 }

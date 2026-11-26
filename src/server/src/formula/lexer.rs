@@ -1,6 +1,8 @@
-//! Source text → tokens. Twin of the client package's `lexer.ts` + `chars.ts`.
-//! Positions are UTF-16 code-unit offsets (the client's string indexing) so
-//! every error `detail` names the same position on both sides.
+//! This module turns source text into tokens.
+//!
+//! It is the twin of the client package's `lexer` module; the identifier character classes it
+//! reads are declared in `chars`. Positions are UTF-16 code-unit offsets (the client's string
+//! indexing), so an error `detail` that names a position names the same one on both sides.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

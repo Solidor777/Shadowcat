@@ -28,7 +28,7 @@
     display: grid;
     height: 100vh;
     grid-template-columns: calc(var(--input-height-coarse) + var(--space-1) * 2 + 1px) 1fr;
-    grid-template-rows: 2.5rem 1fr 2rem;
+    grid-template-rows: 2.5rem 1fr var(--statusbar-height);
     grid-template-areas:
       "topbar topbar"
       "toolrail main"
@@ -75,7 +75,7 @@
     /* Same growth cap as `.toolrail`/`.main`: this row hosts arbitrary contributions (the
      * panel dock's chips carry a 44px touch-target floor), so the cap must be structural
      * here rather than re-applied per contribution — zeroing the automatic minimum size plus
-     * a non-visible overflow is what keeps a tall child from growing this fixed 2rem row (and
+     * a non-visible overflow is what keeps a tall child from growing this fixed `--statusbar-height` row (and
      * with it the whole grid) past 100vh. `Layout.test` enumerates the row's items against
      * this cap alongside `.toolrail`'s. */
     min-height: 0;
@@ -88,7 +88,7 @@
    * hairline `border-top` below is the row's only height. */
   .layout.compact {
     grid-template-columns: 1fr;
-    grid-template-rows: 2.5rem 1fr auto 2rem;
+    grid-template-rows: 2.5rem 1fr auto var(--statusbar-height);
     grid-template-areas:
       "topbar"
       "main"

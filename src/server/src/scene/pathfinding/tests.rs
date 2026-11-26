@@ -38,6 +38,9 @@ fn step_crossing_a_blocks_move_wall_is_not_enterable() {
     let walls = vec![Seg {
         a: (100.0, 0.0),
         b: (100.0, 200.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
     }];
     let g = grid(&walls, None, 0.2);
     assert!(
@@ -55,10 +58,16 @@ fn footprint_disc_too_wide_for_a_gap_is_not_enterable() {
         Seg {
             a: (100.0, 0.0),
             b: (100.0, 200.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
         Seg {
             a: (200.0, 0.0),
             b: (200.0, 200.0),
+            one_way: None,
+            limited: false,
+            open_within: None,
         },
     ];
     let wide = grid(&walls, None, 0.7);
@@ -168,6 +177,49 @@ fn cell_outside_window_is_not_enterable() {
     assert!(
         !cell_enterable(&g, (2, 2), (3, 2)),
         "outside the search window"
+    );
+}
+
+#[test]
+fn cell_enterable_respects_one_way_wall_direction() {
+    // A one-way wall on the x=100 grid line spanning y∈[0,200], `one_way: Some(1.0)`:
+    // `(b - a) × (p - a)` = `-200 * (p.x - 100)`, so the blocking side is x<100 (cross
+    // positive) and the transparent side is x>100. The (0,0)->(1,0) step starts at (50,50)
+    // (blocking side) and must refuse; the reverse (1,0)->(0,0) step starts at (150,50)
+    // (transparent side) and must pass BOTH wall checks' filters — at footprint 0.6 the
+    // destination disc reaches 60 units out to the wall's 50, so the disc check alone would
+    // block without the filter, pinning that the disc clearance honors the direction too.
+    let one_way = Seg {
+        a: (100.0, 0.0),
+        b: (100.0, 200.0),
+        one_way: Some(1.0),
+        limited: false,
+        open_within: None,
+    };
+    let walls = vec![one_way];
+    let g = grid(&walls, None, 0.6);
+    assert!(
+        !cell_enterable(&g, (0, 0), (1, 0)),
+        "a step starting on the wall's blocking side is refused"
+    );
+    assert!(
+        cell_enterable(&g, (1, 0), (0, 0)),
+        "a step starting on the wall's transparent side crosses freely"
+    );
+    // The same wall with `one_way: None` refuses both directions — the permission above is
+    // attributable to the sign, not the geometry. Every field is spelled out (never a
+    // rest-spread): a future `Seg` field must not be silently inherited by this control.
+    let two_sided = vec![Seg {
+        a: (100.0, 0.0),
+        b: (100.0, 200.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
+    }];
+    let g2 = grid(&two_sided, None, 0.6);
+    assert!(
+        !cell_enterable(&g2, (1, 0), (0, 0)),
+        "with no one-way sign the same step is refused"
     );
 }
 
@@ -311,4 +363,115 @@ fn terrain_region_raises_astar_step_cost() {
         "2 steps through terrain at multiplier 3 = 6.0, regardless of which of the three \
          king-move-adjacent intermediate cells the route passes through"
     );
+}
+
+#[test]
+fn heuristic_approximate_is_admissible() {
+    // Admissibility: the heuristic (the Chebyshev `dmax` bound) never exceeds the true optimal
+    // cost under `Approximate`. The true optimum on an open grid is derived from the step
+    // semantics, not from the impl: every step moves at most one cell per axis, so at least
+    // `dmax` steps are needed; diagonals cost 1.5 < 2, so taking `dmin` diagonals plus
+    // `dmax - dmin` orthogonals is optimal. The A* run pins that the loose bound still FINDS
+    // that optimum (admissible ⇒ optimal goal-pop); asserting `h <= cost` alone against the
+    // A* result would be vacuous if the bound were so bad the search overshot.
+    let shape = crate::scene::grid_shape::SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Approximate,
+    };
+    let walls: Vec<Seg> = vec![];
+    let mut checked = 0usize;
+    for di in -6i32..=6 {
+        for dj in -6i32..=6 {
+            let goal = (di, dj);
+            let (dmax, dmin) = (di.abs().max(dj.abs()) as f64, di.abs().min(dj.abs()) as f64);
+            let true_optimum = (dmax - dmin) + 1.5 * dmin;
+            let h = heuristic(DiagonalRule::Approximate, (0, 0), goal);
+            assert!(
+                h <= true_optimum + 1e-9,
+                "heuristic {h} exceeds the true optimal cost {true_optimum} for {goal:?}"
+            );
+            let g = PathGrid {
+                inputs: PathInputs {
+                    cell: shape.cell,
+                    footprint_radius_cells: 0.1,
+                    walls: &walls,
+                    mask: None,
+                    regions: None,
+                    shape: &shape,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
+                window: (-20, -20, 20, 20),
+            };
+            let (_cells, cost, _p) = astar_leg(&g, (0, 0), goal, 0).expect("open grid is routable");
+            assert!(
+                (cost - true_optimum).abs() < 1e-9,
+                "A* under the admissible bound must return the true optimum {true_optimum} for \
+                 {goal:?}, got {cost}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "the battery must actually sweep offsets");
+}
+
+#[test]
+fn heuristic_orthogonal_is_admissible_and_consistent() {
+    // `Orthogonal`'s Manhattan estimate is EXACT on the 4-directional unit-step graph (every
+    // step moves one axis by one cell, so any route needs at least |di| + |dj| steps and the
+    // direct walk achieves it) — exactness implies both admissibility (never over) and
+    // consistency (h(c) <= cost(c,n) + h(n) per edge). Both are pinned by enumeration: the
+    // admissibility half against `astar_leg`'s returned cost, the consistency half against
+    // every neighbor edge `neighbors_with_cost` emits.
+    let shape = crate::scene::grid_shape::SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Orthogonal,
+    };
+    let walls: Vec<Seg> = vec![];
+    let mut checked = 0usize;
+    for di in -6i32..=6 {
+        for dj in -6i32..=6 {
+            let goal = (di, dj);
+            let h = heuristic(DiagonalRule::Orthogonal, (0, 0), goal);
+            let g = PathGrid {
+                inputs: PathInputs {
+                    cell: shape.cell,
+                    footprint_radius_cells: 0.1,
+                    walls: &walls,
+                    mask: None,
+                    regions: None,
+                    shape: &shape,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
+                window: (-20, -20, 20, 20),
+            };
+            let (_cells, cost, _p) = astar_leg(&g, (0, 0), goal, 0).expect("open grid is routable");
+            assert!(
+                h <= cost + 1e-9,
+                "heuristic {h} exceeds the true cost {cost} for {goal:?}"
+            );
+            assert!(
+                (h - cost).abs() < 1e-9,
+                "the Manhattan estimate is exact for the 4-directional graph: {h} vs {cost}"
+            );
+            // Consistency: from every cell within a few steps of the start, no neighbor edge
+            // drops the estimate by more than the edge's own cost.
+            for c in [(-1, 0), (0, 0), (1, 1), (2, -1)] {
+                for (n, sc, _p) in
+                    crate::scene::grid_shape::GridShape::neighbors_with_cost(&shape, c, 0)
+                {
+                    let hc = heuristic(DiagonalRule::Orthogonal, c, goal);
+                    let hn = heuristic(DiagonalRule::Orthogonal, n, goal);
+                    assert!(
+                        hc <= sc + hn + 1e-9,
+                        "inconsistent at {c:?} -> {n:?} toward {goal:?}: h(c)={hc}, \
+                         cost={sc}, h(n)={hn}"
+                    );
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "the battery must actually sweep offsets");
 }

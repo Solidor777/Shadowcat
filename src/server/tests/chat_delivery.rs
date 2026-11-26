@@ -1,7 +1,8 @@
-//! Proof: a server-authored `message` document rides the
-//! existing create -> sequence -> broadcast path over a real two-client WS
-//! connection, with no message-specific transport code. Mirrors the
-//! `ws_convergence` harness (spawn/login/connect/add_member).
+//! Proof: a server-authored `message` document rides the existing create -> sequence -> broadcast
+//! path over a real two-client WS connection.
+//!
+//! No message-specific transport code is involved. The test mirrors the `ws_convergence`
+//! harness (spawn/login/connect/add_member).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -44,6 +45,13 @@ async fn spawn() -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::new(
+            std::env::temp_dir(),
+            shadowcat::trash::TrashRetention::Disabled,
+        )),
     };
     let app = http::router(state).await;
 

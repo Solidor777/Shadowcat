@@ -1,11 +1,17 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { Asset } from "@shadowcat/types";
   import { getAppContext, sizeClass, type PickAssetOptions } from "@shadowcat/ui-kit";
   import { queryAssets, patchAsset, bulkPatchAssets, type AssetQuery } from "@shadowcat/core";
   import FilterBar from "./FilterBar.svelte";
+  import { queryFavoriteAssets } from "./favoritesListing";
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
+  import AssetList from "./AssetList.svelte";
+  import { getFavorites, toggleFavorite, getViewMode, setViewMode, type ViewMode } from "./favorites";
   import FolderTree from "./FolderTree.svelte";
+  import { ROOT_DROP_ID } from "./folderOps";
+  import type { DropResult } from "@shadowcat/core";
   import PreviewPane from "./PreviewPane.svelte";
   import BulkBar from "./BulkBar.svelte";
   import UploadQueue from "./UploadQueue.svelte";
@@ -29,19 +35,30 @@
     onCancel?: () => void;
   } = $props();
 
-  const { world, assets: resolver, onAssetChanged, t } = getAppContext();
+  const { world, assets: resolver, onAssetChanged, t, notifyProgress } = getAppContext();
 
-  // The pick request's presets seed the filter ONCE — the browser owns it
-  // afterward, so capturing the initial prop value is the intended semantics.
-  // svelte-ignore state_referenced_locally
+  // The pick request's presets seed the filter ONCE — the browser owns it afterward — so the
+  // props are read untracked.
+  const presets = untrack(() => initialFilters);
   let filter = $state<FilterState>({
     query: "",
     queryIsRegex: false,
-    tags: initialFilters?.tags ?? [],
-    kind: initialFilters?.kind,
+    tags: presets?.tags ?? [],
+    kind: presets?.kind,
     sort: "created",
+    favoritesOnly: false,
   });
   let items = $state<Asset[]>([]);
+  /** The account's favorite asset ids. */
+  let favorites = $state<string[]>([]);
+  /** The account's layout choice; both layouts share the selection and bulk state below. */
+  let viewMode = $state<ViewMode>("grid");
+  /** The listing shown by the grid or list: `items`, narrowed to the current favorites when that
+   * filter is on (so an unstarred asset leaves at once, before the next fetch). */
+  const ListingView = $derived(viewMode === "list" ? AssetList : AssetGrid);
+  const displayed = $derived(
+    filter.favoritesOnly ? items.filter((a) => favorites.includes(a.id)) : items,
+  );
   let nextCursor = $state<string | null>(null);
   let selected = $state<string[]>([]);
   let error = $state<string | null>(null);
@@ -56,12 +73,16 @@
    * AND `.opus.webm` siblings — the default, since any file may be looped and a WebKit client
    * needs the WebM one). */
   let audioContainers = $state<"ogg" | "webm" | "both">("both");
+  /** The folder tree, bound so the grid's tile drag can read its drop targets. */
+  let tree = $state<ReturnType<typeof FolderTree> | null>(null);
+  /** The drop resolution of an in-progress tile drag, shown on the tree's rows. */
+  let assetDropHover = $state<DropResult | null>(null);
   /** The single selected asset shown in the preview pane, or null. */
   const previewAsset = $derived(
     selected.length === 1 ? (items.find((a) => a.id === selected[0]) ?? null) : null,
   );
   /** The browser's upload queue; refreshes the listing per created asset. */
-  const uploads = new UploadQueueModel(world, () => void reload());
+  const uploads = new UploadQueueModel(world, () => void reload(), { t, notifyProgress });
   // Monotonic reload marker: a stale page resolving after a newer reload
   // started must not clobber the newer listing.
   let generation = 0;
@@ -88,17 +109,18 @@
     };
   }
 
-  /** Files dropped assets into `folderId` (single patch or one bulk call),
-   * then refreshes the listing.
+  /** Files dropped assets into the dropped-on folder, or out of any folder when the target is
+   * the all-assets row (single patch or one bulk call), then refreshes the listing.
    * @param ids - The dragged asset ids.
-   * @param folderId - The drop-target folder.
+   * @param targetId - The drop target: a folder id, or `ROOT_DROP_ID` for the world root.
    * @example
    * ```
-   * // private function; wired to FolderTree's onDropAssets below
+   * // private function; wired to AssetGrid's onDropAssets below
    * void fileAssets(["a1"], "folder-1");
    * ```
    */
-  async function fileAssets(ids: string[], folderId: string): Promise<void> {
+  async function fileAssets(ids: string[], targetId: string): Promise<void> {
+    const folderId = targetId === ROOT_DROP_ID ? null : targetId;
     try {
       if (ids.length === 1) await patchAsset(ids[0], { folder_id: folderId });
       else await bulkPatchAssets(world, { ids, folder_id: folderId, add_tags: [], remove_tags: [] });
@@ -121,11 +143,14 @@
   async function reload(): Promise<void> {
     const gen = ++generation;
     try {
-      const page = await queryAssets(world, currentQuery());
+      // Favorites-only fetches just the favorites, whole (no cursor); otherwise the first page.
+      const fetched = filter.favoritesOnly
+        ? { items: await queryFavoriteAssets(world, currentQuery(), favorites), next_cursor: null }
+        : await queryAssets(world, currentQuery());
       if (gen !== generation) return;
-      items = page.items;
-      nextCursor = page.next_cursor;
-      resolver.reconcile(page.items);
+      items = fetched.items;
+      nextCursor = fetched.next_cursor;
+      resolver.reconcile(fetched.items);
       error = null;
     } catch (e) {
       if (gen !== generation) return;
@@ -154,6 +179,7 @@
       resolver.reconcile(page.items);
     } catch (e) {
       if (gen !== generation) return;
+      nextCursor = cursor; // the page is still unread, so a later scroll can retry it
       error = t("assetBrowser.error", { message: String(e) });
     }
   }
@@ -163,6 +189,30 @@
   // the window.
   let cooldown: ReturnType<typeof setTimeout> | null = null;
   let trailing = false;
+
+  /** Whether a filter change alters what the browser fetches. Every field does: the favorites
+   * filter switches the listing between the paged query and the favorites' ids.
+   * @param prev - The current filter.
+   * @param next - The incoming filter.
+   * @returns `true` when any server-side field differs.
+   * @example
+   * ```
+   * // private function; used by `onFilterChange` below
+   * declare const a: FilterState;
+   * changesListing(a, { ...a, favoritesOnly: true }); // true
+   * ```
+   */
+  function changesListing(prev: FilterState, next: FilterState): boolean {
+    return (
+      prev.query !== next.query ||
+      prev.queryIsRegex !== next.queryIsRegex ||
+      prev.favoritesOnly !== next.favoritesOnly ||
+      prev.kind !== next.kind ||
+      prev.sort !== next.sort ||
+      prev.tags.length !== next.tags.length ||
+      prev.tags.some((tag, i) => tag !== next.tags[i])
+    );
+  }
 
   /** Applies a filter change and schedules the (debounced) refetch.
    * @param next - The full next filter state from the bar.
@@ -174,7 +224,9 @@
    * ```
    */
   function onFilterChange(next: FilterState): void {
+    const refetch = changesListing(filter, next);
     filter = next;
+    if (!refetch) return;
     if (cooldown) {
       trailing = true;
       return;
@@ -189,11 +241,64 @@
     }, 250);
   }
 
+  /** Flips one asset's favorite state and adopts the stored list.
+   * @param id - The asset id whose star was pressed.
+   * @returns Resolves once the stored list is adopted (or `error` is set).
+   * @example
+   * ```
+   * // private function; wired to the grid/list onToggleFavorite below
+   * void flipFavorite("a1");
+   * ```
+   */
+  async function flipFavorite(id: string): Promise<void> {
+    try {
+      favorites = await toggleFavorite(id);
+    } catch (e) {
+      error = t("assetBrowser.error", { message: String(e) });
+    }
+  }
+
+  /** Switches the layout and stores the choice for the account.
+   * @param mode - The chosen layout.
+   * @returns Resolves once the choice is stored (or `error` is set).
+   * @example
+   * ```
+   * // private function; wired to FilterBar's onViewModeChange below
+   * void chooseViewMode("list");
+   * ```
+   */
+  async function chooseViewMode(mode: ViewMode): Promise<void> {
+    viewMode = mode;
+    try {
+      await setViewMode(mode);
+    } catch (e) {
+      error = t("assetBrowser.error", { message: String(e) });
+    }
+  }
+
+  // Load the account's favorites and layout once. A failed read leaves the defaults (no
+  // favorites, grid); the listing itself is unaffected.
+  $effect(() => {
+    void getFavorites().then(
+      (ids) => {
+        favorites = ids;
+        if (filter.favoritesOnly) void reload(); // the mode was switched on before the list arrived
+      },
+      () => {},
+    );
+    void getViewMode().then(
+      (mode) => (viewMode = mode),
+      () => {},
+    );
+  });
+
   // Load on mount; reload when any asset notice lands (created/moved change
   // listings; deleted drops tiles; replaced re-renders thumbs at the bumped
   // version the resolver already reflects).
   $effect(() => {
-    void reload();
+    // Untracked: `reload` reads the filter, and only `onFilterChange` (debounced) and the folder
+    // selection decide when a filter change refetches.
+    untrack(() => void reload());
     return onAssetChanged(() => void reload());
   });
 
@@ -203,14 +308,15 @@
   {#if !compact || treeOpen}
     <aside class="tree" data-testid="asset-browser-tree">
       <FolderTree
+        bind:this={tree}
         {selectedFolder}
         {mutable}
+        {assetDropHover}
         onSelectFolder={(id) => {
           selectedFolder = id;
           treeOpen = false;
           void reload();
         }}
-        onDropAssets={(ids, folderId) => void fileAssets(ids, folderId)}
         onDropFiles={mutable ? (files, folderId) => uploads.enqueue(files, folderId) : undefined}
       />
     </aside>
@@ -239,7 +345,12 @@
         onclick={() => (treeOpen = !treeOpen)}
       >📁</button>
     {/if}
-    <FilterBar {filter} onChange={onFilterChange} />
+    <FilterBar
+      {filter}
+      onChange={onFilterChange}
+      {viewMode}
+      onViewModeChange={(mode) => void chooseViewMode(mode)}
+    />
     {#if mutable}
       <label class="upload-fallback">
         {t("assetBrowser.upload")}
@@ -272,15 +383,20 @@
     {#if error}
       <p class="error">{error}</p>
     {:else}
-      <AssetGrid
-        {items}
+      <ListingView
+        items={displayed}
         {selected}
-        onSelectionChange={(ids) => (selected = ids)}
+        {favorites}
+        onToggleFavorite={(id: string) => void flipFavorite(id)}
+        onSelectionChange={(ids: string[]) => (selected = ids)}
         appendOnClick={mode === "pick" && initialFilters?.multiple === true}
-        onOpen={(id) => {
+        onOpen={(id: string) => {
           if (mode === "pick" && !initialFilters?.multiple) onConfirm?.([id]);
         }}
         onNearEnd={() => void loadMore()}
+        getDropTargets={() => tree?.dropTargets() ?? []}
+        onDropAssets={(ids: string[], targetId: string) => void fileAssets(ids, targetId)}
+        onDragHover={(result: DropResult | null) => (assetDropHover = result)}
       />
     {/if}
     <UploadQueue queue={uploads} />

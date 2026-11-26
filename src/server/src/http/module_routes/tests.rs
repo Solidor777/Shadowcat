@@ -212,7 +212,7 @@ async fn serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root()
     let server = logged_in_server_with_modules_dir(dir.path()).await;
 
     // id="..%2f.." resolves (via the `id` capture alone) above modules_dir
-    // before `rel_path` is even considered — the two-stage guard must catch
+    // before `rel_path` is even considered — the module-folder check must catch
     // this at the FIRST canonicalize, not rely on the second.
     let res = server.get("/modules/%2e%2e/outside.txt").await;
     res.assert_status(StatusCode::NOT_FOUND);
@@ -222,7 +222,7 @@ async fn serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root()
 // three CI OSes (unlike the symlink-based HTTP reproduction below, which
 // is unix-only). `Path::starts_with` alone is
 // satisfied by EQUALITY — an `id`/`rel_path` that canonicalizes to exactly
-// `root` must NOT be treated as "within" it, or stage 2 permits reading
+// `root` must NOT be treated as "within" it, or the file-path check permits reading
 // ANY file under `modules_root`, including another module's own files.
 #[test]
 fn is_strictly_within_rejects_equality_but_accepts_a_proper_descendant() {
@@ -499,6 +499,43 @@ async fn enabled_modules_rejects_a_module_with_no_engines_field() {
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// `GET /api/modules` carries the server's own `engine_compat_ok` verdict per install: a
+/// satisfiable range is `true`, an unsatisfiable one is `false`, and an absent declaration is
+/// `false` (the same fail-closed rule `set_world_enabled_modules` enforces on save). Defaulting
+/// an absent declaration to `true` would flip the last assertion.
+#[tokio::test]
+async fn list_installed_modules_reports_the_engine_compat_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    for (folder, manifest) in [
+        (
+            "compatible",
+            r#"{"id":"compatible","version":"1.0.0","engines":{"shadowcat":"*"}}"#,
+        ),
+        (
+            "too-new",
+            r#"{"id":"too-new","version":"1.0.0","engines":{"shadowcat":"^99.0.0"}}"#,
+        ),
+        ("no-engines", r#"{"id":"no-engines","version":"1.0.0"}"#),
+    ] {
+        std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+        std::fs::write(dir.path().join(folder).join("module.json"), manifest).unwrap();
+    }
+    let (gm, _pl, _world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let got: serde_json::Value = gm.get("/api/modules").await.json();
+    let verdict = |id: &str| -> bool {
+        got.as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap_or_else(|| panic!("module {id} listed"))["engine_compat_ok"]
+            .as_bool()
+            .expect("engine_compat_ok is a bool")
+    };
+    assert!(verdict("compatible"));
+    assert!(!verdict("too-new"));
+    assert!(!verdict("no-engines"));
+}
+
 #[tokio::test]
 async fn enabled_modules_rejects_two_system_providers() {
     let dir = tempfile::tempdir().unwrap();
@@ -719,5 +756,215 @@ async fn enabled_modules_aggregates_every_bad_entrys_failure_into_one_response()
     assert!(
         message.contains("ghost-two"),
         "response must report the second bad entry too, not just the first: {message}"
+    );
+}
+
+/// Writes an engine-compatible module whose manifest carries `extra` raw JSON members.
+fn write_compatible_module(dir: &std::path::Path, id: &str, extra: &str) {
+    std::fs::create_dir_all(dir.join(id)).unwrap();
+    std::fs::write(
+        dir.join(id).join("module.json"),
+        format!(
+            r#"{{"id":"{id}","version":"1.0.0","engines":{{"shadowcat":"^{}"}}{extra}}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+}
+
+/// Enabling two modules where one declares `conflicts` naming the other is rejected, naming both
+/// ids, and nothing is persisted; enabling either alone succeeds.
+#[tokio::test]
+async fn enabled_modules_rejects_a_conflicting_pair_and_accepts_either_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    let resp = gm
+        .put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+        ]))
+        .await;
+    resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let body: serde_json::Value = resp.json();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("mod-a") && message.contains("mod-b"),
+        "message must name both ids: {message}"
+    );
+    let got: serde_json::Value = gm.get(&url).await.json();
+    assert_eq!(
+        got,
+        serde_json::json!([]),
+        "a rejected batch persists nothing"
+    );
+
+    for only in ["mod-a", "mod-b"] {
+        gm.put(&url)
+            .json(&serde_json::json!([{"id":only,"validators_enabled":false}]))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+}
+
+/// The declaring module may be listed after the module it names, and a conflict with a module
+/// that is installed but not in the requested set is ignored.
+#[tokio::test]
+async fn enabled_modules_conflict_is_order_independent_and_ignores_modules_outside_the_set() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    write_compatible_module(dir.path(), "mod-c", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    gm.put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-b","validators_enabled":false},
+            {"id":"mod-a","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    gm.put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-c","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// A malformed `conflicts` member is read as empty (fail-open, like every optional manifest
+/// member the scanner does not validate): it never rejects the module or its batch.
+#[tokio::test]
+async fn enabled_modules_treats_a_malformed_conflicts_member_as_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":"mod-b""#);
+    write_compatible_module(dir.path(), "mod-b", r#","conflicts":[7,null]"#);
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// A conflict failure is reported beside the per-entry failures in one response.
+#[tokio::test]
+async fn enabled_modules_reports_a_conflict_together_with_other_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let resp = gm
+        .put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+            {"id":"ghost","validators_enabled":false},
+        ]))
+        .await;
+    resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let body: serde_json::Value = resp.json();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ghost") && message.contains("conflicts with"),
+        "both failure kinds must be reported: {message}"
+    );
+}
+
+/// A GM session on a world, plus a subscription to the world's live room. The room is opened up
+/// front so frames the route broadcasts are observable.
+async fn gm_with_room_subscription(
+    dir: &std::path::Path,
+) -> (
+    axum_test::TestServer,
+    String,
+    tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) {
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        modules_dir: Some(dir.to_string_lossy().to_string()),
+        ..crate::config::Config::default()
+    });
+    let hash = crate::auth::password::hash_password("pw").unwrap();
+    state
+        .repo
+        .create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0)
+        .await
+        .unwrap();
+    let gm = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state.clone()).await)
+        .unwrap();
+    gm.post("/api/login")
+        .json(&serde_json::json!({"username":"gm","password":"pw"}))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let world: serde_json::Value = gm
+        .post("/api/worlds")
+        .json(&serde_json::json!({"name":"W"}))
+        .await
+        .json();
+    let world_id = world["id"].as_str().unwrap().to_string();
+    let room = state
+        .ws
+        .rooms
+        .get_or_create(state.repo.as_ref(), world_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("the world exists");
+    let (rx, _) = room.subscribe();
+    (gm, world_id, rx)
+}
+
+/// Counts the `ModulesChanged` frames already waiting on `rx`.
+fn pending_modules_changed(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> usize {
+    let mut count = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let crate::ws::room::RoomEvent::Other(msg) = event {
+            if matches!(msg.as_ref(), crate::ws::protocol::ServerMsg::ModulesChanged) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// A successful enable-set change broadcasts exactly one `ModulesChanged` into the world's room;
+/// a rejected batch broadcasts none.
+#[tokio::test]
+async fn enabled_modules_broadcasts_modules_changed_only_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", "");
+    let (gm, world_id, mut rx) = gm_with_room_subscription(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    gm.put(&url)
+        .json(&serde_json::json!([{"id":"not-installed","validators_enabled":false}]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        pending_modules_changed(&mut rx),
+        0,
+        "a rejected batch must not broadcast"
+    );
+
+    gm.put(&url)
+        .json(&serde_json::json!([{"id":"mod-a","validators_enabled":false}]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(
+        pending_modules_changed(&mut rx),
+        1,
+        "a saved change broadcasts once"
     );
 }

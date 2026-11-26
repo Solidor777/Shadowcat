@@ -20,6 +20,7 @@
     "@shadowcat/module-chat": "workspace:*",
     "@shadowcat/module-chat-composer": "workspace:*",
     "@shadowcat/module-chat-card": "workspace:*",
+    "@shadowcat/module-chat-bubbles": "workspace:*",
     "@shadowcat/module-notes": "workspace:*",
     "@shadowcat/module-tables": "workspace:*",
     "@shadowcat/module-conditions": "workspace:*",
@@ -38,6 +39,7 @@
     "@shadowcat/module-sheet-playlist": "workspace:*",
     "@shadowcat/module-vfx": "workspace:*",
     "@shadowcat/module-ducking": "workspace:*",
+    "@shadowcat/module-onboarding": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },
@@ -47,6 +49,7 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "e2e:build": "pnpm -w run clean && vite build --mode e2e && cargo build -p shadowcat --bin shadowcat",
+    "e2e:build:release": "pnpm -w run clean && vite build --mode e2e && cargo build --release -p shadowcat --bin shadowcat",
     "e2e": "pnpm e2e:build && playwright test"
   },
   "devDependencies": {

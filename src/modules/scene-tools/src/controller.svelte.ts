@@ -2,11 +2,26 @@
 // only through the public AppContext seams (the scene bridge for tool activation/snap,
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
-import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta } from "@shadowcat/core";
-import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
+import {
+  rectPoints,
+  ellipsePoints,
+  circlePoints,
+  conePoints,
+  squarePoints,
+  linePoints,
+  DEFAULT_CONE_ANGLE_DEGREES,
+  parseColor,
+  regionShapeOutline,
+  type SceneTool,
+  type Point,
+  type ShapeNodeSpec,
+} from "@shadowcat/render";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, reanchorRegion, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type PortalTarget, type PortalOption, type RegionEngine, type RegionAnchor, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
+import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
-import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt } from "./hit-test";
+import { RulerSharer } from "./ruler-share";
+import { clampAmbientLevel, isValidTemplateAngle, isValidTemplateWidth } from "./server-bounds";
+import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
 
 /** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
  * `ElevationBand`, whose `bottom`/`top` are independently nullable to express an unbounded
@@ -31,8 +46,21 @@ export type TemplateMode = "circle" | "cone" | "rect" | "line";
  * (`regionShapeGeometry`). */
 export type RegionShapeMode = "rect" | "circle" | "polygon";
 /** A region's gameplay effect, matching the server `RegionBehavior` variants (precedence
- * `Impassable > Arrest > Terrain` at composition time). */
-export type RegionBehaviorMode = "terrain" | "impassable" | "arrest";
+ * `Impassable > Arrest > Terrain` at composition time). `"ambient_light"` is not a movement
+ * behavior at all — it edits the region's cells' composed illumination
+ * (`ToolController.regionAmbientMode`/`regionAmbientLevel`) and never blocks or weights a route. */
+export type RegionBehaviorMode = "terrain" | "impassable" | "arrest" | "ambient_light";
+/** One staged row of the region tool's per-movement-tag cost table
+ * (`ToolController.regionCostByTag`), folded into a `RegionEngine.cost_by_tag` record by
+ * `regionCostByTagRecord` at persist time. */
+export interface RegionCostByTagRow {
+  /** The movement tag this row's cost applies to (e.g. `"flying"`); a blank tag is dropped at
+   * persist time rather than authored as an empty-string key. */
+  tag: string;
+  /** The cost multiplier for a mover carrying `tag`, clamped to `>= 1` at persist time
+   * (the same floor `ToolController.regionCost` itself gets). */
+  cost: number;
+}
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
@@ -57,7 +85,14 @@ export interface ToolContext {
   role: WorldRole;
   /** Broadcast a transient ping at scene coords (the ping tool). */
   sendPing: (x: number, y: number) => void;
-  /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
+  /** Whether this user shares their live ruler (from `AppContext.shareRuler`, default off). The
+   * measure tool reads it on every update; absent ⇒ never shared. */
+  shareRuler?: ShareRulerPreference;
+  /** Broadcast this user's live ruler on a scene (from `AppContext.sendRulerUpdate`); absent ⇒
+   * the measure tool never shares, whatever `shareRuler` says. */
+  sendRulerUpdate?: (scene: string, points: [number, number][], active: boolean) => void;
+  /** Clock in ms for drag-intent coalescing and the shared-ruler send throttle; defaults to
+   * Date.now and need not be monotonic (injected in tests). */
   now?: () => number;
   /** Timer scheduler backing the measure tool's deferred route-preview fire; defaults to the
    * real `setTimeout`. Tests that inject a logical `now` (advanced without advancing real
@@ -85,8 +120,21 @@ export interface ToolContext {
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ) => Promise<MoveStream>;
-  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
+  /** Request a door toggle on the named wall (from `AppContext.toggleDoor`) — the select
+   * tool's click-to-toggle affordance. The server is the authority (reach + visibility, or
+   * GM standing); the controller's own reach pre-check is advisory UX only, sparing an
+   * obviously-doomed request. When absent (older host or not connected), clicking a door is a
+   * no-op. */
+  toggleDoor?: (sceneId: string, wallId: string, to: DoorState) => Promise<void>;
+  /** Surface a user-visible toast (from `AppContext.notify`) — a refused or unusable door
+   * toggle is feedback the clicking player genuinely needs, never a silent swallow. */
+  notify?: (message: string, level?: NotificationLevel) => void;
+  /** The current user's id (from `AppContext.selfId`) — the door-toggle advisory reach
+   * pre-check resolves "tokens the clicker controls" through it (`ownerFloorApplies`). */
+  selfId?: string;
+  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ `resolveViewedScene`. */
   viewedSceneId?: () => string | null;
   /** The server's resolved token footprints (from `ctx.footprints`). The hit-test, the selection
    * ring and the place tool all read their extents from here rather than computing any; absent ⇒
@@ -119,6 +167,24 @@ export interface ToolContext {
    * the original scene through the same seam. Absent ⇒ pick-on-stage cannot switch scenes (the
    * GM picks within whichever scene is already viewed). */
   setGmViewedScene?: (id: string | null) => void;
+  /** Whether the whole-session pause freezes this user's token movement right now (`ToolRail`
+   * derives it from `sessionFreezes`). A frozen user's move commits (a drag release, a measure
+   * route commit) send nothing and raise the paused notice instead; selection, doors, measure
+   * previews and pings are unaffected. Absent ⇒ never frozen. */
+  movesFrozen?: () => boolean;
+}
+
+/** Raises the paused toast for a move commit the session pause froze. Never reaches
+ * `moveRequest`, so the host's move-outcome consumer cannot raise it.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyMovesFrozen(ctx);
+ * ```
+ */
+function notifyMovesFrozen(ctx: ToolContext): void {
+  ctx.notify?.(ctx.t("intent.rejected.paused"), "warning");
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -129,6 +195,76 @@ export interface ToolContext {
  * injects (`now`, the timer seams) is not on `AppContext` and stays optional. */
 export type HostToolContext = { [K in keyof ToolContext & keyof AppContext]-?: ToolContext[K] };
 
+/** The i18n key describing why a route request failed, chosen by the rejection's type and never
+ * by its text: `NotConnectedError` (no live transport), `RequestTimeoutError` (the server did not
+ * answer, which says nothing about whether a route exists), and `PathfindError`'s typed reason
+ * (`unreachable` is the server's own "no route", which it also reports for refusals it does not
+ * distinguish; `invalid`; `exceeded`). Any other rejection is reported as a generic failure, never
+ * as "no route".
+ * @param reason The rejection value of the route request.
+ * @returns The `tools.*` message key.
+ * @example
+ * ```
+ * const key = routeFailureKey(new Error("boom"));
+ * ```
+ */
+export function routeFailureKey(reason: unknown): string {
+  if (reason instanceof NotConnectedError) return "tools.moveDisconnected";
+  if (reason instanceof RequestTimeoutError) return "tools.moveTimeout";
+  if (reason instanceof PathfindError) {
+    if (reason.reason === "unreachable") return "tools.moveNoRoute";
+    if (reason.reason === "invalid") return "tools.moveInvalid";
+    return "tools.moveTooComplex";
+  }
+  return "tools.moveRejected";
+}
+
+/** Raises the toast for a failed route request, so a move that never reached `moveRequest` is not
+ * indistinguishable from a hung connection; the message comes from `routeFailureKey`. Rejections
+ * of `moveRequest` are NOT raised here: `WorldSession.moveRequest` publishes them to the one
+ * `AppContext.onMoveOutcome` consumer.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @param reason The rejection value of the route request.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyRouteFailure(ctx, new Error("no route"));
+ * ```
+ */
+function notifyRouteFailure(ctx: ToolContext, reason: unknown): void {
+  ctx.notify?.(ctx.t(routeFailureKey(reason)), "warning");
+}
+
+/** Raises the toast for a move continuation that threw synchronously, so the player is told the
+ * move did not happen instead of the failure surfacing as an unhandled rejection.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyMoveFailed(ctx);
+ * ```
+ */
+function notifyMoveFailed(ctx: ToolContext): void {
+  ctx.notify?.(ctx.t("tools.moveRejected"), "warning");
+}
+
+/** Raises the "blocked" toast for a route that resolved but never leaves its start, when the
+ * server cut it short (`PathResult.truncated`: the movement budget or a gate) or an arrest cell
+ * stopped it. A zero-displacement route that was NOT cut short means the token already stands on
+ * the goal, a legitimate no-op that stays silent.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @param result The resolved route, of fewer than two points.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * declare const result: import("@shadowcat/core").PathResult;
+ * notifyEmptyRoute(ctx, result);
+ * ```
+ */
+function notifyEmptyRoute(ctx: ToolContext, result: PathResult): void {
+  if (result.truncated || result.arrested) ctx.notify?.(ctx.t("tools.moveBlocked"), "warning");
+}
+
 /** The active (viewed) scene + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
  * `grid.distance` is absent, matching `resolveSceneSettings`'s own default). These are
@@ -136,10 +272,10 @@ export type HostToolContext = { [K in keyof ToolContext & keyof AppContext]-?: T
  * beyond this: `SceneEcs::scene_grid_sizes` is the server's sole intentional cell-size
  * defaulting source and also falls back to 100, but the movement gates themselves REFUSE
  * rather than default when a scene has no live document (`Room::publish`).
- * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
+ * @param ctx The tool context; reads `viewedSceneId()` (falling back to `resolveViewedScene`) and
  * `documents`.
- * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
- * viewed and none exists.
+ * @returns The resolved scene id + grid size + grid kind + distance scale, or `null` when no
+ * scene is viewed and none exists.
  * @example
  * ```
  * declare const ctx: ToolContext;
@@ -153,12 +289,16 @@ function activeScene(ctx: ToolContext): {
   /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`; the
    * circumradius on hex). */
   size: number;
+  /** The grid kind (`"square"` when absent, else as authored — `"hex"`), matching
+   * `SceneEngine.grid.kind`. Read by the door-toggle advisory reach check, which converts
+   * cell distances through the kind's world-unit cell span. */
+  kind: string;
   /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
   perCell: number;
   /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
   unit: string;
 } | null {
-  const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
+  const vsid = ctx.viewedSceneId?.() ?? resolveViewedScene(ctx.documents);
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
   const grid = (scene.engine as {
@@ -166,6 +306,8 @@ function activeScene(ctx: ToolContext): {
     grid?: {
       /** Grid cell size in pixels; falls back to 100 when absent. */
       size?: number;
+      /** The grid kind; falls back to `"square"` when absent. */
+      kind?: string;
       /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
       distance?: {
         /** Distance-per-cell scale numerator. */
@@ -177,7 +319,7 @@ function activeScene(ctx: ToolContext): {
   } | undefined)?.grid;
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
-  return { id: scene.id, size, perCell, unit };
+  return { id: scene.id, size, kind: grid?.kind ?? "square", perCell, unit };
 }
 
 /** Format a whole-cell distance as the measure tool's shared distance label:
@@ -276,15 +418,42 @@ export class ToolController {
   templateMode = $state<TemplateMode>("circle");
   /** Template-tool fill/stroke color (hex string, parsed via `parseColor`). */
   templateColor = $state("#3388ff");
+  /** Template-tool authored cone full aperture, degrees; meaningful only for `templateMode ===
+   * "cone"`. `null` persists an absent `shape.angle` (the render layer's own default cone). */
+  templateAngle = $state<number | null>(null);
+  /** Template-tool authored second dimension (a line's thickness, or a rect's second edge
+   * alongside `size`), scene units; meaningful only for `templateMode === "line" | "rect"`.
+   * `null` persists an absent `shape.width` (zero-width line / forced-square rect). */
+  templateWidth = $state<number | null>(null);
   /** Region-tool shape mode + behavior/cost/secrecy config. */
   regionShapeMode = $state<RegionShapeMode>("rect");
   /** Region-tool authored behavior, applied to the next region the tool persists. */
   regionBehavior = $state<RegionBehaviorMode>("terrain");
   /** Region-tool authored terrain cost multiplier; clamped to `>= 1` at persist time. */
   regionCost = $state<number>(2);
+  /** Region-tool authored per-movement-tag cost overrides, staged as add/remove rows exactly
+   * like `regionTriggers`. Each `cost` is clamped to `>= 1` at persist time by
+   * `regionCostByTagRecord`, mirroring `regionCost`'s own clamp; meaningful only for
+   * `regionBehavior === "terrain"` (an authored row on any other behavior persists as an
+   * inert, unread `cost_by_tag` entry, same posture as `regionCost` itself). */
+  regionCostByTag = $state<RegionCostByTagRow[]>([]);
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** Region-tool authored ambient-light mode; meaningful only when `regionBehavior ===
+   * "ambient_light"` (`regionAmbientOverride`'s own gate — the behavior-conditional-field
+   * precedent `regionCost`/`"terrain"` already sets). */
+  regionAmbientMode = $state<AmbientLightMode>("darken");
+  /** Region-tool authored ambient-light level: an absolute illumination for `"override"`
+   * (`[0, 1]`) or a non-negative delta for `"darken"`/`"brighten"` — the exact range
+   * `RegionEngine::validate` enforces server-side. */
+  regionAmbientLevel = $state<number>(0.5);
+  /** Region-tool authored flag: the next region's boundary blocks sight (`RegionOcclusion.sight`). */
+  regionOccludesSight = $state<boolean>(false);
+  /** Region-tool authored flag: the next region's boundary blocks light (`RegionOcclusion.light`). */
+  regionOccludesLight = $state<boolean>(false);
+  /** Region-tool authored flag: the next region's boundary blocks sound (`RegionOcclusion.sound`). */
+  regionOccludesSound = $state<boolean>(false);
   /** The non-token scene entity currently open for editing (a light, wall, region, drawing or
    * template picked with the select or light tool), or `null`. Cleared on every tool switch
    * (`toggle`) and on a GM's empty-canvas click with the select tool; `ToolRail` renders the
@@ -301,6 +470,22 @@ export class ToolController {
    * empty list persists a plain movement-only region). Editing a row in the rail must never
    * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
   regionTriggers = $state<RegionTrigger[]>([]);
+  /** The staged parts of an in-progress COMPOUND region (the ToolRail part-list gesture):
+   * each entry is one dragged shape plus its `hole` flag, held here — NOT in any document —
+   * until `commitRegionParts` folds the whole list into ONE region doc (`RegionGeometry`'s
+   * compound wire form). Empty in the default single-shape flow (a plain drag persists
+   * immediately and never touches this list). */
+  regionParts = $state<CompoundShapePart[]>([]);
+  /** Whether the region tool is in the compound part-staging gesture (armed via the rail's
+   * `region-part-add` button). While true, a drag with the region tool STAGES a part into
+   * `regionParts` instead of persisting a region; while false, a drag persists a legacy
+   * singular-shape region immediately (the default flow). Cleared by
+   * `commitRegionParts`, by removing the last staged part, and by the tool's `onDeactivate`. */
+  regionCompound = $state<boolean>(false);
+  /** The scene the staged `regionParts` were dragged in (their coordinates are meaningful
+   * only there). A stage in a different scene restarts the list; a commit against a
+   * different scene refuses — a part list can never silently land in the wrong scene. */
+  #regionPartsScene: string | null = null;
   /** The `regionTriggers` row index currently awaiting a stage click to capture a `Teleport`
    * trigger's target x/y, or `null` when no pick is in progress. `ToolRail` reads this to show
    * the in-progress "click on stage" prompt on the row's pick button. */
@@ -312,6 +497,13 @@ export class ToolController {
    * reordering `regionTriggers` mid-pick cannot redirect the write onto an unrelated trigger
    * that happens to sit at the same index. `null` exactly when `pickingPortalRow` is `null`. */
   #pickingTrigger: RegionTrigger | null = null;
+  /** The `portal_choice` option index the pick in progress targets, or `null` when it targets a
+   * `teleport` trigger's own target. Read by `ToolRail`'s editor to show the in-progress prompt
+   * on the matching option's pick button. Set and cleared together with `pickingPortalRow`. */
+  pickingPortalOption = $state<number | null>(null);
+  /** The option OBJECT a `portal_choice` pick targets, the same stable-identity rule as
+   * `#pickingTrigger`: `endPickPortalTarget` writes only while the trigger still holds it. */
+  #pickingOption: PortalOption | null = null;
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -357,6 +549,40 @@ export class ToolController {
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
 
+  /** Deactivates the active tool and returns the canvas to camera pan/zoom. The rail calls it
+   * when it unmounts, so a tool's live state (the shared ruler's keepalive timer included) ends
+   * with the rail rather than outliving the world session. A no-op when no tool is active.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.release();
+   * ```
+   */
+  release(): void {
+    if (this.active) this.toggle(this.active);
+  }
+
+  /** Turns a template into a region: dispatches ONE batch (create the region, delete the
+   * template) and opens the new region in the rail's region editor so the GM can add behavior
+   * and triggers. A template whose shape has no region equivalent (a zero-width line) is
+   * refused and nothing is dispatched. The server re-checks create and delete permission.
+   * @param template The `template` document to convert.
+   * @returns `null` when the batch was dispatched, else the refusal reason.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * declare const template: WireDocument;
+   * controller.convertTemplateToRegion(template); // null once dispatched
+   * ```
+   */
+  convertTemplateToRegion(template: WireDocument): TemplateRegionRefusal | null {
+    const batch = buildRegionFromTemplate(this.ctx.world, template);
+    if (!batch.ok) return batch.reason;
+    this.ctx.dispatchIntent(batch.ops);
+    this.editingEntity = { kind: "region", id: batch.region.id };
+    return null;
+  }
+
   /** Begin capturing one stage click as `regionTriggers[row]`'s teleport target x/y. Switches
    * the viewed scene to the trigger's currently-authored target scene (or stays put if none is
    * set yet) and overrides the active tool's pointer handling with a one-shot picker.
@@ -367,24 +593,41 @@ export class ToolController {
    * `#pickOriginalScene` with the FIRST pick's already-roamed-to destination scene rather than
    * the true original, stranding the GM's view on an intermediate scene with no way back
    * through this feature.
-   * @param row Index into `regionTriggers` of the `teleport` trigger being edited.
+   * @param row Index into `regionTriggers` of the `teleport` or `portal_choice` trigger being
+   * edited.
+   * @param option For a `portal_choice` trigger, the index of the option whose target is picked;
+   * omitted for a `teleport` trigger.
    * @example
    * ```
    * declare const controller: ToolController;
    * controller.beginPickPortalTarget(0);
+   * controller.beginPickPortalTarget(1, 2);
    * ```
    */
-  beginPickPortalTarget(row: number): void {
+  beginPickPortalTarget(row: number, option?: number): void {
     const trig = this.regionTriggers[row];
-    if (!trig || trig.effect.type !== "teleport") return;
+    if (!trig) return;
+    let target: PortalTarget;
+    let picked: PortalOption | null = null;
+    if (trig.effect.type === "teleport" && option === undefined) {
+      target = trig.effect.target;
+    } else if (trig.effect.type === "portal_choice" && option !== undefined) {
+      picked = trig.effect.options[option] ?? null;
+      if (!picked) return;
+      target = picked.target;
+    } else {
+      return;
+    }
     if (this.pickingPortalRow !== null) this.endPickPortalTarget(null);
     this.#pickOriginalScene = this.ctx.viewedSceneId?.() ?? null;
-    const targetScene = trig.effect.target.scene;
+    const targetScene = target.scene;
     if (targetScene && targetScene !== this.#pickOriginalScene) {
       this.ctx.setGmViewedScene?.(targetScene);
     }
     this.pickingPortalRow = row;
+    this.pickingPortalOption = picked ? option! : null;
     this.#pickingTrigger = trig;
+    this.#pickingOption = picked;
     this.ctx.scene.setActiveTool({
       onPointerDown: (p: Point) => {
         this.endPickPortalTarget(p);
@@ -410,12 +653,18 @@ export class ToolController {
    */
   endPickPortalTarget(pos: Point | null): void {
     const pickedTrig = this.#pickingTrigger;
+    const pickedOption = this.#pickingOption;
     this.pickingPortalRow = null;
+    this.pickingPortalOption = null;
     this.#pickingTrigger = null;
+    this.#pickingOption = null;
     if (pickedTrig && pos && this.regionTriggers.includes(pickedTrig)) {
-      if (pickedTrig.effect.type === "teleport") {
+      if (pickedTrig.effect.type === "teleport" && !pickedOption) {
         pickedTrig.effect.target.x = pos.x;
         pickedTrig.effect.target.y = pos.y;
+      } else if (pickedTrig.effect.type === "portal_choice" && pickedOption && pickedTrig.effect.options.includes(pickedOption)) {
+        pickedOption.target.x = pos.x;
+        pickedOption.target.y = pos.y;
       }
     }
     if (this.#pickOriginalScene !== null) {
@@ -423,6 +672,161 @@ export class ToolController {
       this.#pickOriginalScene = null;
     }
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Stage one dragged shape as the next part of the in-progress compound region, marking it
+   * additive (`hole: false` — the row's own checkbox flips it in the rail). A stage whose
+   * scene differs from the list's existing parts RESTARTS the list in the new scene: the
+   * staged coordinates are scene-space, so parts from two scenes can never mix in one
+   * document. No-op shape validation here — the drag that produced the shape already ran the
+   * mode's own extent/point-count guards (`makeRegionTool`).
+   * @param shape The dragged shape's wire form (`{kind, points}`).
+   * @param sceneId The active scene the drag happened in.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * ```
+   */
+  stageRegionPart(shape: RegionShape, sceneId: string): void {
+    if (this.#regionPartsScene !== null && this.#regionPartsScene !== sceneId) {
+      this.regionParts = [];
+    }
+    this.#regionPartsScene = sceneId;
+    this.regionParts.push({ shape, hole: false });
+  }
+
+  /** Remove one staged part row and refresh the staged preview overlay to match. Removing
+   * the LAST part leaves the compound gesture entirely via `discardRegionParts` (an empty
+   * list is not a flow — the next drag is a plain single-shape region again).
+   * @param i Index into `regionParts` to splice out.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.removeRegionPartAt(0);
+   * ```
+   */
+  removeRegionPartAt(i: number): void {
+    this.regionParts.splice(i, 1);
+    if (this.regionParts.length === 0) {
+      this.discardRegionParts();
+    } else {
+      this.ctx.scene.previewOverlay(stagedPartPreviews(this));
+    }
+  }
+
+  /** Flip one staged part between additive and hole, and repaint the staged preview so the
+   * overlay shows the part's new fill. A no-op for an index no part occupies.
+   * @param i Index into `regionParts`.
+   * @param hole `true` to subtract the part from the region, `false` to add it.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.setRegionPartHole(0, true);
+   * ```
+   */
+  setRegionPartHole(i: number, hole: boolean): void {
+    const part = this.regionParts[i];
+    if (!part) return;
+    part.hole = hole;
+    this.ctx.scene.previewOverlay(stagedPartPreviews(this));
+  }
+
+  /** Discard the staged part list and leave the compound gesture (the tool's `onDeactivate`
+   * path and the remove-the-last-part path both funnel here, so "an empty list is not a
+   * compound flow" holds everywhere). Also clears the stage overlay the staged preview
+   * painted.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.discardRegionParts();
+   * ```
+   */
+  discardRegionParts(): void {
+    this.regionParts = [];
+    this.regionCompound = false;
+    this.#regionPartsScene = null;
+    this.ctx.scene.clearOverlay();
+  }
+
+  /** Persist the staged part list as ONE compound region doc (`RegionGeometry`'s compound
+   * wire form — an array of `{shape, hole}` parts) into the active scene, then leave the
+   * compound gesture. No-op when nothing is staged or no scene is active; refuses (with a
+   * toast) when the active scene changed since the parts were dragged, discarding the list
+   * rather than writing scene-A coordinates into scene B. Behavior/cost/secrecy/triggers/
+   * elevation read the same controller fields the single-shape flow persists, so a compound
+   * region is configured exactly like a plain one.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.commitRegionParts();
+   * ```
+   */
+  commitRegionParts(): void {
+    const scene = activeScene(this.ctx);
+    if (!scene || this.regionParts.length === 0) return;
+    if (this.#regionPartsScene !== null && this.#regionPartsScene !== scene.id) {
+      this.ctx.notify?.(this.ctx.t("tools.regionPartsDiscarded"));
+      this.discardRegionParts();
+      return;
+    }
+    const engine: RegionEngine = {
+      // Deep copy (`$state.snapshot`, the `regionTriggers` precedent): the rail's list is
+      // cleared right after, and a reactive proxy must never reach the persisted doc.
+      shape: $state.snapshot(this.regionParts),
+      behavior: this.regionBehavior,
+      cost: clampRegionCost(this.regionCost),
+      cost_by_tag: regionCostByTagRecord(this),
+      enabled: true,
+      triggers: $state.snapshot(this.regionTriggers),
+      elevation: this.ctx.viewedLevelBand?.() ?? null,
+      ambient_override: regionAmbientOverride(this),
+      occludes: regionOcclusion(this),
+      anchor: null,
+    };
+    const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
+    if (this.regionSecret) setRegionVisibility(doc, true);
+    this.ctx.dispatchIntent([{ op: "create", doc }]);
+    this.discardRegionParts();
+  }
+
+  /** Attach the region `regionId` to a carrier token, change its anchor flags, or detach it
+   * (`next` null), without moving it on the canvas: `reanchorRegion` re-expresses the stored
+   * shape (offsets from the carrier's centre when anchored, absolute scene units when not) and
+   * ONE update writes `/engine/anchor` and `/engine/shape` together, each against its raw stored
+   * value. Refuses with a toast in two cases: the chosen carrier does not resolve (it is not a
+   * token on the region's scene), so there is no centre to offset from; or the region is dormant
+   * (its current carrier does not resolve) and `next` is `null`, so there is no absolute shape
+   * to keep. A dormant region attached to a resolving carrier is accepted and keeps its stored
+   * offsets.
+   * @param regionId The region document's id.
+   * @param next The new anchor, or `null` to detach.
+   * @returns `true` when an update was dispatched.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.setRegionAnchor("region-1", { token: "token-1", include_carrier: false, follow_rotation: false });
+   * ```
+   */
+  setRegionAnchor(regionId: string, next: RegionAnchor | null): boolean {
+    const doc = this.ctx.documents.get(regionId);
+    const eng = doc?.engine as RegionEngine | undefined;
+    if (!doc || doc.doc_type !== "region" || !eng) return false;
+    const writes = reanchorRegion(doc, this.ctx.documents, next);
+    if (!writes) {
+      this.ctx.notify?.(this.ctx.t("tools.regionAnchorUnresolved"));
+      return false;
+    }
+    this.ctx.dispatchIntent([
+      buildUpdate(doc.id, [
+        { path: "/engine/anchor", old: eng.anchor ?? null, value: writes.anchor },
+        { path: "/engine/shape", old: eng.shape, value: writes.shape },
+      ]),
+    ]);
+    return true;
   }
 
   /** Toggle a contributed scene tool: re-selecting the active one clears it (back to camera),
@@ -513,7 +917,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null, lock_rotation: false, identity_hidden: false }),
         },
       ]);
       return true;
@@ -744,17 +1148,21 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
- * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only for shape/behavior/cost/secrecy/triggers (no edit UI for those — a GM re-authors
- * by delete+recreate, or toggles `enabled` server-side); the ELEVATION band is editable after
- * placement, like walls/lights: the select tool picks a region into
- * `ToolController.editingEntity` and the rail's region editor writes `/engine/elevation`.
- * The tool rail hides this tool from non-GMs (`ToolRail`'s
+ * In the default flow, release persists a single-shape `region` doc immediately (the
+ * `RegionGeometry` singular wire form) with the controller's configured behavior/cost/secrecy.
+ * The COMPOUND flow is the ToolRail part-list gesture: while `controller.regionCompound` is
+ * armed, each drag STAGES one part into `controller.regionParts` (no document yet — the
+ * region does not exist until `ToolController.commitRegionParts` folds the whole list into
+ * ONE compound `region` doc). Create-only for shape/behavior/cost/secrecy/triggers (no edit
+ * UI for those — a GM re-authors by delete+recreate, or toggles `enabled` server-side); the
+ * ELEVATION band is editable after placement, like walls/lights: the select tool picks a
+ * region into `ToolController.editingEntity` and the rail's region editor writes
+ * `/engine/elevation`. The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
  * @param controller Supplies the configured `regionShapeMode`/`regionBehavior`/`regionCost`/
- * `regionSecret`/`regionTriggers`.
+ * `regionSecret`/`regionTriggers` and the compound-flow `regionCompound`/`regionParts`.
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
@@ -779,7 +1187,12 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
       const b = ctx.scene.snap(p);
       if (controller.regionShapeMode === "polygon") freehand.push(b.x, b.y);
       const { points, closed } = regionShapePath(controller.regionShapeMode, anchor, b, freehand);
-      ctx.scene.previewOverlay([{ points, closed, stroke: { color: REGION_PREVIEW_COLOR, width: 2 }, fill: null }]);
+      ctx.scene.previewOverlay([
+        // The already-staged parts stay visible behind the in-progress drag, so a compound
+        // author sees the accumulated coverage while drawing the next part.
+        ...stagedPartPreviews(controller),
+        { points, closed, stroke: { color: REGION_PREVIEW_COLOR, width: 2 }, fill: null },
+      ]);
     },
     onPointerUp(p: Point): void {
       if (!anchor) return;
@@ -790,27 +1203,79 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
         mode === "polygon" ? freehand.length >= 6 : Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1;
       if (scene && hasExtentForRegion) {
         const shapePoints = regionShapeGeometry(mode, anchor, b, freehand);
-        const engine: RegionEngine = {
-          shape: { kind: mode, points: shapePoints },
-          behavior: controller.regionBehavior,
-          cost: Math.max(1, controller.regionCost),
-          enabled: true,
-          // Deep copy: the rail's list stays editable for the NEXT region, and a later
-          // row edit must never mutate the doc this persist already handed out.
-          // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
-          // array wraps its contents in is not cloneable.
-          triggers: $state.snapshot(controller.regionTriggers),
-          elevation: ctx.viewedLevelBand?.() ?? null,
-        };
-        const doc = buildRegionDoc(ctx.world, scene.id, engine);
-        if (controller.regionSecret) setRegionVisibility(doc, true);
-        ctx.dispatchIntent([{ op: "create", doc }]);
+        if (controller.regionCompound) {
+          // The compound gesture: stage the part, persist nothing — the region document is
+          // created only by `commitRegionParts`, carrying the whole list.
+          controller.stageRegionPart({ kind: mode, points: shapePoints }, scene.id);
+          ctx.scene.previewOverlay(stagedPartPreviews(controller));
+        } else {
+          const engine: RegionEngine = {
+            shape: { kind: mode, points: shapePoints },
+            behavior: controller.regionBehavior,
+            cost: clampRegionCost(controller.regionCost),
+            cost_by_tag: regionCostByTagRecord(controller),
+            enabled: true,
+            // Deep copy: the rail's list stays editable for the NEXT region, and a later
+            // row edit must never mutate the doc this persist already handed out.
+            // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
+            // array wraps its contents in is not cloneable.
+            triggers: $state.snapshot(controller.regionTriggers),
+            elevation: ctx.viewedLevelBand?.() ?? null,
+            ambient_override: regionAmbientOverride(controller),
+            occludes: regionOcclusion(controller),
+            anchor: null,
+          };
+          const doc = buildRegionDoc(ctx.world, scene.id, engine);
+          if (controller.regionSecret) setRegionVisibility(doc, true);
+          ctx.dispatchIntent([{ op: "create", doc }]);
+          ctx.scene.clearOverlay();
+        }
+      } else if (!controller.regionCompound || controller.regionParts.length === 0) {
+        ctx.scene.clearOverlay();
       }
-      ctx.scene.clearOverlay();
       anchor = null;
       freehand = [];
     },
+    onDeactivate(): void {
+      // Mid-gesture-clear: drop the in-progress drag's state, and discard any staged
+      // compound list — an armed-but-uncommitted list must never silently change what the
+      // NEXT plain drag does after a tool swap.
+      anchor = null;
+      freehand = [];
+      if (controller.regionCompound || controller.regionParts.length > 0) {
+        controller.discardRegionParts();
+      }
+      ctx.scene.clearOverlay();
+    },
   };
+}
+
+/** Preview shapes for the parts already staged in a compound gesture: additive parts get a
+ * light fill of the region preview color, hole parts render stroke-only (a cut reads as an
+ * outline with no fill). Tessellated through the ONE outline rule (`regionShapeOutline`)
+ * the render layer draws from.
+ * @param controller The tool controller holding the staged part list.
+ * @returns One preview shape per staged part whose outline tessellates (a part that fails to outline is skipped), in list order.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/module-scene-tools
+ * declare const controller: ToolController;
+ * const previews = stagedPartPreviews(controller);
+ * ```
+ */
+function stagedPartPreviews(controller: ToolController): Omit<ShapeNodeSpec, "layer">[] {
+  const out: Omit<ShapeNodeSpec, "layer">[] = [];
+  for (const part of controller.regionParts) {
+    const points = regionShapeOutline(part.shape);
+    if (!points) continue;
+    out.push({
+      points,
+      closed: true,
+      stroke: { color: REGION_PREVIEW_COLOR, width: 2 },
+      fill: part.hole ? null : { color: REGION_PREVIEW_COLOR, alpha: 0.2 },
+    });
+  }
+  return out;
 }
 
 /** Preview points for the in-progress region drag (closed for all three shape kinds — a region
@@ -876,6 +1341,88 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
   }
 }
 
+/** The `RegionEngine.ambient_override` body for the region the tool is about to persist:
+ * `null` unless `regionBehavior === "ambient_light"` (the `ambient_override.is_some() implies
+ * behavior == "ambient_light"` pairing `RegionEngine::validate` enforces server-side — this
+ * function is what keeps the client from ever authoring the mismatched combination), otherwise
+ * the controller's configured mode/level. Shared by both region-persist call sites
+ * (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`) so the pairing can never
+ * drift between the single-shape and compound authoring flows.
+ * @param controller Supplies the configured `regionBehavior`/`regionAmbientMode`/`regionAmbientLevel`.
+ * @returns The ambient-light edit to persist, or `null` when the region is not `"ambient_light"`.
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const override = regionAmbientOverride(controller);
+ * ```
+ */
+function regionAmbientOverride(controller: ToolController): AmbientLightOverride | null {
+  if (controller.regionBehavior !== "ambient_light") return null;
+  const mode = controller.regionAmbientMode;
+  return { mode, level: clampAmbientLevel(mode, controller.regionAmbientLevel) };
+}
+
+/** The `RegionEngine.occludes` body for the region the tool is about to persist: `null` when no
+ * sense is ticked (`RegionEngine::validate` rejects an all-false block, so "ticks nothing" must
+ * persist as absent), otherwise the three flags. Shared by both region-persist call sites
+ * (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`).
+ * @param controller Supplies the configured `regionOccludesSight`/`regionOccludesLight`/`regionOccludesSound`.
+ * @returns The occlusion flags to persist, or `null` when none is ticked.
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const occludes = regionOcclusion(controller);
+ * ```
+ */
+function regionOcclusion(controller: ToolController): RegionOcclusion | null {
+  const { regionOccludesSight: sight, regionOccludesLight: light, regionOccludesSound: sound } = controller;
+  return sight || light || sound ? { sight, light, sound } : null;
+}
+
+/** Clamps an authored region-cost value to the server's own read-side floor
+ * (`region_eng.cost.max(1.0)`, and the identical clamp `cost_by_tag`'s values get): `>= 1`,
+ * with a non-finite value (`NaN` — what a cleared `<input type="number">` binds as) floored to
+ * `1` rather than propagated. The Rust `max` method already floors `NaN` this way (it returns
+ * whichever operand is not `NaN`); `Math.max` does not, so an unclamped `NaN` would serialize
+ * to JSON `null` and fail the whole region `Create` at ingress — a `BTreeMap<String, f64>`/`f64`
+ * type mismatch — with no feedback to the author. Shared by every authored region-cost site:
+ * the flat `regionCost` (both region-persist call sites) and `regionCostByTagRecord`.
+ * @param value An authored cost value — a number input's live `bind:value`, possibly `NaN`.
+ * @returns The clamped cost: always finite and `>= 1`.
+ * @example
+ * ```
+ * clampRegionCost(NaN); // 1
+ * ```
+ */
+function clampRegionCost(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, value) : 1;
+}
+
+/** The `RegionEngine.cost_by_tag` body for the region the tool is about to persist: the
+ * staged `regionCostByTag` rows folded into a plain record, each `cost` clamped by
+ * `clampRegionCost` exactly like `regionCost` (the identical clamp/validation site the server
+ * itself applies read-side — never a second, independently authored bound). A blank tag is
+ * dropped rather than persisted as an empty-string key. Shared by both region-persist call
+ * sites (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`) so the two
+ * authoring flows can never drift on how a row list becomes a record.
+ * @param controller Supplies the configured `regionCostByTag` rows.
+ * @returns The per-tag cost overrides to persist (empty when no row is staged).
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const costByTag = regionCostByTagRecord(controller);
+ * ```
+ */
+function regionCostByTagRecord(controller: ToolController): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of controller.regionCostByTag) {
+    const tag = row.tag.trim();
+    if (tag === "") continue;
+    out[tag] = clampRegionCost(row.cost);
+  }
+  return out;
+}
+
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to
  * all members (incl. us), so the local ring arrives via the ping listener like any other —
  * this is why there is no separate local-render path here.
@@ -899,7 +1446,9 @@ export function makePingTool(ctx: ToolContext): SceneTool {
 }
 
 /** Drag to measure: a client-local segment + whole-cell distance label. Never persists a
- * document or broadcasts — purely an overlay on the dragging client.
+ * document. Its preview is an overlay on the dragging client; only while `ctx.shareRuler` is on
+ * does the tool also broadcast the previewed route to the other members (`RulerSharer`), ending
+ * that broadcast whenever the local preview ends.
  *
  * Route mode (`inRouteMode`) requires:
  *   1. `ctx.tokenSelection` has exactly ONE token id, AND
@@ -909,9 +1458,9 @@ export function makePingTool(ctx: ToolContext): SceneTool {
  * absence uniformly: `onPointerDown` falls back to the plain anchor-point measure when no
  * scene is active; `onPointerMove` silently no-ops (no route request, no fallback measure);
  * `onPointerUp` doesn't check for a scene at all, and calls `clearRoute()` while in route mode
- * UNLESS a commit is in flight (`committing`), in which case it returns without touching
- * `clearRoute`/`pendingSeq` — the in-flight commit owns its own teardown via `finish()`, and
- * calling `clearRoute()` here would bump `pendingSeq` and abort it. When route mode and an
+ * UNLESS a commit is in flight (`activeCommit`), in which case it returns without touching
+ * `clearRoute` — the in-flight commit owns its own teardown via `finish()`, and calling
+ * `clearRoute()` here would tear the route down under it. When route mode and an
  * active scene both hold, `onPointerDown` snaps a
  * waypoint onto the list, each `onPointerMove` issues an A* pathfind request
  * (`requestRoute`) from the selected token's center through any accumulated waypoints to
@@ -944,14 +1493,14 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Track the in-flight pathfind so we can ignore stale responses that arrive
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
-  // When a commit is in flight, suppress pointer-down/move/up so a trailing
-  // pointer-up cannot bump pendingSeq and invalidate the commit's seq guard.
-  // Also prevents a stray down from starting a second commit concurrently.
-  // Constraint: committing is set before seq is captured and cleared in finish()
-  // (resolve), the reject handler, or onDeactivate (abort path).
-  let committing = false;
+  // The commit the tool currently OWNS, or null. While set, pointer-down/move/up are suppressed
+  // so a trailing pointer-up cannot clear the route mid-commit and a stray down cannot start a
+  // second commit. INVARIANT: deactivation drops ownership (the overlay and route state belong
+  // to whichever tool is active next) but never cancels the request itself — a commit is a
+  // user decision already made, so its pathfind/`moveRequest` chain runs to completion detached.
+  let activeCommit: object | null = null;
 
-  // Monotonic clock (injected in tests; defaults to Date.now).
+  // Clock in ms; need not be monotonic (injected in tests; defaults to Date.now).
   const now = ctx.now ?? ((): number => Date.now());
   // Timer scheduler backing the deferred route-preview fire (injected in tests alongside
   // `now`; defaults to the real setTimeout/clearTimeout). Keeping this behind the same
@@ -971,10 +1520,22 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // once the remaining cooldown elapses, unless a newer request already fired in the meantime.
   let pendingRouteGoal: Point | null = null;
   let pendingRouteTimer: unknown | null = null;
+  // Shared-ruler broadcast of the previewed route. Off unless the user opted in
+  // (`ctx.shareRuler`) AND the host supplies the send seam; every local-preview teardown ends
+  // the broadcast (`clearRoute`, the plain-measure release, `onDeactivate`), and the sharer's own
+  // timers end it when sharing is switched off or the viewed scene changes.
+  const sharer = new RulerSharer({
+    enabled: () => ctx.shareRuler?.enabled === true && ctx.sendRulerUpdate !== undefined,
+    viewedScene: () => activeScene(ctx)?.id ?? null,
+    send: (scene, points, active) => ctx.sendRulerUpdate?.(scene, points, active),
+    now,
+    schedule: scheduleTimeout,
+    cancel: clearScheduledTimeout,
+  });
 
   /** True when the measure tool's pointer handlers should attempt route mode: exactly one
    * token selected (`ctx.tokenSelection`) AND `ctx.pathfind` provided. Deliberately does NOT
-   * check for an active scene — that is clause 3 of the factory doc's list above, enforced
+   * check for an active scene — that is the active-scene condition the factory doc names above, enforced
    * per-handler instead (each handler resolves `activeScene(ctx)` itself and reacts
    * differently to its absence; see the factory doc).
    * @returns `true` when both conditions hold.
@@ -1103,6 +1664,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
           }
         }
         const pts = result.path.flat();
+        sharer.update(scene.id, result.path);
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: strokeColor, width: 3 }, fill: null }]);
         const withSuffix = suffix ? `${budgetLabel} · ${suffix}` : budgetLabel;
         // An arrested result means the server truncated the route at an arrest region; only this
@@ -1114,7 +1676,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       () => {
         if (seq !== pendingSeq) return;
         lastPreviewedPath = null;
-        // No route available: clear the overlay and show a "no route" label.
+        // No route available: clear the overlay and show a "no route" label. Nothing is left to
+        // share, so observers' copy of the previous route ends too.
+        sharer.stop();
         ctx.scene.clearOverlay();
         const startPt: Point = { x: start[0], y: start[1] };
         ctx.scene.drawMeasure(startPt, goal, "—");
@@ -1140,13 +1704,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   }
 
   /** Fires once the debounce window elapses for a move that was suppressed. Re-checks
-   * `committing` (mirrors onPointerMove's guard: firing here would otherwise bump
-   * `pendingSeq` mid-commit via `requestRoute` and invalidate the in-flight commit's seq
-   * guard) and re-resolves scene/start fresh rather than trusting values captured at
-   * suppression time. This is the deferred TRAILING fire that follows the leading-edge
-   * request `requestRoute` itself produces — see the field comments on
-   * `lastRouteRequestAt`/`pendingRouteGoal`/`pendingRouteTimer` above for why a
-   * hover-only stop (no further `onPointerMove`) needs one.
+   * `activeCommit` (mirrors onPointerMove's guard: a preview request fired here would
+   * otherwise draw over the in-flight commit's route) and re-resolves scene/start fresh
+   * rather than trusting values captured at suppression time. This is the deferred TRAILING
+   * fire that follows the leading-edge request `requestRoute` itself produces — see the
+   * field comments on `lastRouteRequestAt`/`pendingRouteGoal`/`pendingRouteTimer` above for
+   * why a hover-only stop (no further `onPointerMove`) needs one.
    * @example
    * ```
    * declare function firePendingRoute(): void;
@@ -1157,7 +1720,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     pendingRouteTimer = null;
     const goal = pendingRouteGoal;
     pendingRouteGoal = null;
-    if (!goal || committing) return;
+    if (!goal || activeCommit !== null) return;
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -1200,6 +1763,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   function clearRoute(): void {
     pendingSeq++; // invalidate any in-flight request
     clearPendingRouteTimer();
+    sharer.stop();
     ctx.scene.clearOverlay();
     ctx.scene.clearMeasure();
     waypoints = [];
@@ -1223,26 +1787,25 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * for this route, avoiding a redundant pathfind round-trip; when none is cached, issues one
    * pathfind then sends the moveRequest with its result.
    *
-   * Invariant: `committing` is set TRUE before `seq` is captured. It is cleared by `finish()`
-   * on whichever SETTLE branch still owns this commit (`seq === pendingSeq`) or by
-   * `onDeactivate` (abort path). The pathfind's resolve with a usable path is not a settle — it
-   * hands the commit off to `sendRequest`, which settles later. Clearing is deliberately NOT
-   * done on a STALE resolve/reject (`seq !== pendingSeq`, re-checked on all four async
-   * continuations: `sendRequest`'s resolve and reject, and the pathfind's resolve and reject): a
-   * stale branch means a newer commit, or `onDeactivate`, already bumped `pendingSeq` and now
-   * owns `committing` + teardown, so calling `finish()` here would release that LIVE commit's
-   * guard and teardown out from under it — `finish()` calls `clearRoute()`, which does
-   * `pendingSeq++`, so the newer commit's captured `seq` stops matching and its own settle
-   * silently becomes a no-op. What that costs the newer commit depends on the phase it was in:
-   * if it had already reached `sendRequest`, its `moveRequest` stays in flight and still
-   * executes server-side; if it was still mid-pathfind, its own resolve returns early at the
-   * same staleness check, BEFORE `sendRequest`, so no `moveRequest` is ever sent and the move
-   * simply does not happen. Either way the client loses ownership — `committing` drops while a
-   * request may still be outstanding, so `onPointerDown`'s `committing` guard no longer blocks a
-   * second `commitRoute`, and the overlay and waypoints are torn down early. This ensures
-   * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
-   * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
-   * commit proceeds.
+   * Ownership: `activeCommit` is set to a fresh token before any async work starts, which
+   * suppresses the tool's pointer handlers until the commit settles (`finish()`, on resolve,
+   * reject, an unusable pathfind result, or a rejected pathfind). INVARIANT: the pathfind and
+   * `moveRequest` continuations never consult `pendingSeq` — that counter guards PREVIEW
+   * responses only — so a tool swap (`onDeactivate`) cannot drop a commit the user already made.
+   * Deactivation instead clears `activeCommit`, DETACHING the commit: the request still
+   * executes, but `finish()` then leaves the overlay and route state alone because they belong
+   * to whichever tool is active next (`ctx.scene.clearOverlay` is shared). A commit started
+   * after a re-activation is a different token, so a detached commit's settle never releases
+   * its suppression. A second commit for the same token while a detached one is still in flight
+   * therefore sends a SECOND `move_request`; the server's per-token moving lock refuses whichever
+   * arrives while the token is moving, and that refusal reaches the player through the host's
+   * move-outcome consumer, exactly like any other rejected move. Failures before a request
+   * exists are raised here through `ToolContext.notify`: a rejected pathfind
+   * (`tools.moveNoRoute`) and a route that never leaves the start because the server truncated it
+   * (`tools.moveBlocked`); a zero-displacement route that was not truncated is a legitimate no-op
+   * (the token already stands on the goal) and stays silent. A rejected `moveRequest` is NOT
+   * reported here: `WorldSession.moveRequest` publishes it to the single
+   * `AppContext.onMoveOutcome` consumer, so a second notice from the tool would double it.
    * @param goal The commit target, in scene coords (post-snap).
    * @example
    * ```
@@ -1256,34 +1819,49 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     // Never branches on `movementModel`: the server move-execution path
     // (`execute_move`/`gate_walk`) is engine-agnostic, so committing a route proceeds
     // identically for grid-stepped and continuous scenes.
+    if (ctx.movesFrozen?.()) {
+      clearRoute();
+      notifyMovesFrozen(ctx);
+      return;
+    }
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
     const tokenId = [...ctx.tokenSelection.ids][0];
     const fp = HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS;
-    // Set committing BEFORE capturing seq so the pointer-up guard (committing check) is
-    // already in place before the async call starts. onPointerUp/Move check committing
-    // and return early, so they cannot bump pendingSeq while this commit is in flight.
-    committing = true;
-    const seq = ++pendingSeq;
-    // Teardown shared by the success path and the reject path.
-    const finish = (): void => { committing = false; clearRoute(); };
+    // Ownership is taken BEFORE any async work so the pointer handlers are already
+    // suppressed when the double-click's trailing pointer-up arrives. `pendingSeq++` retires
+    // any preview still in flight; the commit itself never reads it.
+    const commit: object = {};
+    activeCommit = commit;
+    pendingSeq++;
+    // Teardown shared by every settle path. Only the still-attached commit owns the overlay.
+    const finish = (): void => {
+      if (activeCommit !== commit) return;
+      activeCommit = null;
+      clearRoute();
+    };
 
-    // Inner function: given a proposed path, send the moveRequest and animate on resolve.
-    // `moveRequest` is narrowed to non-undefined here; `commitRoute` gates on it above.
+    // The commit's own identity is its gesture: every notice this commit raises, and the host's
+    // move-rejection notice for its request, go through `noticeOncePerGesture` under it, so the
+    // commit has ONE notice owner exactly as a drag does.
+    const notify = (raise: () => void): void => {
+      noticeOncePerGesture(commit, raise);
+    };
+
+    // Inner function: given a proposed path, send the moveRequest. `moveRequest` is narrowed to
+    // non-undefined here; `commitRoute` gates on it above.
     const moveRequest = ctx.moveRequest;
     const sendRequest = (proposedPath: [number, number][]): void => {
-      moveRequest(scene.id, tokenId, proposedPath).then(
-        () => {
-          // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
-          if (seq !== pendingSeq) return;
-          // Animation is broadcast-driven via onMoveStream for all scene viewers;
-          // no local animation from the moveRequest resolve value.
-          finish();
-        },
-        // Stale reject: do nothing. Current reject: clear route (no move).
-        () => { if (seq === pendingSeq) finish(); },
-      );
+      // Animation is broadcast-driven via onMoveStream for all scene viewers; the settle only
+      // tears down the route overlay. A rejection is reported by the host's move-outcome consumer.
+      try {
+        moveRequest(scene.id, tokenId, proposedPath, commit).then(finish, finish);
+      } catch {
+        // A synchronous throw from the transport seam settles the commit like a rejection.
+        notify(() => notifyMoveFailed(ctx));
+        finish();
+      }
     };
 
     // Reuse the last previewed path when available (avoids a redundant pathfind round-trip).
@@ -1293,12 +1871,22 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     } else {
       ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp, selectedTokenId()).then(
         (result) => {
-          if (seq !== pendingSeq) return;
-          if (result.path.length < 2) { finish(); return; }
+          if (result.path.length < 2) {
+            notify(() => notifyEmptyRoute(ctx, result));
+            finish();
+            return;
+          }
           sendRequest(result.path);
         },
-        () => { if (seq === pendingSeq) finish(); },
-      );
+        (reason) => {
+          notify(() => notifyRouteFailure(ctx, reason));
+          finish();
+        },
+      ).catch(() => {
+        // A throw inside the resolve continuation (e.g. a throwing `notify`) is not covered by the
+        // rejection handler of the same `then`; it must still release the commit.
+        finish();
+      });
     }
   }
 
@@ -1306,8 +1894,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     onPointerDown(p: Point): boolean {
       if (inRouteMode()) {
         // A commit is in flight: ignore further input until it settles. Prevents a
-        // stray pointer-down from starting a second commit or bumping pendingSeq.
-        if (committing) return true;
+        // stray pointer-down from starting a second commit or adding a waypoint to its route.
+        if (activeCommit !== null) return true;
         const scene = activeScene(ctx);
         if (scene) {
           const snapped = ctx.scene.snap(p);
@@ -1335,9 +1923,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerMove(p: Point): void {
       if (inRouteMode()) {
-        // Suppress preview requests during a commit: a new pathfind call would bump
-        // pendingSeq and invalidate the in-flight commit's seq guard.
-        if (committing) return;
+        // Suppress preview requests during a commit: a preview response would redraw the overlay
+        // over the route the commit owns.
+        if (activeCommit !== null) return;
         const scene = activeScene(ctx);
         const start = tokenCenter();
         if (scene && start) {
@@ -1368,31 +1956,36 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       // is viewed, matching `resolveSceneSettings`'s default exactly.
       if (!anchor) return;
       const cells = ctx.scene.gridDistance(anchor, p);
-      const scene = activeScene(ctx) ?? { perCell: 5, unit: "ft" };
+      const viewed = activeScene(ctx);
+      const scene = viewed ?? { perCell: 5, unit: "ft" };
+      if (viewed) sharer.update(viewed.id, [[anchor.x, anchor.y], [p.x, p.y]]);
       ctx.scene.drawMeasure(anchor, p, formatCellDistance(cells, scene));
     },
     onPointerUp(_p: Point): void {
       if (inRouteMode()) {
         // When a commit is in flight, the commit owns its own teardown via finish().
-        // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
-        if (committing) return;
+        // Do NOT call clearRoute() here — it would tear the route down under the commit.
+        if (activeCommit !== null) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
         // handled by the select-move tool / the server's `execute_move` gate — not here.
         clearRoute();
         return;
       }
-      // Fallback: plain measure cleanup.
-      if (!anchor) return;
+      // Fallback: plain measure cleanup. A release with no plain anchor still ends a shown
+      // ruler: route mode can lapse mid-drag (the token selection emptied), leaving route state
+      // and a shared ruler that only `clearRoute` tears down.
+      if (!anchor) {
+        clearRoute();
+        return;
+      }
+      sharer.stop();
       ctx.scene.clearMeasure();
       anchor = null;
     },
     onDeactivate(): void {
-      // Tool-swap teardown: abort any in-flight commit and clear all overlays. clearRoute()
-      // unconditionally bumps pendingSeq, invalidating any in-flight commit's captured seq —
-      // its resolve/reject handler then bails (seq !== pendingSeq) instead of re-entering
-      // finish(). committing is cleared directly here (rather than via finish()) since
-      // finish() is never reached on this abort path.
-      committing = false;
+      // Tool-swap teardown: detach any in-flight commit (it keeps running; see `commitRoute`)
+      // and clear all overlays, retiring in-flight previews through `clearRoute`'s `pendingSeq++`.
+      activeCommit = null;
       clearRoute();
       // Also clear any in-progress plain-measure anchor.
       if (anchor) {
@@ -1504,29 +2097,44 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
   };
 }
 
-/** Template area from an anchor + size + direction (degrees): `"circle"`/`"cone"` are
- * tessellated rings (`circlePoints`/`conePoints`), closed; `"rect"` is a ROTATED SQUARE
- * centered on the anchor (`squarePoints`, side `2*size`) — NOT the axis-aligned two-corner
- * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This tool is
- * internally consistent across its own modes (always the rotated square for `"rect"`); the
- * cross-tool split with `shapePath` is consistent-by-construction, not a documented tradeoff —
- * it mirrors the render layer's `TemplateView.toSpec` vs `DrawingView.toSpec` split; `"line"` is the two
- * endpoints computed from `direction`/`size`, open.
+/** Template area from an anchor + size + direction (degrees): `"circle"` is a tessellated
+ * ring (`circlePoints`), closed; `"cone"` is `conePoints` at `angle ??
+ * DEFAULT_CONE_ANGLE_DEGREES`, closed; `"rect"` is a ROTATED RECTANGLE centered on the
+ * anchor (`squarePoints`, sides `2*size` by `2*(width ?? size)`) — NOT the axis-aligned
+ * two-corner bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This
+ * tool is internally consistent across its own modes (always the rotated rectangle for
+ * `"rect"`); the cross-tool split with `shapePath` is consistent-by-construction, not a
+ * documented tradeoff — it mirrors the render layer's `TemplateView.toSpec` vs
+ * `DrawingView.toSpec` split; `"line"` is `linePoints` at `width ?? 0` — the bare two
+ * endpoints when `width` is absent/zero (open), or a thickness rectangle otherwise (closed).
  * @param mode The active template shape mode.
  * @param ax The anchor x (scene coords, post-snap).
  * @param ay The anchor y (scene coords, post-snap).
  * @param size The template's size (radius for circle/cone, half-side for rect, length for line).
  * @param direction The facing angle in degrees (unused by `"circle"`).
+ * @param angle The cone's full aperture, degrees; `null` uses the render layer's default.
+ * Ignored by every other mode.
+ * @param width The line's thickness, or the rect's second dimension, scene units; `null`
+ * reproduces the pre-existing zero-width line / forced-square rect. Ignored by `"circle"`/
+ * `"cone"`.
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
  * declare const anchor: Point;
  * declare const size: number;
  * declare const direction: number;
- * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
+ * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction, null, null);
  * ```
  */
-function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): {
+function templatePath(
+  mode: TemplateMode,
+  ax: number,
+  ay: number,
+  size: number,
+  direction: number,
+  angle: number | null = null,
+  width: number | null = null,
+): {
   /** The preview/persist polyline (or ring) for `mode`. */
   points: number[];
   /** Whether the shape should render/persist closed. */
@@ -1536,12 +2144,12 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
     case "circle":
       return { points: circlePoints(ax, ay, size), closed: true };
     case "cone":
-      return { points: conePoints(ax, ay, size, direction), closed: true };
+      return { points: conePoints(ax, ay, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES), closed: true };
     case "rect":
-      return { points: squarePoints(ax, ay, size, direction), closed: true };
+      return { points: squarePoints(ax, ay, size, direction, width ?? size), closed: true };
     case "line": {
-      const a = (direction * Math.PI) / 180;
-      return { points: [ax, ay, ax + size * Math.cos(a), ay + size * Math.sin(a)], closed: false };
+      const w = width ?? 0;
+      return { points: linePoints(ax, ay, size, direction, w), closed: w > 0 };
     }
   }
 }
@@ -1608,20 +2216,49 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
     onPointerMove(p: Point): void {
       if (!anchor) return;
       const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
-      const { points, closed } = templatePath(controller.templateMode, anchor.x, anchor.y, size, direction);
+      const { points, closed } = templatePath(
+        controller.templateMode,
+        anchor.x,
+        anchor.y,
+        size,
+        direction,
+        controller.templateAngle,
+        controller.templateWidth,
+      );
       const color = parseColor(controller.templateColor);
       ctx.scene.previewOverlay([{ points, closed, stroke: { color, width: 2 }, fill: closed ? { color, alpha: 0.25 } : null }]);
     },
     onPointerUp(p: Point): void {
       if (!anchor) return;
       const scene = activeScene(ctx);
-      if (scene) {
+      // Send `angle`/`width` ONLY for the kinds whose geometry consumes them, mirroring
+      // `templatePath`'s preview, which reads each field only where it applies: `templateAngle`
+      // and `templateWidth` persist across a `templateMode` change, so a value authored under one
+      // mode must not reach a document of another kind. INVARIANT: the gate below validates
+      // exactly the values being sent and therefore needs no knowledge of the mode — a field the
+      // active kind ignores is already `null`, which both validity checks accept.
+      const angle = controller.templateMode === "cone" ? controller.templateAngle : null;
+      const width = controller.templateMode === "line" || controller.templateMode === "rect" ? controller.templateWidth : null;
+      // Refuse to dispatch a `Create` the server's `TemplateEngine::validate` would reject
+      // outright, rather than round-tripping an optimistic placement into a rollback; the
+      // refusal is announced, never a drag that silently vanishes.
+      if (scene && !(isValidTemplateAngle(angle) && isValidTemplateWidth(width))) {
+        ctx.notify?.(ctx.t("tools.templateOutOfRange"), "warning");
+      } else if (scene) {
         const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
         ctx.dispatchIntent([
           {
             op: "create",
             doc: buildSceneEntityDoc(ctx.world, scene.id, "template", {
-              shape: { kind: controller.templateMode, x: anchor.x, y: anchor.y, size, direction },
+              shape: {
+                kind: controller.templateMode,
+                x: anchor.x,
+                y: anchor.y,
+                size,
+                direction,
+                angle,
+                width,
+              },
               color: controller.templateColor,
               elevation: ctx.viewedLevelBand?.() ?? null,
             }),
@@ -1642,6 +2279,109 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
  * independent of this window. */
 const DRAG_THROTTLE_MS = 50;
 
+/** The reach radius for the click-to-toggle advisory pre-check, in world units: the server's
+ * reach constant (1.5 cells — `DOOR_REACH_CELLS`, `Room::toggle_door`'s reach clause) converted
+ * through the grid's world-unit cell span: the cell size on square, `size·√3` (the axial
+ * neighbor distance — `HexGrid::world_units_per_cell`) on hex. Advisory UX only: the server
+ * re-checks reach authoritatively; this mirror exists to spare an obviously-doomed request,
+ * never to grant anything.
+ * @param scene The active scene's grid geometry (per `activeScene`).
+ * @param scene.size The grid cell size in world units.
+ * @param scene.kind The grid kind (`"square"` or `"hex"`).
+ * @returns The advisory reach radius in scene units.
+ * @example
+ * ```
+ * declare const scene: { size: number; kind: string };
+ * const reach = doorReachWorldUnits(scene);
+ * ```
+ */
+function doorReachWorldUnits(scene: {
+  /** Grid cell size in world units (the axial circumradius-derived span on hex). */
+  size: number;
+  /** The grid kind (`"square"` or `"hex"`), per `activeScene`. */
+  kind: string;
+}): number {
+  return 1.5 * (scene.kind === "hex" ? scene.size * Math.sqrt(3) : scene.size);
+}
+
+/** The select tool's click-to-toggle affordance: a click landing on a wall whose `engine.door`
+ * is `closed`/`open` sends `ClientMsg::ToggleDoor` through `ctx.toggleDoor` with the opposite
+ * state. A `locked` door sends nothing (the server refuses a non-GM's flip in either
+ * direction, and a GM unlocks through the wall editor's door select instead) but still earns a
+ * toast — the player who clicked needs the feedback. A doorless wall (or one whose engine band
+ * the clicker cannot read — a `gm_only` wall arrives with it nulled) is inert. For a non-GM an
+ * advisory pre-check suppresses the request when none of the clicker's own effectively-owned
+ * tokens are within reach (`doorReachWorldUnits`) — the server's gate is the authority; this
+ * only spares the round trip. A refusal surfaces as a toast via `ctx.notify`, never silently.
+ * @param ctx The tool context (documents, role, selfId, toggleDoor, notify, t).
+ * @param scene The active scene (per `activeScene`).
+ * @param scene.id The scene's document id.
+ * @param scene.size The grid cell size in world units.
+ * @param scene.kind The grid kind (`"square"` or `"hex"`).
+ * @param wallId The wall the click landed on (`topWallAt`).
+ * @example
+ * ```
+ * // private helper; called from makeSelectMoveTool's pointerdown (no token hit)
+ * declare const ctx: ToolContext;
+ * toggleDoorAt(ctx, { id: "s1", size: 100, kind: "square" }, "wall-1");
+ * ```
+ */
+function toggleDoorAt(ctx: ToolContext, scene: {
+  /** The scene's document id. */
+  id: string;
+  /** Grid cell size in world units. */
+  size: number;
+  /** The grid kind (`"square"` or `"hex"`), per `activeScene`. */
+  kind: string;
+}, wallId: string): void {
+  const eng = ctx.documents.get(wallId)?.engine as WallEngine | undefined;
+  const door = eng?.door;
+  if (door === "locked") {
+    ctx.notify?.(ctx.t("tools.doorLocked"));
+    return;
+  }
+  if (!eng || (door !== "closed" && door !== "open")) return;
+  if (ctx.role !== "gm") {
+    const seg = eng.seg;
+    const reach = doorReachWorldUnits(scene);
+    const inReach = ctx
+      .documents
+      .query("token")
+      .filter(
+        (t) =>
+          t.parent_id === scene.id &&
+          ctx.selfId !== undefined &&
+          ownerFloorApplies(t, ctx.selfId, ctx.documents),
+      )
+      .some((t) => {
+        const te = t.engine as {
+          /** Token center x in scene coords; absent ⇒ not a position the check can use. */
+          x?: number;
+          /** Token center y in scene coords; absent ⇒ not a position the check can use. */
+          y?: number;
+        } | undefined;
+        if (typeof te?.x !== "number" || typeof te.y !== "number") return false;
+        return (
+          pointSegDistance(
+            { x: te.x, y: te.y },
+            { x: seg.x1, y: seg.y1 },
+            { x: seg.x2, y: seg.y2 },
+          ) <= reach
+        );
+      });
+    if (!inReach) {
+      ctx.notify?.(ctx.t("tools.doorToggleOutOfReach"));
+      return;
+    }
+  }
+  const to: DoorState = door === "closed" ? "open" : "closed";
+  void ctx.toggleDoor?.(scene.id, wallId, to).catch(() => {
+    // The refusal class is deliberately uniform for a non-GM (the server discloses nothing
+    // more specific); the toast is the one piece of feedback the clicker genuinely needs.
+    ctx.notify?.(ctx.t("tools.doorToggleNotVisible"));
+  });
+}
+
 /** Pick a token on pointerdown and drag the whole selection. Clicking an unselected token
  * replaces the selection with just it; Shift toggles it in/out. Dragging moves every selected
  * token by the same delta (each token's own target independently snapped via `ctx.scene.snap`),
@@ -1654,9 +2394,12 @@ const DRAG_THROTTLE_MS = 50;
  * truncation can land the token short of, or not at, where it was released). Empty space clears
  * the selection and yields the gesture to the camera. The selection itself is signified on the
  * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
- * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
- * picks a light marker, wall segment, or region/drawing/template shape into
- * `controller.editingEntity` (the rail editor's selection source); a token hit clears it.
+ * `tokenSelection` state), never by a tool overlay. An empty-space click landing on a wall whose
+ * `engine.door` stands `closed`/`open` fires the click-to-toggle (`toggleDoorAt` — every role,
+ * the tool every role has active by default; the server authorizes positionally). For a GM, an
+ * empty-space click additionally picks a light marker, wall segment, or region/drawing/template
+ * shape into `controller.editingEntity` (the rail editor's selection source); a token hit
+ * clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
  * @param controller Receives the scene-entity editing selection (`editingEntity`).
@@ -1756,25 +2499,48 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
       if (ops.length > 0) ctx.dispatchIntent(ops);
       return;
     }
+    if (ctx.movesFrozen?.()) {
+      ctx.scene.previewOverlay([]);
+      notifyMovesFrozen(ctx);
+      return;
+    }
     const scene = activeScene(ctx);
     if (!scene || !ctx.pathfind || !ctx.moveRequest) return;
     const pathfind = ctx.pathfind;
     const moveRequest = ctx.moveRequest;
+    // One identity for every request this drag issues. The tool's own notices below and the host's
+    // move-rejection notice both go through `noticeOncePerGesture`, so the gesture has ONE notice
+    // owner: whichever failure comes first speaks for the whole drag, however its tokens fail.
+    const gesture: object = {};
+    const once = (raise: () => void): void => {
+      noticeOncePerGesture(gesture, raise);
+    };
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS, id)
-        .then((result) => {
-          if (result.path.length >= 2) return moveRequest(scene.id, id, result.path);
-        })
-        .catch(() => {
+      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS, id).then(
+        (result) => {
+          if (result.path.length < 2) {
+            if (result.truncated || result.arrested) once(() => notifyEmptyRoute(ctx, result));
+            ctx.scene.previewOverlay([]);
+            return;
+          }
           // A refusal (out-of-mask destination, a springing secret wall, an arrest region, the
-          // per-token in-flight lock) is the NORMAL outcome for a player. Swallowing it would
-          // leave the token silently not moving with no explanation, indistinguishable from a
-          // hung connection, so the preview line is dropped rather than left stale — the app-wide
-          // `onMoveOutcome` observability signal (wired at the Stage level) already surfaces the
-          // rejected/truncated/executed outcome for this same request.
+          // per-token in-flight lock, a timeout, a dropped socket) is the NORMAL outcome for a
+          // player. The preview line is dropped rather than left stale; the player-visible
+          // notice comes from the single `AppContext.onMoveOutcome` consumer, never from here.
+          moveRequest(scene.id, id, result.path, gesture).catch(() => ctx.scene.previewOverlay([]));
+        },
+        (reason) => {
+          once(() => notifyRouteFailure(ctx, reason));
           ctx.scene.previewOverlay([]);
-        });
+        },
+      ).catch(() => {
+        // A synchronous throw inside the resolve continuation (`moveRequest` itself throwing) is not
+        // covered by the rejection handler of the same `then`: drop the stale preview and tell the
+        // player once, rather than leaving an unhandled rejection.
+        ctx.scene.previewOverlay([]);
+        once(() => notifyMoveFailed(ctx));
+      });
     }
   };
 
@@ -1782,18 +2548,24 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
     onPointerDown(p: Point, ev: PointerEvent): boolean {
       const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
+        // Door click-to-toggle: EVERY role gets it (the wall's own pick), independent of the
+        // GM-only editing selection below — the server's `Room::toggle_door` gate is the
+        // authority; `toggleDoorAt`'s own pre-check is advisory UX only. The light-over-wall
+        // precedence mirrors the editing pick's, so a click on a light marker standing on a
+        // door never also flips it.
+        const scene = activeScene(ctx);
+        const inScene = (docType: string) =>
+          scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
+        const lightHit = topLightAt(inScene("light"), p);
+        const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
+        if (wallHit && scene) toggleDoorAt(ctx, scene, wallHit);
         // GM-only scene-entity editing: a click that hits no token picks a light marker, then a
         // wall segment, then a region/drawing/template shape, into the shared editing selection
         // the rail editor reads. Every write path is GM-gated (the server rejects a non-GM's
         // document write regardless; this branch only decides which editor opens, and a player
         // gets no editor affordance).
         if (ctx.role === "gm") {
-          const scene = activeScene(ctx);
-          const inScene = (docType: string) =>
-            scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
-          const lightHit = topLightAt(inScene("light"), p);
-          const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
-          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p) : null;
+          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p, ctx.documents) : null;
           const drawingHit = !lightHit && !wallHit && !regionHit ? topDrawingAt(inScene("drawing"), p) : null;
           const templateHit =
             !lightHit && !wallHit && !regionHit && !drawingHit ? topTemplateAt(inScene("template"), p) : null;

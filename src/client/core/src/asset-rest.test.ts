@@ -60,6 +60,7 @@ test("queryAssets encodes every filter and always selects the page form", async 
     sort: "size",
     limit: 5,
     cursor: "abc",
+    ids: ["a1", "a2"],
   });
   const url = new URL(String(f.mock.calls[0][0]), "http://x");
   expect(url.pathname).toBe("/api/worlds/w1/assets");
@@ -73,6 +74,7 @@ test("queryAssets encodes every filter and always selects the page form", async 
     sort: "size",
     limit: "5",
     cursor: "abc",
+    ids: "a1,a2",
   });
   const g = mockFetch(200, { items: [], next_cursor: null });
   await api.queryAssets("w1", {});

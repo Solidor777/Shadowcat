@@ -16,4 +16,7 @@ export interface FilterState {
   kind?: "image" | "other" | "audio";
   /** Sort key. */
   sort: "name" | "created" | "size";
+  /** Show only the account's favorites. The listing fetches just those ids (the server's `ids`
+   * filter); the flag itself is never sent. */
+  favoritesOnly: boolean;
 }

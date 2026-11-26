@@ -479,6 +479,28 @@ fn bare_ident_not_followed_by_lparen_is_not_a_function_call() {
 }
 
 #[test]
+fn parses_best_with_two_or_more_branches() {
+    let spec = parse("best(1d6, 1d8, 3)", ParseContext::default()).unwrap();
+    match spec.expr {
+        Expr::BestOf(args) => assert_eq!(args.len(), 3),
+        other => panic!("expected a 3-branch BestOf, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_best_with_one_branch() {
+    assert_eq!(
+        parse("best(1d6)", ParseContext::default()),
+        Err(ParseError::BestOfRequiresTwoArgs)
+    );
+}
+
+#[test]
+fn bare_best_not_followed_by_lparen_is_not_a_call() {
+    assert!(parse("best", ParseContext::default()).is_err());
+}
+
+#[test]
 fn parses_single_tier_rung_with_value_and_label() {
     let spec = parse("4d6cs>4tr3:1[Good]", ParseContext::default()).unwrap();
     match spec.mode {
@@ -624,5 +646,235 @@ fn xs_and_xf_under_total_ambient_are_silently_dropped() {
     match spec.mode {
         Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),
         other => panic!("expected Total, got {other:?}"),
+    }
+}
+
+/// Runs `input` through parse, roll and evaluate on a thread with the default spawned-thread
+/// stack size.
+fn parse_roll_evaluate_on_default_stack(input: String) -> Result<(), ParseError> {
+    std::thread::spawn(move || {
+        let spec = parse(&input, ParseContext::default())?;
+        let mut rng = crate::dice::rng::NoiseRng::from_seed(1);
+        let raws = crate::dice::eval::roll(&spec, &mut rng);
+        let _ = crate::dice::eval::evaluate(&spec, &raws);
+        Ok(())
+    })
+    .join()
+    .unwrap()
+}
+
+#[test]
+fn nesting_at_the_cap_parses_and_evaluates_on_a_default_stack() {
+    use crate::dice::notation::MAX_NESTING_DEPTH;
+    // `MAX_NESTING_DEPTH` counts every `factor` entry, including the innermost leaf.
+    let minus = format!("{}1", "-".repeat(MAX_NESTING_DEPTH - 1));
+    assert_eq!(parse_roll_evaluate_on_default_stack(minus), Ok(()));
+    let parens = format!(
+        "{}1{}",
+        "(".repeat(MAX_NESTING_DEPTH - 1),
+        ")".repeat(MAX_NESTING_DEPTH - 1)
+    );
+    assert_eq!(parse_roll_evaluate_on_default_stack(parens), Ok(()));
+    // A call level serializes as three JSON levels, so the JSON-depth cap bounds calls first.
+    let call_levels = (crate::dice::notation::MAX_EXPR_JSON_DEPTH - 2) / 3;
+    assert!(call_levels < MAX_NESTING_DEPTH);
+    let calls = format!("{}1{}", "abs(".repeat(call_levels), ")".repeat(call_levels));
+    assert_eq!(parse_roll_evaluate_on_default_stack(calls), Ok(()));
+}
+
+#[test]
+fn nesting_past_the_cap_is_refused_on_a_default_stack() {
+    use crate::dice::notation::MAX_NESTING_DEPTH;
+    let too_deep = [
+        format!("{}1", "-".repeat(MAX_NESTING_DEPTH)),
+        format!("{}1", "-".repeat(4095)),
+        format!(
+            "{}1{}",
+            "(".repeat(MAX_NESTING_DEPTH),
+            ")".repeat(MAX_NESTING_DEPTH)
+        ),
+        format!("{}1{}", "(".repeat(2047), ")".repeat(2047)),
+        format!(
+            "{}1{}",
+            "abs(".repeat(MAX_NESTING_DEPTH),
+            ")".repeat(MAX_NESTING_DEPTH)
+        ),
+    ];
+    for input in too_deep {
+        assert_eq!(
+            parse_roll_evaluate_on_default_stack(input),
+            Err(ParseError::TooDeeplyNested)
+        );
+    }
+}
+
+/// Serialized depth of the expression `input` parses to, measured the way `serde_json` counts it.
+fn serialized_depth(input: &str) -> usize {
+    let spec = parse(input, ParseContext::default()).unwrap();
+    super::value_depth(&serde_json::to_value(&spec.expr).unwrap())
+}
+
+#[test]
+fn the_depth_check_agrees_with_the_serialized_depth_of_every_node_kind() {
+    for input in [
+        "1",
+        "1d6",
+        "4d6kh3",
+        "2d6!>5",
+        "3d6mn2mx5",
+        "-1",
+        "1+2",
+        "1+2*3-4",
+        "abs(1)",
+        "min(1,2,3)",
+        "best(1d6,1d8)",
+        "abs(1+abs(2d6*-3))",
+        "best(abs(1),-(2+3d4kh2))",
+    ] {
+        let spec = parse(input, ParseContext::default()).unwrap();
+        let depth = serialized_depth(input);
+        assert!(super::fits_json_depth(&spec.expr, depth), "{input}");
+        assert!(!super::fits_json_depth(&spec.expr, depth - 1), "{input}");
+    }
+}
+
+#[test]
+fn a_chain_of_terms_past_the_json_depth_cap_is_refused_before_it_is_stored() {
+    use crate::dice::notation::MAX_EXPR_JSON_DEPTH;
+    // A left-nested `Bin` tree costs two JSON levels per term at one factor level, so only the
+    // JSON-depth cap, not `MAX_NESTING_DEPTH`, can refuse it.
+    let terms = |n: usize| vec!["1"; n].join("+");
+    let longest = (MAX_EXPR_JSON_DEPTH - 2) / 2 + 1;
+    assert!(serialized_depth(&terms(longest)) <= MAX_EXPR_JSON_DEPTH);
+    assert_eq!(parse_roll_evaluate_on_default_stack(terms(longest)), Ok(()));
+    for n in [longest + 1, 2000] {
+        assert_eq!(
+            parse_roll_evaluate_on_default_stack(terms(n)),
+            Err(ParseError::TooDeeplyNested)
+        );
+    }
+    let mixed = format!("{}1{}", "abs(1+".repeat(31), ")".repeat(31));
+    assert_eq!(
+        parse_roll_evaluate_on_default_stack(mixed),
+        Err(ParseError::TooDeeplyNested)
+    );
+}
+
+/// The modifiers of a single-group notation string.
+fn modifiers_of(input: &str) -> Vec<GroupModifier> {
+    match parse(input, ParseContext::default()).unwrap().expr {
+        Expr::Dice(group) => group.modifiers,
+        other => panic!("expected a dice group, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_mn_alone() {
+    assert_eq!(
+        modifiers_of("4d6mn2"),
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: None
+        }]
+    );
+}
+
+#[test]
+fn parses_mx_alone() {
+    assert_eq!(
+        modifiers_of("4d6mx5"),
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: Some(5)
+        }]
+    );
+}
+
+#[test]
+fn mn_and_mx_in_either_order_fold_into_one_clamp_at_the_first_token() {
+    let both = GroupModifier::Clamp {
+        min: Some(1),
+        max: Some(5),
+    };
+    assert_eq!(modifiers_of("4d6mn1mx5"), vec![both.clone()]);
+    assert_eq!(modifiers_of("4d6mx5mn1"), vec![both.clone()]);
+    // The clamp sits at the first of its tokens, so a later modifier stays after it.
+    assert_eq!(
+        modifiers_of("4d6mn1kh3mx5"),
+        vec![both, GroupModifier::KeepHighest(3)]
+    );
+}
+
+#[test]
+fn duplicate_mn_or_mx_errors() {
+    for input in ["4d6mn1mn2", "4d6mx5mx6", "4d6mn1mx5mn2", "4d6mx5mn1mx6"] {
+        assert_eq!(
+            parse(input, ParseContext::default()),
+            Err(ParseError::DuplicateClamp),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn a_clamp_is_per_group() {
+    let spec = parse("2d6mn2+2d6mx4", ParseContext::default()).unwrap();
+    let Expr::Bin { lhs, rhs, .. } = spec.expr else {
+        panic!("expected a binary expression")
+    };
+    let clamp_of = |e: Expr| match e {
+        Expr::Dice(g) => g.modifiers,
+        other => panic!("expected dice, got {other:?}"),
+    };
+    assert_eq!(
+        clamp_of(*lhs),
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: None
+        }]
+    );
+    assert_eq!(
+        clamp_of(*rhs),
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: Some(4)
+        }]
+    );
+}
+
+#[test]
+fn mn_without_a_number_is_refused() {
+    assert!(matches!(
+        parse("4d6mn", ParseContext::default()),
+        Err(ParseError::Unexpected(_))
+    ));
+}
+
+#[test]
+fn cse_and_cso_set_the_parity_success_rule_and_force_success_count() {
+    for (input, parity) in [("5d6cse", Parity::Even), ("5d6cso", Parity::Odd)] {
+        match parse(input, ParseContext::default()).unwrap().mode {
+            Mode::SuccessCount(cfg) => assert_eq!(cfg.success, SuccessRule::Parity(parity)),
+            other => panic!("expected SuccessCount for {input}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cse_and_cso_collide_with_every_other_success_rule() {
+    for input in [
+        "5d6cs>=4cse",
+        "5d6cse cs>=4",
+        "5d6cf<3cso",
+        "5d6cse t4",
+        "5d6t4cso",
+        "5d6cse cso",
+        "5d6cse cse",
+    ] {
+        assert_eq!(
+            parse(input, ParseContext::default()),
+            Err(ParseError::DuplicateSuccessRule),
+            "{input}"
+        );
     }
 }

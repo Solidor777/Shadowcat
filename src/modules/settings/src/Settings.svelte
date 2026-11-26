@@ -2,16 +2,19 @@
   import type { Component } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, confirmDialog } from "@shadowcat/ui-kit";
   import { i18n, locale } from "@shadowcat/ui-kit";
   import { BUILTIN_THEMES, theme } from "@shadowcat/ui-kit";
   import ModuleManager from "./ModuleManager.svelte";
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
+  import ChangePasswordForm from "./ChangePasswordForm.svelte";
+  import ProfileEditor from "./ProfileEditor.svelte";
+  import TrashManager from "./TrashManager.svelte";
   import ThemeEditor from "./ThemeEditor.svelte";
   import PerformanceEditor from "./PerformanceEditor.svelte";
 
-  const { role, t, leaveWorld, logout, contributions } = getAppContext();
+  const { role, serverRole, t, leaveWorld, logout, contributions } = getAppContext();
 
   // Bridges the framework-neutral registry's subscribe/snapshot to Svelte's reactivity —
   // the same pattern `Surface` uses, inlined here (rather than reusing `<Surface>`)
@@ -23,7 +26,9 @@
   });
   const sections = $derived.by(() => {
     subscribeSections();
-    return contributions.contributionsFor(SETTINGS_SECTION_CONTRACT);
+    return contributions
+      .contributionsFor(SETTINGS_SECTION_CONTRACT)
+      .filter((section) => !section.settingsSection?.serverAdminOnly || serverRole === "admin");
   });
 
   /** Which theme the editor is open on, when it is open. */
@@ -36,19 +41,31 @@
   let editing = $state<EditingTarget | null>(null);
 
   /**
-   * Deletes a saved custom theme after an explicit confirm. Declining the
-   * confirm is a true no-op. When the deleted theme was active, the controller
+   * Deletes a saved custom theme after an explicit confirm dialog. Declining
+   * the dialog is a true no-op. When the deleted theme was active, the controller
    * itself falls back to the default theme.
    * @param id The custom theme id to delete.
    * @param label The theme's display label, for the confirm message.
+   * @returns Resolves once the dialog is answered and, if confirmed, the theme is deleted.
    * @example
    * ```
    * // private function; not part of the public API — wired to each custom theme row's delete button
-   * removeCustomTheme("mine", "My Theme");
+   * await removeCustomTheme("mine", "My Theme");
    * ```
    */
-  function removeCustomTheme(id: string, label: string): void {
-    if (!window.confirm(t("settings.theme.editor.deleteConfirm", { label }))) return;
+  async function removeCustomTheme(id: string, label: string): Promise<void> {
+    const confirmed = await confirmDialog(
+      { t },
+      {
+        titleKey: "settings.theme.editor.deleteTitle",
+        messageKey: "settings.theme.editor.deleteConfirm",
+        messageParams: { label },
+        confirmLabelKey: "settings.theme.editor.delete",
+        cancelLabelKey: "settings.theme.editor.cancel",
+        danger: true,
+      },
+    );
+    if (!confirmed) return;
     theme.deleteCustom(id);
   }
 
@@ -84,11 +101,11 @@
   }
 </script>
 
-<section class="panel">
+<section class="panel" data-tour="settings.panel">
   <h2>{t("settings.title")}</h2>
   <p>{t("settings.role", { role })}</p>
   <label>{t("settings.language")}
-    <select value={locale()} onchange={(e) => i18n.setLocale(e.currentTarget.value)}>
+    <select data-tour="settings.language" value={locale()} onchange={(e) => i18n.setLocale(e.currentTarget.value)}>
       {#each i18n.locales as loc (loc)}<option value={loc}>{loc}</option>{/each}
     </select>
   </label>
@@ -131,10 +148,13 @@
       <SectionComponent {...(section.props ?? {})} />
     </section>
   {/each}
-  <!-- Each self-gates: InviteManager on the world GM role, UserManager on the
-       server admin tier. Both gates are advisory; the server re-checks. -->
+  <!-- Each self-gates: InviteManager on the world GM role, UserManager and TrashManager on
+       the server admin tier. All gates are advisory; the server re-checks. -->
   <InviteManager />
+  <ProfileEditor />
+  <ChangePasswordForm />
   <UserManager />
+  <TrashManager />
   <button onclick={leaveWorld}>{t("settings.leaveWorld")}</button>
   <button onclick={doLogout}>{t("settings.logout")}</button>
 </section>

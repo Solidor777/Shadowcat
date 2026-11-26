@@ -20,17 +20,23 @@
 //
 // Approval is per instance and belongs to the repository owner, never to the author of the code
 // being suppressed. Approved instances live in the allowlist named below.
+//
+// Dead-code and unused-item lints, and every `svelte-ignore` comment, are never approvable: the
+// suppressed condition must not exist, so a site carrying one fails whether or not an entry names
+// it, and an entry naming one fails in its own right. Every other lint is approvable per instance.
+//
+// Direction: a BAN gate. It scans the repository corpus (`repoFiles`: tracked plus untracked,
+// non-ignored files, minus files deleted in the working tree), so a new file is checked before
+// `git add` and an ignored file is never read.
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { REPO_ROOTS, repoFiles } from "./lib/gate-corpus.mjs";
 // An attribute quoted inside a doc comment is prose, not a suppression. Telling code from comment
 // is shared with the ephemeral-reference gate rather than reimplemented here: two scanners with
 // their own idea of what a comment is disagree about the same file, and neither can say which is
 // right.
 import { splitLine } from "./lib/comment-span.mjs";
 
-const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "dist-docs"]);
-const ROOTS = ["src", "scripts", "examples"];
 const ALLOWLIST = ".claude/suppression-allowlist.toml";
 
 // Repo-root config files that can lower a lint from a distance. Listed because they are a fixed,
@@ -73,6 +79,15 @@ const SUPPRESSIONS = [
         .filter((s) => /^[@a-z][\w@/-]*$/i.test(s)),
   },
   {
+    name: "svelte",
+    exts: [".svelte", ".ts", ".js", ".mjs"],
+    // A `svelte-ignore` comment silences a compiler warning for the markup that follows it. The
+    // directive must open a comment, so prose that merely names it is not a hit. The lint it names
+    // is irrelevant: the whole family is never approvable, so one extracted name stands for all.
+    re: /(?:<!--|\/\/|\/\*)\s*svelte-ignore\b/,
+    extract: () => ["svelte-ignore"],
+  },
+  {
     name: "typescript",
     exts: [".ts", ".svelte"],
     // These silence every diagnostic on the following line or in the whole file, which is a wider
@@ -81,6 +96,16 @@ const SUPPRESSIONS = [
     extract: (m) => [m[1]],
   },
 ];
+
+/**
+ * Whether `lint` is one no entry can approve: Rust `dead_code` and the `unused*` family, with or
+ * without a tool prefix such as `clippy::`, ESLint's `no-unused-vars` under any plugin prefix, and
+ * every `svelte-ignore` comment.
+ */
+const neverApprovable = (lint) => {
+  const bare = lint.split("::").pop().split("/").pop();
+  return bare === "dead_code" || bare.startsWith("unused") || bare === "no-unused-vars" || bare === "svelte-ignore";
+};
 
 /** A declaration this scanner will name as the item a suppression sits on. */
 const DECL = [
@@ -153,26 +178,13 @@ function loadAllowlist() {
   return out;
 }
 
-/** Recursively collects source paths under `dir`; an absent root yields none. */
-function sources(dir) {
-  const out = [];
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out;
-  }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...sources(p));
-    else out.push(p);
-  }
-  return out;
+let scanned;
+try {
+  scanned = repoFiles({ roots: REPO_ROOTS, label: "lint:allowances" });
+} catch (e) {
+  console.error(`lint:allowances: ${e.message}`);
+  process.exit(2);
 }
-
-const norm = (p) => p.split("\\").join("/");
-const scanned = ROOTS.flatMap(sources).map(norm);
 const hits = [];
 let exempted = 0;
 
@@ -232,7 +244,9 @@ const key = (o) => `${o.file}|${o.item}|${o.lint}`;
 const listed = new Map(allow.map((a) => [key(a), a]));
 const live = new Set(hits.map(key));
 
-const unlisted = hits.filter((h) => !listed.has(key(h)));
+const banned = hits.filter((h) => neverApprovable(h.lint));
+const bannedEntries = allow.filter((a) => neverApprovable(a.lint ?? ""));
+const unlisted = hits.filter((h) => !neverApprovable(h.lint) && !listed.has(key(h)));
 const stale = allow.filter((a) => !live.has(key(a)));
 const unreasoned = allow.filter((a) => !(a.reason ?? "").trim());
 const malformed = allow.filter((a) => !a.file || !a.item || !a.lint);
@@ -244,26 +258,49 @@ const provenance = `${scanned.length} file(s) scanned, ${allow.length} allowlist
 // Scanning nothing and finding nothing produce the same zero, and a broken root reads as a pass.
 // Refuse the ambiguous result: an empty scan is an error, never a clean bill of health.
 if (scanned.length === 0) {
-  console.error(`no files found under ${ROOTS.join(", ")}. Nothing was examined.`);
+  console.error(`no files found under ${REPO_ROOTS.join(", ")}. Nothing was examined.`);
   process.exit(2);
 }
 
 // Emits the live sites as allowlist entries, reason left blank on purpose: the reason is the whole
 // mechanism, and a generated one would be boilerplate that reports green forever.
 if (process.argv.includes("--report")) {
-  for (const h of [...hits].sort((a, b) => key(a).localeCompare(key(b)))) {
+  // A never-approvable site is left out: an entry for it could only fail, so offering one would
+  // invite writing it. The count still prints, as a comment line the registry parser skips.
+  const approvable = hits.filter((h) => !neverApprovable(h.lint));
+  for (const h of [...approvable].sort((a, b) => key(a).localeCompare(key(b)))) {
     console.log(`[[allow]]\nfile = "${h.file}"\nitem = "${h.item}"\nlint = "${h.lint}"\nreason = ""\n`);
+  }
+  if (banned.length) {
+    console.log(`# ${banned.length} dead-code or unused-item site(s) omitted: never approvable, fix the code.`);
   }
   process.exit(0);
 }
 
-const problems = unlisted.length + stale.length + unreasoned.length + malformed.length + lowered.length;
+const problems =
+  banned.length +
+  bannedEntries.length +
+  unlisted.length +
+  stale.length +
+  unreasoned.length +
+  malformed.length +
+  lowered.length;
 if (problems === 0) {
   console.log(`No unapproved lint suppressions. ${provenance}.`);
   process.exit(0);
 }
 
 console.error(`${problems} suppression problem(s). ${provenance}.\n`);
+if (banned.length) {
+  console.error(`NEVER APPROVABLE (${banned.length}) — a dead-code or unused-item suppression cannot be registered; fix the code:`);
+  for (const h of banned) console.error(`  ${h.file}:${h.line}  ${h.item}  [${h.lint}]  ${h.text}`);
+  console.error("");
+}
+if (bannedEntries.length) {
+  console.error(`NEVER APPROVABLE ENTRY (${bannedEntries.length}) — delete the entry and fix the site:`);
+  for (const a of bannedEntries) console.error(`  ${a.file}  ${a.item}  [${a.lint}]`);
+  console.error("");
+}
 if (unlisted.length) {
   console.error(`NOT APPROVED (${unlisted.length}) — every suppression needs a per-instance entry:`);
   for (const h of unlisted) console.error(`  ${h.file}:${h.line}  ${h.item}  [${h.lint}]  ${h.text}`);
@@ -290,6 +327,7 @@ if (lowered.length) {
   console.error("");
 }
 console.error("Fix the code — make it reachable, delete it, scope it to the build that uses it, or");
-console.error("refactor the signature. `#[expect]` is not an alternative form. If a suppression is");
-console.error(`genuinely warranted, it needs the repository owner's approval in ${ALLOWLIST}.`);
+console.error("refactor the signature. `#[expect]` is not an alternative form. A dead-code or unused-item");
+console.error("suppression is never approvable. Any other suppression that is genuinely warranted needs");
+console.error(`the repository owner's approval in ${ALLOWLIST}.`);
 process.exit(1);

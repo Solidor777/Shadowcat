@@ -2,6 +2,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNod
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 
 /** The background-layer sprite spec — the statement of record for this shape; every
  * implementation/recording site (`PixiBackend`, `MockBackend`) references this type rather
@@ -29,6 +30,11 @@ export interface DisplayBackend {
    * @param lines The grid line segments to draw, in scene coordinates.
    * @param color Line color, `0xRRGGBB`. */
   drawGrid(lines: LineSeg[], color: number): void;
+  /** Replace the scene-bounds outline (scene coords), drawn in the grid layer above the grid lines
+   * and separately from them so a camera-driven grid redraw never erases it.
+   * @param lines The outline segments to draw, in scene coordinates; empty clears the outline.
+   * @param color Line color, `0xRRGGBB`. */
+  drawBoundsOutline(lines: LineSeg[], color: number): void;
   /** Apply the visibility mask (the mask slot). Empty `visible` = identity
    * (full visibility → transparent overlay).
    * @param input The fog/mask state to render — see `VisibilityInput`. */
@@ -88,6 +94,9 @@ export interface DisplayBackend {
   /** Redraw the transient emote glyphs (rising/fading emoji over tokens).
    * @param glyphs The emote glyphs to draw — see `EmoteGlyph`. */
   drawEmotes(glyphs: EmoteGlyph[]): void;
+  /** Redraw the remote shared rulers (other users' live measured routes).
+   * @param rulers The live rulers to draw — see `RemoteRulerPath`. */
+  drawRulers(rulers: RemoteRulerPath[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint.
    * @param frame The resolved lighting overlay to paint. */
   setLighting(frame: LightingFrame): void;

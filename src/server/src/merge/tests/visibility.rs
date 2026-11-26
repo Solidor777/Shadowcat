@@ -1,9 +1,12 @@
-//! The per-document visibility oracle, exercised where the two index spaces
-//! around an embedded merge disagree: a dropped preceding sibling on the
-//! instance side, a reorder on the template side, nested depths, and both
-//! sides at once. Every case would leak (or wrongly withhold) under a
-//! positional hidden-pointer set compared against output-indexed conflict
-//! paths; by identity the answer is index-free.
+//! These tests exercise the per-document visibility oracle where the two index spaces around an
+//! embedded merge disagree.
+//!
+//! The index-space cases are a dropped preceding sibling on the instance side, a reorder on the
+//! template side, nested depths, and both sides at once. Each of them would leak (or wrongly
+//! withhold) under a positional hidden-pointer set compared against output-indexed conflict paths;
+//! by identity the answer is index-free. The remaining tests cover the payload-band rule for
+//! template-deleted conflicts, an oracle that cannot answer, and template-hidden paths under pull
+//! and revert.
 
 use std::collections::{BTreeMap, HashMap};
 

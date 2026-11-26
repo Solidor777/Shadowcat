@@ -1,6 +1,8 @@
-//! Per-recipient admission of the carried-light timeline (`MoveStream.mover_light`) in
-//! `clip_move_stream` and the own-move re-emit: full for the mover and a plain GM, disc-
-//! admitted per sample for an observer or a GM see-as, gone when nothing reaches.
+//! These tests check the per-recipient admission of the carried-light timeline
+//! (`MoveStream.mover_light`).
+//!
+//! `clip_move_stream` and the own-move re-emit admit it full for the mover and a plain GM,
+//! disc-admitted per sample for an observer or a GM see-as, and gone when nothing reaches.
 
 use super::*;
 use crate::ws::protocol::{LightSample, PosSample, VisionSample};
@@ -16,6 +18,8 @@ fn lamp(t_ms: f64, pos: [f64; 2], dim: f64) -> LightSample {
         intensity: 1.0,
         falloff: crate::data::engine::FalloffCurve::Linear,
         color: 0xFFCC66,
+        angle: None,
+        rotation: None,
         polygons: vec![vec![
             [pos[0] - dim, pos[1] - dim],
             [pos[0] + dim, pos[1] - dim],

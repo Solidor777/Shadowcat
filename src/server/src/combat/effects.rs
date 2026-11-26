@@ -1,10 +1,10 @@
-//! Effect discovery and clock-driven mutation: which effects belong to a
-//! combatant, and how a boundary tick or a lifecycle-policy expiry writes
-//! them. Lifecycle flags and duration amounts are evaluated server-side at
-//! the moment of use (`eval::lifecycle_flags`/`eval::duration_amount`) over
-//! the document hosting the effect; an evaluation failure skips that one
-//! effect and is reported to the caller — never guessed around, and never a
-//! stopped clock.
+//! This module discovers a combatant's effects and applies the clock-driven mutations to them.
+//!
+//! Discovery decides which effects belong to a combatant; a boundary tick or a lifecycle-policy
+//! expiry writes them. Lifecycle flags and duration amounts are evaluated server-side at the moment
+//! of use (`eval::lifecycle_flags`/`eval::duration_amount`) over the document hosting the effect;
+//! an evaluation failure skips that one effect and is reported to the caller — never guessed
+//! around, and never a stopped clock.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -15,7 +15,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::data::command::{FieldChange, Operation};
-use crate::data::document::Document;
+use crate::data::document::{DocRole, Document};
 use crate::data::engine::combat::{
     CombatantKind, DurationUnit, EffectEngine, EffectLifecycleDefaults, ExpiryPoint,
 };
@@ -44,11 +44,15 @@ use super::{CombatError, CombatSnapshot, Combatant};
 ///         transfer: false,
 ///         duration: None,
 ///         lifecycle: None,
+///         origin: None,
 ///     },
+///     name: Some("Bless".to_string()),
+///     default_readable: true,
 /// };
 /// assert_eq!(effect_ref.path, "/embedded/effect/0");
 /// assert!(effect_ref.engine.active);
 /// ```
+#[derive(Debug, Clone)]
 pub struct EffectRef {
     /// The document that embeds the effect (an actor or a token).
     pub host: Uuid,
@@ -56,6 +60,11 @@ pub struct EffectRef {
     pub path: String,
     /// The effect's engine band, as read from `host` at collection time.
     pub engine: EffectEngine,
+    /// The effect document's own name, for the expiry note.
+    pub name: Option<String>,
+    /// Whether the effect document's `permissions.default` grants any access (is not
+    /// `DocRole::None`). A per-user grant on an otherwise unreadable effect does not set it.
+    pub default_readable: bool,
 }
 
 /// Which anchor values a walk admits. The two axes an effect carries are
@@ -109,6 +118,8 @@ fn walk_effect_collection(
             host,
             path: format!("{prefix}/{i}"),
             engine,
+            name: doc.name.clone(),
+            default_readable: doc.permissions.default != DocRole::None,
         });
     }
 }
@@ -181,22 +192,22 @@ fn walk_any_host(
 
 /// Collects every effect this combatant's clock moves, along BOTH axes the
 /// shape defines:
-/// - on its OWN host(s) — its linked actor and/or its token's embedded
-///   actor — every effect that is unanchored (`duration.anchor: None`, i.e.
+/// - on its OWN host(s) (the own-host collection) — its linked actor and/or its token's
+///   embedded actor — every effect that is unanchored (`duration.anchor: None`, i.e.
 ///   belonging to whoever hosts it) or explicitly anchored to this
 ///   combatant;
-/// - on ANY OTHER host in the combat, every effect explicitly anchored to
-///   this combatant (`duration.anchor == Some(combatant.doc.id)`).
+/// - on ANY OTHER host in the combat (the other-host collection), every effect
+///   explicitly anchored to this combatant (`duration.anchor == Some(combatant.doc.id)`).
 ///
-/// The second pass is what keeps the host and the anchor independent: an
+/// The other-host collection is what keeps the host and the anchor independent: an
 /// effect physically living on A's actor but anchored to B ticks, expires
 /// and is captured on B's clock, and is claimed by neither combatant twice.
 /// Results are deduplicated by `(host, path)` — the same key
 /// `transition::run_boundary`/`transition::end`/`history::capture` dedup on
-/// — so an effect reachable from both passes is returned once. An
+/// — so an effect reachable from both collections is returned once. An
 /// item-embedded effect still requires its own `transfer` flag. An `Event`
 /// combatant hosts no effects, but may still anchor effects hosted
-/// elsewhere, so both passes run for it too.
+/// elsewhere, so both collections run for it too.
 ///
 /// # Examples
 ///
@@ -231,6 +242,7 @@ fn walk_any_host(
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -265,6 +277,8 @@ fn walk_any_host(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -335,6 +349,7 @@ fn walk_any_host(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -447,6 +462,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -481,6 +497,8 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -552,6 +570,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -610,6 +629,7 @@ fn active_refs(refs: &[EffectRef]) -> impl Iterator<Item = &EffectRef> {
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -681,6 +701,16 @@ fn flags_for(
     }
 }
 
+/// What one `tick` or `expire_by_policy` sweep produced.
+pub(crate) struct EffectSweep {
+    /// The host `Update`s that write the sweep.
+    pub(crate) ops: Vec<Operation>,
+    /// One detail line per skipped effect whose formulas failed to evaluate.
+    pub(crate) failures: Vec<String>,
+    /// The refs this sweep switched to `active = false`, for the expiry note.
+    pub(crate) expired: Vec<EffectRef>,
+}
+
 /// Decrements `Duration.remaining` by one for every ref in `refs` that is
 /// still `active`, whose evaluated lifecycle `on_advance` is set, and whose
 /// `expires`/`unit` match `boundary`/`unit` exactly. A `remaining` of `None`
@@ -699,9 +729,10 @@ pub(crate) fn tick(
     boundary: ExpiryPoint,
     unit: DurationUnit,
     defaults: &EffectLifecycleDefaults,
-) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
+) -> Result<EffectSweep, CombatError> {
     let mut ops = Vec::new();
     let mut failures = Vec::new();
+    let mut expired = Vec::new();
     for r in active_refs(refs) {
         let Some(duration) = &r.engine.duration else {
             continue;
@@ -740,13 +771,18 @@ pub(crate) fn tick(
                 "/engine/active",
                 json!(false),
             )?);
+            expired.push(r.clone());
         }
         ops.push(Operation::Update {
             doc_id: r.host,
             changes,
         });
     }
-    Ok((ops, failures))
+    Ok(EffectSweep {
+        ops,
+        failures,
+        expired,
+    })
 }
 
 /// Sets `active = false` for every ref in `refs` that is currently `active`
@@ -760,9 +796,10 @@ pub(crate) fn expire_by_policy(
     refs: &[EffectRef],
     pick: fn(&LifecycleFlags) -> bool,
     defaults: &EffectLifecycleDefaults,
-) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
+) -> Result<EffectSweep, CombatError> {
     let mut ops = Vec::new();
     let mut failures = Vec::new();
+    let mut expired = Vec::new();
     for r in active_refs(refs) {
         let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
         let Some(flags) = flags_for(r, host, defaults, &mut failures) else {
@@ -776,6 +813,11 @@ pub(crate) fn expire_by_policy(
             doc_id: r.host,
             changes: vec![change],
         });
+        expired.push(r.clone());
     }
-    Ok((ops, failures))
+    Ok(EffectSweep {
+        ops,
+        failures,
+        expired,
+    })
 }

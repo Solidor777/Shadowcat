@@ -1,18 +1,20 @@
-//! Per-scene visibility/lighting mask computation, split out of `scene::mod` to keep that file
-//! under the repository's file-size gate. Owns the shared lighting-input snapshot
-//! (`LightingInputs`), the visible-cells raycast/scan shared by the movement gate and the
-//! egress mask (`accumulate_visible_cells`/`cell_visible`/`source_los_poly`), the segment
-//! intersection primitive every wall-crossing check in the crate shares (`segments_cross`), and
-//! `compute_derived`'s per-channel dispatch. Every name here is re-exported at `scene` module
-//! scope (see `scene::mod`'s `pub(crate) use`/`pub use`), so external callers still address them
-//! as `scene::compute_derived`/`scene::segments_cross` — moving the implementation file never
-//! moves the public path.
+//! This module computes the per-scene visibility/lighting masks.
+//!
+//! It is split out of `scene::mod` to keep that file under the file-size gate. The module owns the
+//! shared lighting-input snapshot (`LightingInputs`), the visible-cells raycast/scan shared by the
+//! movement gate and the egress mask (`accumulate_visible_cells`/`cell_visible`/
+//! `source_los_poly`), the segment intersection primitive `segments_cross`, and
+//! `compute_derived`'s per-channel dispatch. `scene::mod` re-exports `compute_derived` and
+//! `segments_cross`, so external callers address them as `scene::compute_derived` and
+//! `scene::segments_cross`.
 
 use super::*;
 
 /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
 /// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
-/// under lighting-off or globalIllumination.
+/// under lighting-off or globalIllumination — it skips gathering placed lights and light walls,
+/// NEVER the ambient-region layer: `ambient` applies on top of the flat all-bright baseline, so
+/// an `ambient_light` region edits a `GlobalIllumination` scene's field.
 pub(crate) struct LightingInputs {
     /// Skip per-light raycasts: lighting off or `GlobalIllumination`.
     pub(crate) all_bright: bool,
@@ -32,18 +34,31 @@ pub(crate) struct LightingInputs {
     /// `blocksSight` wall segments with their elevation bands (the LOS raycast input —
     /// each vision source filters them at its own elevation through
     /// `elevation::walls_at_elevation` before raycasting).
-    pub(crate) sight_walls: Vec<elevation::BandedWall>,
+    pub(crate) sight_walls: Vec<elevation::WallEntry>,
+    /// The per-cell ambient-light adjustments of the scene's enabled `ambient_light` regions
+    /// for this field's level, read AUTHORITATIVELY (`SceneEcs::ambient_light_map` — a
+    /// `gm_only` region's edit applies to every viewer; the region's geometry follows the
+    /// ordinary per-requester rule). Empty when no ambient-light region covers any cell of the
+    /// level — the common case, and `cell_light`'s fast path.
+    pub(crate) ambient: std::collections::BTreeMap<(i32, i32), regions::AmbientAdjustment>,
+    /// The scene's resolved grid shape — the point→cell lookup (`cell_of`) the ambient-region
+    /// adjustment reads through in `cell_light`. Held by the same `Arc` the field is shared
+    /// through; never re-resolved per read.
+    pub(crate) grid: Box<dyn grid_shape::GridShape + Send + Sync>,
 }
 
 impl LightingInputs {
-    /// The composed light at `point`: under `all_bright` a full-level cell (untinted with
+    /// The composed light at `point`: under `all_bright` a full-level BASE cell (untinted with
     /// lighting off, environment-tinted under globalIllumination — level 1.0 so every vision
     /// floor, incl. normal "dim", passes and every LOS cell is visible), else the additive field
     /// (`cell_illumination_from`) over this scene's lights plus `extra` — carried lights an
     /// in-flight mover composes in at its instant position (`InstantLight`). THE one
     /// illumination read: `player_lit_mask`'s band/tint bookkeeping and `point_qualifies`'s
     /// floor test both take their `CellLight` here, so the egress mask, the movement gate and
-    /// the move-stream clip cannot light a cell by different rules.
+    /// the move-stream clip cannot light a cell by different rules. The ambient-region
+    /// adjustment (`ambient`, composed by `regions::compose_ambient`) applies LAST over either
+    /// base — the `all_bright` short-circuit included: it skips gathering lights and light
+    /// walls, never this per-cell edit.
     ///
     /// `world_units_per_cell` is the shape-derived world distance of one grid step
     /// (`GridShape::world_units_per_cell`), NOT the cell indexing scale — a light's radii are
@@ -56,28 +71,43 @@ impl LightingInputs {
         world_units_per_cell: f64,
         extra: &[&InstantLight],
     ) -> crate::scene::lighting::CellLight {
-        if self.all_bright {
-            return crate::scene::lighting::CellLight {
+        let base = if self.all_bright {
+            crate::scene::lighting::CellLight {
                 level: 1.0,
                 tint: if settings.lighting_enabled {
                     settings.env_color
                 } else {
                     0
                 },
-            };
+            }
+        } else {
+            crate::scene::lighting::cell_illumination_from(
+                point,
+                settings.env_intensity,
+                settings.env_color,
+                self.lights
+                    .iter()
+                    .enumerate()
+                    .map(|(k, l)| (l, self.lit_polys.get(k).map_or(&[][..], Vec::as_slice)))
+                    .chain(extra.iter().map(|e| (&e.light, e.occluder.as_slice()))),
+                &self.env_polys,
+                world_units_per_cell,
+            )
+        };
+        // Final per-cell ambient-region adjustment (composed by `regions::compose_ambient`) —
+        // applied over EITHER base, the flat all-bright one included: the `all_bright`
+        // short-circuit skips light/wall gathering, never this edit. The empty-map fast path
+        // keeps a scene with no ambient-light region byte-identical.
+        if self.ambient.is_empty() {
+            return base;
         }
-        crate::scene::lighting::cell_illumination_from(
-            point,
-            settings.env_intensity,
-            settings.env_color,
-            self.lights
-                .iter()
-                .enumerate()
-                .map(|(k, l)| (l, self.lit_polys.get(k).map_or(&[][..], Vec::as_slice)))
-                .chain(extra.iter().map(|e| (&e.light, e.occluder.as_slice()))),
-            &self.env_polys,
-            world_units_per_cell,
-        )
+        match self.ambient.get(&self.grid.cell_of(point)) {
+            Some(adjustment) => crate::scene::lighting::CellLight {
+                level: adjustment.apply(base.level),
+                tint: base.tint,
+            },
+            None => base,
+        }
     }
 }
 
@@ -97,7 +127,7 @@ impl LightingInputs {
 pub(crate) fn point_qualifies(
     point: (f64, f64),
     src_vp: (f64, f64),
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     settings: &ResolvedScene,
     li: &LightingInputs,
     world_units_per_cell: f64,
@@ -122,17 +152,29 @@ pub(crate) struct VisSrc {
     /// `elevation::wall_occludes` and grounds tremorsense (`SceneEcs::player_perceived_tokens`).
     pub(crate) elevation: f64,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    pub(crate) floors: Vec<(f64, f64, Option<String>)>,
+    pub(crate) floors: Vec<(f64, f64, SharedRenderHint)>,
     /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
     /// read by `player_perceived_tokens` and the clip's `SightSource`; the lit mask ignores
     /// them, so they are no part of `VisibilityInputsSnapshot`.
     pub(crate) senses: Vec<(f64, bool)>,
+    /// The source's facing-limited field of view (`facing_arc_for` of its resolved
+    /// `FacingVision` and rotation), `None` when the scene's `facing_vision` switch is off, the
+    /// token carries no `FacingVision`, or its arc is `360`.
+    pub(crate) facing: Option<vision::FacingArc>,
 }
 
-/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.
-/// Elevation is part of the fingerprint: a token gaining/losing height changes which walls
-/// occlude it, so the same walls at two elevations must never share a cached mask.
-pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
+/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors,
+/// facing)`. Elevation is part of the fingerprint: a token gaining/losing height changes which
+/// walls occlude it, so the same walls at two elevations must never share a cached mask. The
+/// facing arc is part of it too: it carries the token's rotation, so turning a token misses the
+/// cache.
+pub(crate) type VisSrcSnapshot = (
+    Uuid,
+    vision::P,
+    f64,
+    Vec<(f64, f64, SharedRenderHint)>,
+    Option<vision::FacingArc>,
+);
 
 /// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
 /// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
@@ -156,7 +198,10 @@ pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<St
 /// ADMISSION (`user_access`'s `resolve_access_world`: the token's permissions, the caller's
 /// world role, the world-level capability grants) need no fields of their own — their entire
 /// effect on the mask is WHICH tokens the gathered `sources` list contains, and that list is
-/// fingerprinted here.
+/// fingerprinted here. The ambient-light region layer rides `ambient` (the composed per-level
+/// map, computed by the SAME `SceneEcs::ambient_light_map` read `lighting_inputs_excluding`
+/// fingerprints): an `ambient_light` region add/edit/delete changes the mask through
+/// `LightingInputs::cell_light`, so it must miss this cache too.
 #[derive(Clone, PartialEq)]
 pub(crate) struct VisibilityInputsSnapshot {
     /// The sampling mode the mask was computed under.
@@ -178,9 +223,14 @@ pub(crate) struct VisibilityInputsSnapshot {
     /// Resolved scene lights.
     pub(crate) lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands.
-    pub(crate) light_walls: Vec<elevation::BandedWall>,
+    pub(crate) light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
-    pub(crate) sight_walls: Vec<elevation::BandedWall>,
+    pub(crate) sight_walls: Vec<elevation::WallEntry>,
+    /// The mover-level ambient-light adjustment map (`SceneEcs::ambient_light_map`, the
+    /// AUTHORITATIVE region read). The mask consumes it through `LightingInputs::cell_light`,
+    /// so an ambient-light region's add/edit/delete must miss this cache exactly like a light
+    /// edit — a region engine body is not otherwise represented in this fingerprint.
+    pub(crate) ambient: std::collections::BTreeMap<(i32, i32), regions::AmbientAdjustment>,
 }
 
 /// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the
@@ -212,6 +262,7 @@ pub(crate) fn accumulate_visible_cells(
             &src_walls,
             settings.los_restriction,
             grid.world_extent(settings.bounds),
+            src.facing,
         );
         if poly.len() < 3 {
             continue;
@@ -328,7 +379,7 @@ pub(crate) fn accumulate_visible_cells(
 /// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
 /// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
 pub(crate) fn cell_visible(
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     cl_level: f64,
     dist_cells: f64,
 ) -> bool {
@@ -355,17 +406,92 @@ pub(crate) fn source_los_poly(
     sight_walls: &[vision::Seg],
     los_restriction: bool,
     scene_extent: grid_shape::WorldExtent,
+    facing: Option<vision::FacingArc>,
 ) -> Vec<vision::P> {
     let b = vision::bound_for_scene(vp, sight_walls, scene_extent, VISION_BOUND_MARGIN);
-    if los_restriction {
-        vision::visibility_polygon(vp, sight_walls, b)
-    } else {
-        vec![
+    match (los_restriction, facing) {
+        (true, None) => vision::visibility_polygon(vp, sight_walls, b),
+        (true, Some(arc)) => vision::visibility_polygon_facing(vp, sight_walls, b, arc),
+        // A facing arc still limits sight on a scene without wall occlusion: the same fan over the
+        // whole bound with no occluders, so the arc and bubble are the only restriction.
+        (false, Some(arc)) => vision::visibility_polygon_facing(vp, &[], b, arc),
+        (false, None) => vec![
             (b.minx, b.miny),
             (b.maxx, b.miny),
             (b.maxx, b.maxy),
             (b.minx, b.maxy),
-        ]
+        ],
+    }
+}
+
+/// Smallest all-round bubble radius (world units) a facing-limited source keeps. With a zero
+/// radius every ray outside the arc collapses onto the viewpoint, which then lies ON the polygon
+/// boundary, where `vision::point_in_poly` (even-odd) answers arbitrarily — the source could lose
+/// its own position. One world unit keeps the viewpoint strictly interior and is far below a cell.
+pub(crate) const FACING_MIN_NEAR_WORLD: f64 = 1.0;
+
+/// Resolves a token's `FacingVision` and rotation to the geometry `source_los_poly` consumes.
+/// `None` means unrestricted sight (an arc of `360`). An invalid stored value (out-of-range or
+/// non-finite `arc`) fails closed to the bubble-only view (`half_rad == 0`), never to full sight;
+/// a non-finite or negative `near`, or a non-positive `world_units_per_cell`, resolves to a
+/// zero-radius bubble. `world_units_per_cell` is `GridShape::world_units_per_cell`, the
+/// authored-distance scale the source's vision range also converts through.
+pub(crate) fn facing_arc_for(
+    fv: &crate::data::engine::FacingVision,
+    rotation_deg: f64,
+    world_units_per_cell: f64,
+) -> Option<vision::FacingArc> {
+    let arc_valid = fv.arc.is_finite() && fv.arc > 0.0 && fv.arc <= 360.0;
+    if arc_valid && fv.arc >= 360.0 {
+        return None;
+    }
+    let near_cells = if fv.near.is_finite() && fv.near > 0.0 {
+        fv.near
+    } else {
+        0.0
+    };
+    let scaled = if world_units_per_cell.is_finite() && world_units_per_cell > 0.0 {
+        near_cells * world_units_per_cell
+    } else {
+        0.0
+    };
+    let near_world = scaled.max(FACING_MIN_NEAR_WORLD);
+    Some(vision::FacingArc {
+        facing_rad: facing_rad_for(rotation_deg),
+        half_rad: if arc_valid {
+            (fv.arc / 2.0).to_radians()
+        } else {
+            0.0
+        },
+        near_world,
+    })
+}
+
+/// The direction, in radians, a token with stored rotation `rotation_deg` looks along; a
+/// non-finite rotation reads as `0.0`. The one rotation-to-direction conversion
+/// `facing_arc_for` and `SightSources::turn_source` share.
+fn facing_rad_for(rotation_deg: f64) -> f64 {
+    if rotation_deg.is_finite() {
+        crate::scene::move_exec::token_facing_radians(rotation_deg)
+    } else {
+        0.0
+    }
+}
+
+impl SightSources {
+    /// Turns source `id`'s facing arc to `rotation_deg`, leaving its width and bubble unchanged.
+    /// `Room::execute_move` calls it with the rotation the move commits, so the streamed
+    /// `los_at` re-raycasts look along the heading the committed polygons will use. A source
+    /// with no facing arc (`facing_vision` off, or a full-circle arc) has nothing to turn.
+    pub(crate) fn turn_source(&mut self, id: Uuid, rotation_deg: f64) {
+        if let Some(arc) = self
+            .sources
+            .iter_mut()
+            .find(|s| s.id == id)
+            .and_then(|s| s.facing.as_mut())
+        {
+            arc.facing_rad = facing_rad_for(rotation_deg);
+        }
     }
 }
 
@@ -464,6 +590,9 @@ pub fn compute_derived(
                 .collect();
             serde_json::to_value(audibility::AudibilityPayload { scenes }).ok()
         }
+        // Each readable token's server-evaluated nameplate and bar numbers, per recipient
+        // (`SceneEcs::resolved_bars`) — the client receives numbers, never a bar's formula.
+        "bars" => serde_json::to_value(ecs.resolved_bars(ctx, world_defaults)).ok(),
         // Server-resolved combat resource numbers and movement budgets, per recipient — the
         // client evaluates and stores nothing (`SceneEcs::resolved_combats`'s own doc comment).
         "combat" => serde_json::to_value(ecs.resolved_combats(ctx, world_defaults)).ok(),
@@ -491,7 +620,7 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` alongside them).
-                // `renderHints` is a deterministic string table (first-seen order over the
+                // `renderHints` is a deterministic table of distinct hints (first-seen order over the
                 // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
                 // hint_idx is the index into `renderHints`, or -1 for None.
                 // The gradation is resolved ONCE here and passed into the mask computation, so
@@ -515,7 +644,7 @@ pub fn compute_derived(
                     .into_iter()
                     .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
                     .collect();
-                let mut hints: Vec<String> = Vec::new();
+                let mut hints: Vec<std::sync::Arc<eng::RenderHint>> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {
                     let mut flat: Vec<i64> = Vec::new();
@@ -536,8 +665,14 @@ pub fn compute_derived(
                         serde_json::json!({ "scene": s.scene, "level": s.level, "cell": s.cell, "cells": flat }),
                     );
                 }
+                // Each table entry is the hint's own tagged wire object (`{"kind": ...}`), so the
+                // client dispatches on `kind` exactly as it does on a `VisionMode.renderHint`.
+                let hints_json: Vec<serde_json::Value> = hints
+                    .iter()
+                    .map(|h| serde_json::to_value(h.as_ref()).unwrap_or(serde_json::Value::Null))
+                    .collect();
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit, "perceived": perceived }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints_json, "lit": lit, "perceived": perceived }),
                 )
             }
         }

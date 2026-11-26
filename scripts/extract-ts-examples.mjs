@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import ts from "typescript";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { GENERATED_ROOT, repoFiles, under } from "./lib/gate-corpus.mjs";
 
 const toPosix = (p) => p.split(sep).join("/");
 
@@ -158,32 +159,29 @@ export function externalDepPaths(repoRoot, pkgDirs) {
   return paths;
 }
 
-function walk(repoRoot, roots, predicate) {
-  const files = [];
-  const visit = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      if (e.name === "node_modules" || e.name === "dist" || e.name === "generated") continue;
-      const p = join(d, e.name);
-      if (e.isDirectory()) visit(p);
-      else if (predicate(e.name)) files.push(p);
-    }
-  };
-  for (const r of roots) {
-    try { visit(join(repoRoot, r)); } catch { /* an optional root (examples/) may be absent */ }
-  }
-  return files;
+/** Absolute paths of the corpus files under `roots` whose basename satisfies `predicate`.
+ * The corpus is `repoFiles` (tracked plus untracked, non-ignored files), so a new source is
+ * checked before `git add` and ignored build output is never read; the ts-rs output under
+ * `GENERATED_ROOT` is never hand-written and carries no examples. */
+function corpusUnder(repoRoot, roots, predicate, log) {
+  return repoFiles({ cwd: repoRoot, roots, label: "docs:check-examples", log })
+    .filter((p) => !under(p, GENERATED_ROOT) && predicate(basename(p)))
+    .map((p) => join(repoRoot, ...p.split("/")));
 }
 
-/** All candidate .ts files under the given roots (skips node_modules/dist/generated,
- * and excludes *.test.ts — test files document nothing). */
-export function candidateFiles(repoRoot, roots) {
-  return walk(repoRoot, roots, (name) => name.endsWith(".ts") && !name.endsWith(".test.ts"));
+/** All candidate .ts files under the given roots (the corpus minus the generated types,
+ * and excluding *.test.ts — test files document nothing). `log` receives the corpus size
+ * line; silent when omitted, because this is a library function (see `repoFiles`). */
+export function candidateFiles(repoRoot, roots, log = () => {}) {
+  return corpusUnder(repoRoot, roots, (name) => name.endsWith(".ts") && !name.endsWith(".test.ts"), log);
 }
 
 /** All .svelte files under the given roots. Never compiled — @example blocks found here
- * are reported as an explicitly unchecked count, never silently passed over. */
-export function svelteFiles(repoRoot, roots) {
-  return walk(repoRoot, roots, (name) => name.endsWith(".svelte"));
+ * are reported as an explicitly unchecked count, never silently passed over. `log` receives
+ * the corpus size line; silent when omitted, because this is a library function (see
+ * `repoFiles`). */
+export function svelteFiles(repoRoot, roots, log = () => {}) {
+  return corpusUnder(repoRoot, roots, (name) => name.endsWith(".svelte"), log);
 }
 
 function isHoistable(statement) {
@@ -1929,6 +1927,18 @@ if (isDirectEntry(import.meta.url)) {
   const roots = ["src/types", "src/client", "src/modules", "examples"];
   const pkgDirs = workspacePackageDirs(repo);
 
+  // A git failure while listing the corpus ends the run with a message and status 2, never a stack
+  // trace; the same shape every other corpus gate reports.
+  let tsHosts;
+  let svelteHosts;
+  try {
+    tsHosts = candidateFiles(repo, roots, console.log);
+    svelteHosts = svelteFiles(repo, roots, console.log);
+  } catch (e) {
+    console.error(`docs:check-examples: ${e.message}`);
+    process.exit(2);
+  }
+
   const byPackage = new Map();
   const byPackageInjected = new Map();
   const byPackageSvelte = new Map();
@@ -1936,7 +1946,7 @@ if (isDirectEntry(import.meta.url)) {
   let compileTotal = 0;
   const unresolvedClashes = [];
   const noEnclosingClass = [];
-  for (const file of candidateFiles(repo, roots)) {
+  for (const file of tsHosts) {
     const hostText = readFileSync(file, "utf8");
     const examples = extractExamples(hostText);
     if (examples.length === 0) continue;
@@ -1988,7 +1998,7 @@ if (isDirectEntry(import.meta.url)) {
   const svelteNoScript = [];
   let svelteTotal = 0;
   let svelteCompiled = 0;
-  for (const file of svelteFiles(repo, roots)) {
+  for (const file of svelteHosts) {
     const svelteText = readFileSync(file, "utf8");
     const examples = extractExamples(svelteText);
     if (examples.length === 0) continue;

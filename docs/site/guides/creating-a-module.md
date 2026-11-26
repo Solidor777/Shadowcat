@@ -61,6 +61,11 @@ Field by field:
   version at **enable time** (a GM toggles the module on) *and* **load time** (a
   client imports it). A community module without this field can never be enabled.
 - **`dependencies`** — other module ids this module needs, with semver ranges.
+- **`conflicts`** *(optional)* — install-folder names of modules that must not be
+  enabled in the same world as yours. The server rejects an enable set holding a
+  declared pair, naming both modules, and the module manager shows the same problem
+  inline and disables Save before the request is sent. Declaring a conflict on
+  one side is enough; the check covers either listing order.
 - **`provides` / `requires`** — UI contract declarations. This module requires
   the panel-manager's `shadowcat.panel` contract and provides nothing of its own.
 - **`requirements`** — declarative path-prefix → capability rules, unioned into
@@ -156,6 +161,126 @@ itself; a tool whose click needs `AppContext`-only seams (`ctx.vfx.play`,
 `$effect`, where `getAppContext()` is available (the `@shadowcat/module-vfx`
 package's `FxToolPanel` is the worked example of that second shape).
 
+## Contributing a guided tour
+
+A module can ship a short guided tour of its own UI. A tour is plain data: you
+contribute it under `TOUR_CONTRACT` (`shadowcat.tour`) and mark the elements it
+points at with `data-tour` anchors. The [onboarding](/modules/onboarding) module
+is the engine that offers, draws and records tours; your module never imports
+it. If onboarding is not enabled in the world, your tour stays inert and costs
+nothing.
+
+A tour is a `TourMeta`:
+
+```ts
+import { TOUR_CONTRACT, type Module, type TourMeta } from "@shadowcat/core";
+
+const tour: TourMeta = {
+  id: "example-tours.intro",
+  labelKey: "example-tours.tour.name",
+  version: 1,
+  audience: "any",
+  scope: "global",
+  trigger: "first-use",
+  steps: [
+    {
+      target: "example-tours.panel",
+      titleKey: "example-tours.tour.panel.title",
+      bodyKey: "example-tours.tour.panel.body",
+      placement: "left",
+    },
+    {
+      target: "example-tours.roll-button",
+      titleKey: "example-tours.tour.roll.title",
+      bodyKey: "example-tours.tour.roll.body",
+      placement: "bottom",
+    },
+  ],
+};
+
+export const exampleTours: Module = {
+  manifest: {
+    id: "example-tours",
+    version: "0.1.0",
+    dependencies: {},
+    requires: [],
+    provides: [],
+  },
+  register(ctx) {
+    ctx.i18n.addMessages("en", {
+      "example-tours.tour.name": "Example tour",
+      "example-tours.tour.panel.title": "The example panel",
+      "example-tours.tour.panel.body": "This panel holds everything the module does.",
+      "example-tours.tour.roll.title": "Roll",
+      "example-tours.tour.roll.body": "Press this to make a roll.",
+    });
+    ctx.contributions.contribute({
+      id: "example-tours:tour",
+      contract: TOUR_CONTRACT,
+      component: null,
+      tour,
+    });
+  },
+};
+```
+
+The registry validates the tour when you contribute it, and `contribute` throws on
+a malformed one (an unknown key, no steps, a bad enum value, an empty id or key).
+Every field is required:
+
+| Field | Meaning |
+|---|---|
+| `id` | Namespaced tour id. It is the key the user's done-state is stored under, so keep it stable. |
+| `labelKey` | i18n key for the tour's name, shown in the "Replay tours" list. |
+| `version` | Positive integer. Raise it to offer the tour again to users who finished an older version. |
+| `audience` | `"gm"` and `"player"` match that world role exactly (a spectator matches neither). `"admin"` matches a server admin. `"any"` matches everyone. |
+| `scope` | `"global"` records done-state once per account. `"world"` records it once per world, for a tour that differs between worlds. |
+| `trigger` | `"first-use"` offers the tour automatically. `"manual"` runs it only from the replay list. |
+| `steps` | At least one step: `target`, `titleKey`, `bodyKey` and `placement` (`"top"`, `"bottom"`, `"left"`, `"right"` or `"center"`). |
+
+Choose `"manual"` for a tour of a panel that starts closed. The tour needs its
+target on screen, and a closed panel has none, so an automatic offer would have
+nothing to point at.
+
+### Anchors
+
+A step's `target` is an **anchor id**, never a CSS selector. The id is the value
+of a `data-tour` attribute, so a tour cannot reach into another module's markup.
+An id may use letters, digits and `.`, `_`, `:`, `-` only; any other character
+fails validation. Namespace ids with your module id.
+
+Put the attribute on an element your own component renders. Anchor ids are
+matched by their first match in document order:
+
+```svelte
+<section class="example-panel" data-tour="example-tours.panel">
+  <button type="button" data-tour="example-tours.roll-button">Roll</button>
+</section>
+```
+
+A contribution rendered through a `<Surface>` host can also set
+`tourAnchor: "example-tours.panel"` on the contribution itself. The surface then
+wraps the component in a `display: contents` element carrying the attribute, and
+the engine measures that wrapper's first element child. A panel or scene tool is
+not rendered through `<Surface>`, so for those put `data-tour` on the component's
+own root.
+
+A step whose anchor is not mounted is **skipped**, not failed. That makes a tour
+safe when a module is disabled or the user cannot see a control. A GM-only step
+simply disappears for a player, because the element is never rendered for them.
+A tour with no mountable step is never offered, and "Replay" tells the user that
+the tour has nothing to show on the current screen.
+
+### What the engine does with your tour
+
+- It offers at most **one** automatic tour per session, in module registration
+  order, as a toast with Take Tour, Not Now and Disable Tutorials. Tours that were not
+  offered wait for a later session or the replay list.
+- A finished or skipped tour (Skip, Done or Escape) records its `version` as done
+  and is not offered again until you raise the version. Not Now records the offered tour as done too; Disable Tutorials records every registered tour as done and stops all offers.
+- A server operator can switch off all automatic offers with `onboarding_enabled`
+  (see the [hosting guide](/guides/hosting)). Replay still works.
+
 ## Styling and theming
 
 The host UI is themed by CSS custom properties ("tokens") on the document root.
@@ -163,7 +288,7 @@ Users pick among built-in themes and can author their own, so **your module must
 not hardcode colors** — a hex literal that looks right today goes dark-on-dark
 under a different theme.
 
-- **Consume the semantic tokens.** Reference the host's tier-2 tokens with plain
+- **Consume the semantic tokens.** Reference the host's semantic tokens with plain
   `var(--*)` in your component styles: `--surface-base` / `--surface-raised` /
   `--surface-overlay` (backgrounds), `--text-primary` / `--text-muted`,
   `--accent` / `--accent-hover` / `--accent-active` / `--on-accent`, `--border`,
@@ -221,6 +346,89 @@ Three things this snippet does right — copy all three:
 3. **`ctx.canEdit` is advisory.** It mirrors the server's write check so you can
    hide dead controls; the server re-checks every write regardless.
 
+## Persisting module settings
+
+`ctx.settings` stores a module's own settings in two scopes. The module never
+passes its id; every call is scoped to the module that received the context.
+
+- **World scope** — `getWorld()` / `setWorld(patch)`. The data lives in the world's
+  `module-settings` document (the module's slice of its `system` band) and is shared
+  by every player in the world. `setWorld` merges the patch as one Update with one
+  field change per top-level key, so keys the patch does not name are untouched. It
+  is an ordinary optimistic write: only a user with write access to that document
+  (the GM by default) succeeds, and a write the server refuses rolls back like any
+  other rejected intent. The returned promise settles when the intent is sent, not
+  when the server replies.
+- **Account scope** — `getUser()` / `setUser(patch)`. The data lives in the signed-in
+  user's account-wide UI state and follows them across worlds and devices.
+  `setUser` merges the patch (a `null` value removes that key) and resolves once the
+  server accepts it. `getUser()` is a snapshot read when the session started, updated
+  by this module's own `setUser` calls.
+
+Values are opaque JSON; the engine never interprets them.
+
+## Placing effects on a player's behalf
+
+A module can let a player place an area that carries effects, for example a spell whose
+area the player chooses. The effects are never the player's to choose: the module
+declares them in its manifest, and the **server** authorises each placement against that
+declaration. No module code runs on the server for this.
+
+Declare each placeable effect under `placements` in `module.json`:
+
+```json
+"placements": [
+  {
+    "id": "fireball",
+    "label": "Fireball",
+    "who": "caster_owner",
+    "shapes": ["circle"],
+    "maxExtent": 12,
+    "durationSecs": 60,
+    "maxRangeCells": 6,
+    "behavior": "terrain",
+    "cost": 1,
+    "triggers": [
+      { "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }
+    ]
+  }
+]
+```
+
+- `id` names the declaration within your module.
+- `who` says who may place it: `gm`, `player` (any player in the world) or
+  `caster_owner` (the request must name a caster token on the scene that the sender
+  effectively owns). A GM may always place.
+- `shapes` lists the allowed area kinds (`circle`, `rect`, `polygon`) and `maxExtent` is
+  the largest bounding-box side of the area, in scene units.
+- `durationSecs` (optional) is how long the placed area lasts, from the moment the server
+  commits it, in whole seconds (1 to 2,592,000, which is 30 days). The server then deletes the
+  region; the stamp is stored in the region document, so a restart does not extend it. Left
+  out, the area lasts until a GM deletes it.
+- `maxRangeCells` (optional) is the farthest the area's centre may be from the caster token,
+  in grid cells. The server measures the straight-line span between the caster's position and
+  the centre of the area's bounding box, divided by the scene's cell size. When it is set, a
+  player's request must name a caster token the player effectively owns on the scene, whatever
+  `who` says. A GM who names a caster is held to the range too; a GM who names none is not.
+- `behavior`, `cost`, `triggers` and `elevation` are the region's effect set, exactly as
+  the region document defines them. The server builds the region from these and
+  validates it before creating it.
+
+A declaration that does not parse or validate is dropped with a warning in the server
+log; the rest of the module still loads.
+
+From the client, send only the area through `ctx.placeEffect`:
+
+```ts
+await ctx.placeEffect("my-module", "fireball", sceneId, { kind: "circle", points: [x, y, 3] }, casterTokenId);
+```
+
+The promise rejects with the server's reason when the placement is refused. A player
+sees the single wording "placement rejected" for every refusal; a GM sees the specific
+reason, and an area outside `maxRangeCells` is refused the same way. A placed region lasts
+for its `durationSecs`, or until a GM deletes it when none is declared. If your module also declares a
+validator, it still judges the created region and can refuse it.
+
 ## Install, enable, dev loop
 
 **Install** (production): build, then copy `dist/index.js` + `module.json` (plus
@@ -251,6 +459,26 @@ next load of that world (no hot enable/disable).
    Your module always loads through the real modules-folder → server →
    import-map path — never a static import — matching production exactly.
 
+## Plain-HTTP LAN play
+
+A server bound beyond loopback and reached over plain HTTP at a LAN address is
+not a secure context, so the browser withholds every `[SecureContext]` API there:
+`crypto.randomUUID`, `crypto.subtle`, the clipboard, service workers,
+`navigator.mediaDevices` and `AudioContext.audioWorklet`, `navigator.storage`,
+`navigator.locks`, `navigator.credentials`, `navigator.share`, `navigator.gpu`
+and `caches`. The withheld member reads as `undefined`, so reading it is silent
+but calling it, or reaching through it, throws a `TypeError`:
+`crypto.randomUUID()`, `navigator.share(...)` and
+`navigator.clipboard.writeText(...)` all throw on such a client. Your unit tests
+(Node) and a loopback browser session never see it. A member the client only
+reads as a property, such as `navigator.deviceMemory`, yields `undefined` without
+throwing and is not banned.
+Build ids with `randomUuid` from `@shadowcat/core`, which falls back to
+`crypto.getRandomValues` (available everywhere). For any other member, feature-detect
+it and degrade rather than assuming it exists. The engine's own modules are held to
+this by a lint gate that also rejects destructured, optional-chained and
+string-keyed spellings.
+
 ## Testing
 
 - **Unit tests** run in your module's own package with vitest against
@@ -262,6 +490,15 @@ next load of that world (no hot enable/disable).
   a browser: build your module, stage its output as an installed module, spawn
   `test_server --modules-dir <staged-dir>`, log in, and assert the HTTP surface
   (`GET /api/modules`, the enable route, and the static entry serve).
+- **Browser end-to-end specs inside a Shadowcat checkout**: the Playwright
+  loopback server starts with `SHADOWCAT_MODULES_DIR` pointing at
+  `src/client/shell/e2e-support/fixture-modules/`. Each folder there is a
+  test-only installed module (`module.json` plus a plain `index.js`) that a spec
+  enables through the module manager. The folder is outside `dist/` and the
+  release binary, and no world enables a fixture unless a spec does. The
+  `vision-kind-fixture` module there registers a custom vision treatment on
+  `VISION_TREATMENT_CONTRACT`. A reused loopback server keeps the environment it
+  started with, so restart it when you add a fixture folder.
 
 ## Reference
 

@@ -1,5 +1,5 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page, Browser, BrowserContext } from "@playwright/test";
+import type { Page, Browser, BrowserContext, Request } from "@playwright/test";
 import { PERFORMANCE_STORAGE_KEY } from "@shadowcat/core";
 
 /** The full-fidelity mirror seed every e2e session boots with. The shell's boot-time auto
@@ -49,6 +49,12 @@ export async function newE2EContext(
 
 /** Logs `page` in as `username`/`password` via the real login form. Shared by every spec (in
  * place of each file's own duplicated inline sequence) and by the worker `account` fixture below.
+ *
+ * INVARIANT: a failed same-origin `/assets/` fetch while the login page loads fails this call at
+ * once, naming the request and its network error. The client is a module graph, so one failed
+ * module fetch (measured: `net::ERR_NO_BUFFER_SPACE`, an OS socket-buffer error on the Windows
+ * loopback) means the form can never mount, and without this the only symptom is a 120 s test
+ * timeout reading "waiting for Username" that points at nothing.
  * @param page - The page to log in.
  * @param username - The account's username.
  * @param password - The account's password.
@@ -63,8 +69,24 @@ export async function login(
   username: string,
   password: string,
 ): Promise<void> {
-  await page.goto("/");
-  await page.getByLabel("Username").fill(username);
+  let onFailed: (request: Request) => void = () => {};
+  const appLoadFailure = new Promise<never>((_, reject) => {
+    onFailed = (request) => {
+      const errorText = request.failure()?.errorText ?? "";
+      if (errorText === "net::ERR_ABORTED" || !request.url().includes("/assets/")) return;
+      reject(new Error(`login page never loaded: ${request.url()} failed with ${errorText}`));
+    };
+  });
+  appLoadFailure.catch(() => {});
+  page.on("requestfailed", onFailed);
+  try {
+    await page.goto("/");
+    const usernameField = page.getByLabel("Username");
+    await Promise.race([usernameField.waitFor({ state: "visible" }), appLoadFailure]);
+    await usernameField.fill(username);
+  } finally {
+    page.off("requestfailed", onFailed);
+  }
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Log in" }).click();
 }
@@ -94,9 +116,8 @@ export async function openPanel(page: Page, contributionId: string): Promise<voi
     // Already open: dismiss the menu we just opened via Escape rather than re-clicking the
     // trigger — the full-viewport `sc-launcher-backdrop` (`onpointerdown` dismissal) sits above
     // the trigger while the menu is open and intercepts a second trigger click, hanging the
-    // action on actionability retries forever. `openMenu` already moved focus onto the first
-    // item, whose own `onkeydown` handles Escape (`MenuKeyboard`'s Escape branch) identically to
-    // the trigger's.
+    // action on actionability retries forever. The open menu's `MenuKeyboard` registration with
+    // `escapeCoordinator` closes it on Escape wherever focus sits.
     await page.keyboard.press("Escape");
   }
 }

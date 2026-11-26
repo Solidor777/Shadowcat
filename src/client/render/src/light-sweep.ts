@@ -55,8 +55,48 @@ function pointInRings(x: number, y: number, rings: [number, number][][]): boolea
 }
 
 /**
+ * Whether a point lies inside a cone light's arc: the same test as the server's `cone_admits`,
+ * pinned to it by the shared `light-cone.json` fixture. No `angle` is the full-circle radial
+ * light and admits everything; the light's own position is always admitted (its bearing is
+ * undefined); a non-finite `angle` or `rotation` admits nothing (fail closed). The bearing from
+ * the light to the point (`atan2`, degrees, `0` = +x, growing toward +y) is folded against
+ * `rotation` into `[-180, 180)` and admitted when its magnitude is at most half the arc.
+ * @param pos The light's scene-coordinate `[x, y]` position.
+ * @param angle The arc width in degrees, or `undefined` for a radial light.
+ * @param rotation The arc bisector's direction in degrees; any finite value.
+ * @param x The probe's scene x.
+ * @param y The probe's scene y.
+ * @returns `true` when the point is inside the arc.
+ * @example
+ * ```ts
+ * import { coneAdmits } from "./light-sweep";
+ *
+ * coneAdmits([0, 0], 90, 0, 10, 0); // true: straight ahead
+ * coneAdmits([0, 0], 90, 0, -10, 0); // false: directly behind
+ * ```
+ */
+export function coneAdmits(
+  pos: [number, number],
+  angle: number | undefined,
+  rotation: number,
+  x: number,
+  y: number,
+): boolean {
+  if (angle === undefined) return true;
+  if (!Number.isFinite(angle) || !Number.isFinite(rotation)) return false;
+  const dx = x - pos[0];
+  const dy = y - pos[1];
+  if (dx === 0 && dy === 0) return true;
+  const bearing = Math.atan2(dy, dx) * (180 / Math.PI);
+  // Floored modulo (`rem_euclid`): JS `%` keeps the dividend's sign.
+  const folded = ((((bearing - rotation + 180) % 360) + 360) % 360) - 180;
+  return Math.abs(folded) <= angle / 2;
+}
+
+/**
  * The lit cells one carried-light sample contributes: every cell of `grid` whose center lies
- * within `dim` of `sample.pos`, inside one of the sample's occlusion polygons, AND inside one
+ * within `dim` of `sample.pos`, inside the sample's cone arc when it has one (`coneAdmits`),
+ * inside one of the sample's occlusion polygons, AND inside one
  * of the viewer's own line-of-sight polygons (`los`, the fog's `visible` set — the server
  * never clips the glow to the recipient's sight, so the client intersects here). A cell within
  * `bright` resolves to the brightest band; the rest of the disc to band 1 (the second band,
@@ -116,6 +156,7 @@ export function lightSampleCells(
       const center = grid.cellCenter(col, row);
       const d = Math.hypot(center.x - px, center.y - py);
       if (d > dim) continue;
+      if (!coneAdmits(sample.pos, sample.angle, sample.rotation ?? 0, center.x, center.y)) continue;
       if (losRings !== null && !losRings.some((ring) => pointInFlatRing(center.x, center.y, ring))) continue;
       if (!pointInRings(center.x, center.y, sample.polygons)) continue;
       const band = d <= bright ? 0 : Math.min(1, Math.max(0, bandCount - 1));

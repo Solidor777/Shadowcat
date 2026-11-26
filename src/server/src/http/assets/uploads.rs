@@ -1,7 +1,9 @@
-//! Resumable chunked upload sessions: a GM opens a session, appends chunks
-//! at explicit offsets, then completes (or aborts) it. Sessions live in
-//! memory only — they survive a dropped connection, not a server restart —
-//! and idle ones are swept with their staging file.
+//! This module serves resumable chunked upload sessions.
+//!
+//! A GM opens a session, appends chunks at explicit offsets, then completes (or aborts) it.
+//! Sessions live in memory only — they survive a dropped connection, not a server restart — and
+//! idle ones are swept with their staging file.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -26,6 +28,7 @@ use crate::data::engine::ASSET_FOLDER_DOC_TYPE;
 use crate::data::repository::Repository;
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
+use crate::trash::Trash;
 
 use super::{detect_audio_type, detect_image_type, label_content_type, UploadRateLimiter};
 
@@ -469,14 +472,14 @@ impl Default for UploadSessions {
     }
 }
 
-/// Remove `session`'s staging file and give its rate slot back.
-async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
-    remove_asset_files(&session.staged).await;
+/// Move `session`'s staging file into `trash` and give its rate slot back.
+async fn discard(session: &UploadSession, rate: &UploadRateLimiter, trash: &Trash) {
+    remove_asset_files(&session.staged, trash).await;
     rate.refund(session.user, session.rate_hit_ms);
 }
 
 /// Spawn the idle-session sweeper: every `SWEEP_INTERVAL`, expired sessions
-/// lose their staging file and get their rate slot refunded.
+/// move their staging file into `trash` and get their rate slot refunded.
 ///
 /// # Examples
 ///
@@ -484,6 +487,7 @@ async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
 /// # #[tokio::main] async fn main() {
 /// use shadowcat::http::assets::uploads::{spawn_sweeper, UploadSessions};
 /// use shadowcat::http::assets::UploadRateLimiter;
+/// use shadowcat::trash::{Trash, TrashRetention};
 /// use std::sync::Arc;
 ///
 /// # use shadowcat::http::assets::uploads::UploadSession;
@@ -508,7 +512,8 @@ async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
 ///     last_touch_ms: 0,
 ///     busy: false,
 /// });
-/// spawn_sweeper(uploads.clone(), rate);
+/// let trash = Arc::new(Trash::new(std::env::temp_dir(), TrashRetention::Disabled));
+/// spawn_sweeper(uploads.clone(), rate, trash);
 /// // The interval's first tick fires at once; wait a bounded time for the reap.
 /// let reaped = tokio::time::timeout(std::time::Duration::from_secs(10), async {
 ///     while !uploads.is_empty() {
@@ -519,14 +524,18 @@ async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
 /// assert!(reaped.is_ok(), "the sweeper reaped the idle session");
 /// # }
 /// ```
-pub fn spawn_sweeper(uploads: Arc<UploadSessions>, rate: Arc<UploadRateLimiter>) {
+pub fn spawn_sweeper(
+    uploads: Arc<UploadSessions>,
+    rate: Arc<UploadRateLimiter>,
+    trash: Arc<Trash>,
+) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             tick.tick().await;
             let now = crate::ws::time::now_millis();
             for session in uploads.sweep(now) {
-                discard(&session, &rate).await;
+                discard(&session, &rate, &trash).await;
             }
         }
     });
@@ -646,6 +655,10 @@ pub struct CreateUploadResponse {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
 /// let body = axum::Json(CreateUploadRequest {
@@ -788,6 +801,10 @@ async fn owned_session(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::uploads::put_chunk(
@@ -825,7 +842,7 @@ pub async fn put_chunk(
         }
         Err(ChunkReject::Overflow) => {
             if let Some(session) = state.uploads.remove(id) {
-                discard(&session, &state.upload_rate).await;
+                discard(&session, &state.upload_rate, &state.trash).await;
             }
             return Err(AppError::PayloadTooLarge(
                 "chunk exceeds the declared byte_size".into(),
@@ -857,7 +874,7 @@ pub async fn put_chunk(
             // the session cannot be resumed reliably, so it is aborted.
             tracing::error!(?e, %id, "chunk append failed");
             if let Some(session) = state.uploads.remove(id) {
-                discard(&session, &state.upload_rate).await;
+                discard(&session, &state.upload_rate, &state.trash).await;
             }
             Err(AppError::Internal)
         }
@@ -893,6 +910,10 @@ pub async fn put_chunk(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::uploads::complete_session(
@@ -944,6 +965,7 @@ pub async fn complete_session(
             session.byte_size as i64,
             state.config.retain_originals,
             session.audio_containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -981,9 +1003,16 @@ pub async fn complete_session(
         // Same barrier discipline as the single-shot route: read side held
         // only around the move + row commit, never around the chunk stream.
         let _read_permit = state.write_barrier.read().await;
-        commit_staged_asset(&state.repo, &session.staged, &final_path, asset, &derived)
-            .await
-            .map_err(AppError::from)
+        commit_staged_asset(
+            &state.repo,
+            &session.staged,
+            &final_path,
+            asset,
+            &derived,
+            &state.trash,
+        )
+        .await
+        .map_err(AppError::from)
     }
     .await;
 
@@ -1001,7 +1030,7 @@ pub async fn complete_session(
         Err(e) => {
             // The session is gone either way; the slot goes back because no
             // asset was produced. Files are already cleaned by the failing step.
-            remove_asset_files(&session.staged).await;
+            remove_asset_files(&session.staged, &state.trash).await;
             state.upload_rate.refund(session.user, session.rate_hit_ms);
             Err(e)
         }
@@ -1052,6 +1081,10 @@ async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::uploads::abort_session(
@@ -1069,7 +1102,7 @@ pub async fn abort_session(
 ) -> Result<StatusCode, AppError> {
     owned_session(&state, id, &user).await?;
     if let Some(session) = state.uploads.remove(id) {
-        discard(&session, &state.upload_rate).await;
+        discard(&session, &state.upload_rate, &state.trash).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

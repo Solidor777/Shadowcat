@@ -36,6 +36,13 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "pnpm lint:vendor:upstream"
+tier = "ci-only"
+reason = "Downloads the upstream h2 archive to prove the recorded upstream hashes and the committed patch; a commit hook must not need the network. The offline mode of the same script runs in the commit tier."
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
 tier = "ci-only"
 reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
@@ -81,6 +88,24 @@ tier = "push"
 workflow = "ci.yml"
 job = "rust"
 command = "cargo build --release"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo test -p shadowcat --test asset_open_handle -- --nocapture --test-threads 1"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo test -p shadowcat --test egress_stall --test egress_stall_h2 --test egress_boundary --test h2_ws_drain --test h2_ws_tunnel_backpressure --test ws_h1_stalled_session -- --nocapture"
 tier = "push"
 
 [[gate]]
@@ -202,16 +227,72 @@ reason = "Installs the system PipeWire dev package the audio-monitor's Linux bac
 [[gate]]
 workflow = "ci.yml"
 job = "ui-e2e"
-command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox"
 tier = "setup"
-reason = "Installs the Chromium build the browser e2e step drives; a prerequisite, not a check in its own right."
+reason = "Installs the Chromium build the loopback browser e2e step drives; a prerequisite, not a check in its own right."
 
 [[gate]]
 workflow = "ci.yml"
 job = "ui-e2e"
-command = "pnpm --filter @shadowcat/shell e2e"
+command = "pnpm --filter @shadowcat/shell e2e:build"
+tier = "setup"
+reason = "Builds the client bundle and the server binary the browser e2e step serves; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=loopback --project=media-range-loopback --project=webm-decode-chromium --project=webm-decode-firefox --project=route-prefix --project=onboarding"
 tier = "ci-only"
-reason = "The browser end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding fixed port 31999 outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds the port to the tree under test."
+reason = "The loopback browser end-to-end suite and the media-range spec, which runs against a server of its own with a short egress window, one of the end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding a fixed port outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds those ports to the tree under test."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit"
+tier = "setup"
+reason = "Installs the Chromium, Firefox and WebKit builds the HTTPS projects drive on every OS; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell e2e:build"
+tier = "setup"
+reason = "Builds the client bundle and the server binary the HTTPS projects serve; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "sudo apt-get install -y xvfb at-spi2-core dbus-x11 python3-gi gir1.2-atspi-2.0"
+tier = "ci-only"
+reason = "Installs the virtual display, session bus and AT-SPI packages the Linux browser-UI driver needs; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "interstitial='pnpm --filter @shadowcat/shell exec playwright test --project=https-upgrade-chromium --project=https-upgrade-chromium-named --grep \"Continue to site\"' if [ \"$RUNNER_OS\" = \"Linux\" ]; then dbus-run-session -- xvfb-run -a bash -c \"(/usr/libexec/at-spi-bus-launcher --launch-immediately &) ; sleep 2 ; dbus-send --session --print-reply --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set string:org.a11y.Status string:IsEnabled variant:boolean:true ; $interstitial\" else eval \"$interstitial\" fi"
+tier = "ci-only"
+reason = "Drives Chromium's HTTPS-First prompt, which is browser UI reachable only through the platform accessibility API (UI Automation, System Events, AT-SPI). It needs a real browser window, on Linux a virtual display and accessibility bus, on macOS a granted accessibility permission, and the fixed HTTPS port and non-loopback address the other HTTPS projects use, so only CI's isolated runners are a faithful target."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=lan-plain-http --project=\"https-*\" --grep-invert \"Continue to site\""
+tier = "ci-only"
+reason = "Plain-HTTP LAN play and built-in HTTPS in real browsers on the three-OS matrix, apart from the interstitial driver run by the step above. The projects browse to the machine's own non-loopback address and hold fixed ports (32000, 32001) that playwright.config.ts reuses outside CI, so a developer machine can drive another session's binary; only CI's isolated runner binds them to the tree under test."
 
 [[gate]]
 workflow = "ci.yml"
@@ -272,6 +353,42 @@ tier = "commit"
 [[gate]]
 workflow = "ci.yml"
 job = "docs"
+command = "pnpm lint:module-docs"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:secure-context"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:route-prefix"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:crypto-backend"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:walk-sites"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:vendor"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
 command = "pnpm lint:aria-labels"
 tier = "commit"
 
@@ -304,3 +421,135 @@ workflow = "ci.yml"
 job = "docs"
 command = "pnpm docs:check-rust-examples"
 tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy python3-scipy"
+tier = "ci-only"
+reason = "Installs the generator's tools on the Ubuntu runner, whose image carries none of ffmpeg, NumPy or SciPy; apt-get with sudo exists only there, and a developer machine supplies its own."
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "pnpm lint:audio-fixtures"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "sudo apt-get install -y pulseaudio pulseaudio-utils pulseaudio --start --exit-idle-time=-1 pactl load-module module-null-sink sink_name=ci_null pactl set-default-sink ci_null pactl info"
+tier = "ci-only"
+reason = "Starts a sound server with a null sink on the hosted Linux runner, which has no sound device; Firefox and WebKit leave an AudioContext suspended without one. apt-get with sudo exists only on the Ubuntu runner, and a developer machine has its own audio device."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit"
+tier = "ci-only"
+reason = "The sampled long-audio streaming specs: real-time playback of 20-minute tracks, about two minutes per track per engine and protocol plus the transcode, against a server of its own with a short egress window. Minutes of wall clock and a fixed port, so it stays in CI outside the local tiers, where only the isolated runner attributes a result to the tree under test."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-http-chromium"
+tier = "ci-only"
+reason = "The full 20-minute real-time play-through of one track over plain HTTP (h1): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h2 play-through."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-https-chromium"
+tier = "ci-only"
+reason = "The full 20-minute real-time play-through of one track over HTTPS (h2): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h1 play-through."

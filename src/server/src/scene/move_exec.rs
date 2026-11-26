@@ -1,44 +1,48 @@
-//! Pure, lock-free per-path move executor. Server-authoritative movement, engine-agnostic.
+//! This module executes one move along a path: pure, lock-free, server-authoritative and
+//! engine-agnostic.
 //!
 //! `execute_move` is built on `gate_walk`, which subdivides ANY input polyline — grid A*
 //! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —
 //! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
 //! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
 //! dense walk, validating each dense sub-step against the SAME predicate set
-//! `pathfinding::cell_enterable` uses for routing:
-//! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
-//!   `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
-//!   (`ecs.move_walls(scene, None, mover_elevation)`) — both are
-//!   required; the disc test alone lets a wall between two adjacent cell centers become
-//!   permeable at the default 0.4-cell footprint,
-//! - the caller-supplied `visible` mask (skipped for `Unrestricted`) over
-//!   `footprint_cells ∪ line_traversal`, not the center point alone,
-//! - the region field: impassable is footprint-gated (a wide body cannot fit past
-//!   impassable terrain any more than a wall); arrest and terrain stay CENTER-CELL only, mirroring
-//!   `cell_enterable`'s documented asymmetry (they act on the mover's own position, not solid
-//!   geometry it must clear). Always reads the AUTHORITATIVE field for the mover's floor
-//!   (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
-//!   regardless of what the mover's own pathfind preview could see.
+//! `pathfinding::cell_enterable` uses for routing. The predicate set has three gates.
 //!
-//! Returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
-//! when the move stops before `path.last()` for any reason (wall, mask, region-impassable,
-//! region-arrest, or an exhausted movement `MoveGateInputs::budget`), including a region-arrest
-//! on the final path step.
+//! The wall gate applies a footprint-disc clearance test AND a center-to-center segment-crossing
+//! test against every `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
+//! (`ecs.move_walls(scene, None, mover_elevation)`), minus per step any one-way wall whose
+//! transparent side faces the pre-step point (`vision::Seg::transparent_from` — the shared
+//! predicate the sight raycast and the router read, so the three never disagree on which side of
+//! a wall is solid). Both checks are required; the disc test alone lets a wall between two
+//! adjacent cell centers become permeable at the default 0.4-cell footprint.
 //!
-//! INVARIANT (route-gate parity): step 2 calls `GridShape::line_traversal(prev,
-//! next, cell)` (via `ecs.resolve_grid_shape`) and checks `all ∈ visible` over
-//! `footprint_cells ∪ line_traversal` — square delegates to `movement::supercover_cells`, hex to
-//! a ψ-crossing supercover, so the predicate agrees on every cell on BOTH grid kinds, not square
-//! alone. This is the SAME predicate set `pathfinding::cell_enterable` uses when routing: on
-//! `GridStepped`, route-admissible ⇔ gate-admissible for a non-GM mover (the parity tests in this
-//! file pin the equivalence); on `Continuous` the two evaluate at different granularity (dense
-//! `gate_walk` sampling vs the router's cell-center check), so only the weaker route ⊆
-//! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision —
-//! there is no separate gate to keep in sync. The caller pre-computes `visible` off the ECS read
-//! lock, so this executor is pure and imposes no lock ordering.
+//! The vision-mask gate tests the caller-supplied `visible` mask (skipped for `Unrestricted`) over
+//! `footprint_cells ∪ line_traversal`, not the center point alone.
 //!
-//! Coupling: `token_position` is the ECS committed-position seam; any rename
-//! must update both this caller and `SceneEcs::token_move`.
+//! The region gate reads the AUTHORITATIVE field for the mover's floor
+//! (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
+//! regardless of what the mover's own pathfind preview could see. Impassable is footprint-gated (a
+//! wide body cannot fit past impassable terrain any more than a wall); arrest and terrain stay
+//! CENTER-CELL only, mirroring `cell_enterable`'s documented asymmetry (they act on the mover's
+//! own position, not solid geometry it must clear).
+//!
+//! The executor returns the stop point, the legal prefix render-path and the accumulated cost.
+//! `truncated` is true when the move stops before `path.last()` for any reason (wall, mask,
+//! region-impassable, region-arrest, or an exhausted movement `MoveGateInputs::budget`),
+//! including a region-arrest on the final path step.
+//!
+//! INVARIANT (route-gate parity): the vision-mask gate calls
+//! `GridShape::line_traversal(prev, next, cell)` (via `ecs.resolve_grid_shape`) and checks
+//! `all ∈ visible` over `footprint_cells ∪ line_traversal` — square delegates to
+//! `movement::supercover_cells`, hex to a ψ-crossing supercover, so the predicate agrees on every
+//! cell on BOTH grid kinds, not square alone. This is the SAME predicate set
+//! `pathfinding::cell_enterable` uses when routing: on `GridStepped`, route-admissible ⇔
+//! gate-admissible for a non-GM mover (the parity tests pin the equivalence); on `Continuous` the
+//! two evaluate at different granularity (dense `gate_walk` sampling vs the router's cell-center
+//! check), so only the weaker route ⊆ gate-allowed direction holds. `execute_move` is the sole
+//! per-cell traversal decision — there is no separate gate to keep in sync. The caller
+//! pre-computes `visible` off the ECS read lock, so this executor is pure and imposes no lock
+//! ordering.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -303,8 +307,8 @@ pub(crate) struct MoveGateInputs<'a> {
     pub mover_elevation: f64,
 }
 
-/// Walk `path` step by step, validating each step against the wall gate (step 1), the
-/// vision-mask gate (step 2), and the region field (step 3).
+/// Walk `path` step by step, validating each step against the wall gate, the vision-mask gate,
+/// and the region gate.
 ///
 /// # Engine-agnostic gate walk
 ///
@@ -317,7 +321,7 @@ pub(crate) struct MoveGateInputs<'a> {
 ///
 /// # Parity with `pathfinding::cell_enterable` — per-cell decision and per-step cost
 ///
-/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the router's
+/// The per-cell decision (the wall gate and the vision-mask gate) uses the SAME primitives as the router's
 /// `cell_enterable`: wall-segment crossing (`segments_cross`, the primitive `blocks_move`
 /// wraps), footprint-disc clearance, `GridShape::line_traversal` (a supercover on both grid
 /// kinds — square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the
@@ -438,7 +442,7 @@ pub(crate) fn execute_move(
     // Authoritative region field for the mover's floor: always the full field, never
     // viewer-filtered — this executor springs secret regions regardless of what the mover's
     // pathfind preview could see.
-    let Some(regions) = ecs.region_field(scene, None, mover_elevation) else {
+    let Some(regions) = ecs.region_field(scene, None, mover_elevation, Some(token)) else {
         return Err(MoveReject::SceneUnknown);
     };
 
@@ -478,6 +482,9 @@ pub(crate) fn execute_move(
     let movement_model = ecs.resolve_scene(scene).movement_model;
     let mut parity: u8 = 0;
     let world_per_cell = grid.world_units_per_cell();
+    // The diagonal rule shapes only a square grid's neighbor set; a hex grid ignores it.
+    let orthogonal_only = ecs.resolve_grid_kind(scene) == crate::scene::GridKind::Square
+        && ecs.resolved_diagonal_rule() == crate::scene::pathfinding::DiagonalRule::Orthogonal;
 
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
@@ -508,18 +515,27 @@ pub(crate) fn execute_move(
         // point to a single canonical cell, so the mask/impassable disc and the wall disc can
         // share one anchor with no degenerate multi-cell admission at any radius.
 
-        // Step 1: wall gate — every dense sub-segment, exempt for a GM. TWO checks,
+        // Wall gate — every dense sub-segment, exempt for a GM. TWO checks,
         // both from `cell_enterable`: the footprint disc at
         // `next` must clear every wall, AND the center-to-center step segment must cross none.
         // The disc alone is insufficient — at a 0.4-cell footprint a wall midway between
         // adjacent cell centers sits 0.5 cell away and would pass, making walls permeable on
         // the sole remaining check.
+        //
+        // One-way walls (`vision::Seg::one_way`, populated by `move_wall_entries` from
+        // `WallEngine::direction`) are filtered out of BOTH checks for this step when the
+        // PRE-STEP point `prev` sits on the wall's transparent side
+        // (`vision::Seg::transparent_from` — the same cross-product predicate the sight
+        // raycast applies to the ray origin): a mover may walk IN across the transparent
+        // side and is then gated from the blocking side exactly as by an ordinary wall.
         if check_walls {
             let disc_blocked = gate_walls
                 .iter()
+                .filter(|w| !w.transparent_from(prev))
                 .any(|w| crate::scene::vision::point_segment_distance(next, w.a, w.b) < r_scene);
             let crossed = gate_walls
                 .iter()
+                .filter(|w| !w.transparent_from(prev))
                 .any(|w| crate::scene::segments_cross(prev, next, w.a, w.b));
             if disc_blocked || crossed {
                 stopped_early = true;
@@ -527,7 +543,7 @@ pub(crate) fn execute_move(
             }
         }
 
-        // Step 2: vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
+        // Vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
         // center — the same `footprint_cells ∪ line_traversal` union `cell_enterable` requires.
         // This density is exactly why gate_walk exists: line_traversal
         // is well-defined and dense enough to cover the swept footprint for an any-angle
@@ -544,7 +560,7 @@ pub(crate) fn execute_move(
             }
         }
 
-        // Step 3: region gate, keyed on CELL-ENTRY TRANSITIONS, not per dense sample
+        // Region gate, keyed on CELL-ENTRY TRANSITIONS, not per dense sample
         // — a continuous path subdivided into several sub-cell samples within the same cell
         // is evaluated exactly once for that cell. For grid input that is one accrual per
         // authored step, since every authored step crosses into a distinct new
@@ -559,7 +575,7 @@ pub(crate) fn execute_move(
         // rejecting, so a duplicate-cell transition would silently fall through this dedup rather
         // than being caught by a separate check.
         if next_cell != last_region_cell {
-            // Impassable IS footprint-gated (`cell_enterable`'s check 4):
+            // Impassable IS footprint-gated (`cell_enterable`'s region gate):
             // a wide body cannot fit past impassable terrain any more than past a wall.
             if check_regions {
                 let fp_cells = grid.footprint_cells(next_cell, next, r_scene, cell);
@@ -580,21 +596,33 @@ pub(crate) fn execute_move(
             // exactly as unweighted here and in the router. Cost accrues regardless of the
             // gameplay exemption; only `budget` can stop the walk on cost.
             let step = match movement_model {
-                MovementModel::GridStepped => grid
-                    .neighbors_with_cost(last_region_cell, parity)
-                    .into_iter()
-                    .find(|(c, _, _)| *c == next_cell)
-                    .map(|(_, sc, p)| {
-                        parity = p;
-                        sc
-                    })
-                    .unwrap_or_else(|| euclidean_span_cells(prev, next, world_per_cell)),
+                MovementModel::GridStepped => {
+                    let listed = grid
+                        .neighbors_with_cost(last_region_cell, parity)
+                        .into_iter()
+                        .find(|(c, _, _)| *c == next_cell);
+                    // `Orthogonal` is a movement rule, not only a routing preference: a
+                    // non-GM step the shape's neighbor set omits is a diagonal the rule
+                    // forbids, so it halts the walk like any other gameplay gate. Without
+                    // this a hand-built path walks diagonals at the cheaper Euclidean span.
+                    if listed.is_none() && check_regions && orthogonal_only {
+                        stopped_early = true;
+                        break;
+                    }
+                    match listed {
+                        Some((_, sc, p)) => {
+                            parity = p;
+                            sc
+                        }
+                        None => euclidean_span_cells(prev, next, world_per_cell),
+                    }
+                }
                 MovementModel::Continuous => {
                     euclidean_span_cells(last_transition_pos, next, world_per_cell)
                 }
             };
             let step_cost =
-                step * crate::scene::pathfinding::terrain_cost(Some(&regions), next_cell, traits);
+                step * crate::scene::pathfinding::terrain_cost(Some(&regions), next_cell, &traits);
             if check_budget {
                 if let Some(b) = budget {
                     if !crate::scene::pathfinding::budget_admits_step(cost, step_cost, b) {
@@ -637,7 +665,7 @@ pub(crate) fn execute_move(
         let stop_pos = walk[stop_idx].pos;
         let stop_cell = to_cell(stop_pos);
         cost += euclidean_span_cells(last_transition_pos, stop_pos, world_per_cell)
-            * crate::scene::pathfinding::terrain_cost(Some(&regions), stop_cell, traits);
+            * crate::scene::pathfinding::terrain_cost(Some(&regions), stop_cell, &traits);
     }
 
     // --- Coarse render_path: authored vertices fully traversed + the exact stop point ---
@@ -672,6 +700,53 @@ pub(crate) fn execute_move(
         entered_cells,
         arrested,
     })
+}
+
+/// The `TokenEngine::rotation` that faces a token along the straight line from `start` to
+/// `stop`, degrees normalised to `[0, 360)`. Convention shared with `LightEmission::rotation`:
+/// `0` points along +x and the angle grows toward +y (clockwise on the y-down canvas), so this
+/// is `atan2(dy, dx)` of the displacement and any reader of a token's rotation as a direction
+/// inverts it with `(cos, sin)` of the same angle.
+///
+/// A `start == stop` pair has no direction; it returns `prior_rotation` unchanged so a
+/// degenerate call never snaps a token to an arbitrary heading. `Room::execute_move` reaches
+/// this only after its zero-progress return, so it never passes such a pair.
+///
+/// # Examples
+///
+/// ```text
+/// bearing_degrees((0.0, 0.0), (0.0, 5.0), 10.0)  // 90.0: +y is a quarter turn clockwise
+/// bearing_degrees((1.0, 1.0), (1.0, 1.0), 10.0)  // 10.0: no direction, the prior rotation
+/// ```
+pub(crate) fn bearing_degrees(start: (f64, f64), stop: (f64, f64), prior_rotation: f64) -> f64 {
+    let (dx, dy) = (stop.0 - start.0, stop.1 - start.1);
+    if dx == 0.0 && dy == 0.0 {
+        return prior_rotation;
+    }
+    let degrees = dy.atan2(dx).to_degrees();
+    // `rem_euclid` maps the `(-180, 180]` atan2 range onto `[0, 360)`; it can round a tiny
+    // negative angle up to exactly 360.0, which folds back to 0.
+    let wrapped = degrees.rem_euclid(360.0);
+    if wrapped >= 360.0 {
+        0.0
+    } else {
+        wrapped
+    }
+}
+
+/// The direction a token looks, radians, from its `TokenEngine::rotation` (degrees): the exact
+/// inverse of `bearing_degrees`, so `token_facing_radians(bearing_degrees(a, b, _))` is
+/// `atan2(b.y - a.y, b.x - a.x)` up to a `2π` wrap. `0` = +x, growing toward +y (clockwise on the
+/// y-down canvas). `bearing_degrees` (auto-rotate) writes the heading and this reads it back, so
+/// the facing-limited field of view and auto-rotate share one angle convention.
+///
+/// # Examples
+///
+/// ```text
+/// token_facing_radians(90.0)  // π/2: +y, a quarter turn clockwise
+/// ```
+pub(crate) fn token_facing_radians(rotation_deg: f64) -> f64 {
+    rotation_deg.to_radians()
 }
 
 #[cfg(test)]

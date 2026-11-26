@@ -179,6 +179,39 @@
     });
   }
 
+  // Roll-mode picker: each entry is a leading command the server's `parse_command` already
+  // accepts. Picking one rewrites the visible draft's leading roll command, so the user reads
+  // exactly what will be sent and the server stays the only parser of what it means.
+  const ROLL_MODES = [
+    { command: "/blindroll ", labelKey: "chat.composer.rollModeBlind" },
+    { command: "/selfroll ", labelKey: "chat.composer.rollModeSelf" },
+  ] as const;
+  // Every leading roll command the picker replaces: the picker's own, their aliases, and `/roll`.
+  const REPLACEABLE_ROLL_COMMANDS = ["/blindroll ", "/br ", "/selfroll ", "/sr ", "/roll ", "/r "];
+  let rollMode = $state("");
+
+  /** Puts `command` at the start of the draft, replacing a roll command the draft already
+   * starts with, then returns focus to the textarea and resets the picker to its prompt.
+   * @param command One of the picker's `ROLL_MODES` commands, trailing space included.
+   * @example
+   * ```
+   * // internal; wired to the roll-mode select's change handler
+   * applyRollMode("/blindroll ");
+   * ```
+   */
+  function applyRollMode(command: string): void {
+    if (!command) return;
+    let body = value.trimStart();
+    const existing = REPLACEABLE_ROLL_COMMANDS.find((c) => body.startsWith(c));
+    if (existing) body = body.slice(existing.length);
+    value = command + body;
+    rollMode = "";
+    queueMicrotask(() => {
+      autoGrow();
+      textarea?.focus();
+    });
+  }
+
   // The server's player-presentable rejection reason for the last send, shown
   // inline so a refused message does not vanish silently. Already classified
   // server-side (authorization/existence/internal errors are generic there).
@@ -277,6 +310,11 @@
     try {
       const outgoing = await ctx.hooks.emitMutate("chat:composer-send", { text: trimmed, cancel: false });
       if (outgoing.cancel) return;
+      // History keeps the raw typed text (a `/` command prefix included), not the hook-rewritten
+      // or server-sanitized form, so a recall resends exactly what the author typed.
+      ctx.uiState.pushChatHistory(draftAtSend.trim());
+      historyIndex = -1;
+      draft = "";
       // /-commands (e.g. "/roll 1d6") ride verbatim past THIS composer — the server
       // (chat::parse_command) is the sole parser that decides what a command MEANS
       // (MessageKind, whisper targets); a module may still rewrite the text above via the hook
@@ -329,7 +367,82 @@
    */
   function onInput(): void {
     errorMsg = null;
+    historyIndex = -1;
     autoGrow();
+  }
+
+  /** Position in `ctx.uiState.getChatHistory()` of the entry currently recalled into the input;
+   * `-1` while the input holds the author's own draft. Not reactive: only the key handler reads it. */
+  let historyIndex = -1;
+  /** The author's in-progress text, saved when recall starts and restored when the author steps
+   * back past the newest entry, so a habitual ArrowUp never discards an unsent draft. */
+  let draft = "";
+  /** The exact text last written by recall; while `value` still equals it, the input is
+   * navigating history rather than being edited. */
+  let recalled = "";
+
+  /** Writes `text` into the input, places the caret, and re-measures the height.
+   * @param text The text to show.
+   * @param caret `"start"` or `"end"`: where the caret lands, so a repeated arrow press keeps navigating.
+   * @example
+   * ```
+   * // internal; used by recallHistory
+   * showText("hello", "end");
+   * ```
+   */
+  function showText(text: string, caret: "start" | "end"): void {
+    value = text;
+    const el = textarea;
+    queueMicrotask(() => {
+      autoGrow();
+      const at = caret === "start" ? 0 : text.length;
+      el?.setSelectionRange(at, at);
+    });
+  }
+
+  /** ArrowUp/ArrowDown history recall over the author's own sent texts, newest first. Recall
+   * starts only from a collapsed caret at the very start (up) or very end (down) of the input,
+   * so ordinary caret movement through a multi-line draft is untouched; once an entry is
+   * recalled and unedited, a single-line entry navigates from any caret position. Stepping down
+   * past the newest entry restores the saved draft.
+   * @param e The ArrowUp/ArrowDown keydown, `preventDefault`ed only when recall acts.
+   * @example
+   * ```
+   * // internal; called from onKeydown
+   * recallHistory(new KeyboardEvent("keydown", { key: "ArrowUp" }));
+   * ```
+   */
+  function recallHistory(e: KeyboardEvent): void {
+    const history = ctx.uiState.getChatHistory();
+    const navigating = historyIndex >= 0 && value === recalled;
+    const el = textarea;
+    const collapsed = el !== undefined && el.selectionStart === el.selectionEnd;
+    const waived = navigating && !value.includes("\n");
+    if (e.key === "ArrowUp") {
+      if (history.length === 0 || !(waived || (collapsed && el?.selectionStart === 0))) return;
+      e.preventDefault();
+      if (navigating) {
+        historyIndex = Math.max(0, historyIndex - 1);
+      } else {
+        draft = value;
+        historyIndex = history.length - 1;
+      }
+      recalled = history[historyIndex];
+      showText(recalled, "start");
+      return;
+    }
+    if (!navigating || !(waived || (collapsed && el?.selectionStart === value.length))) return;
+    e.preventDefault();
+    if (historyIndex >= history.length - 1) {
+      historyIndex = -1;
+      recalled = "";
+      showText(draft, "end");
+      draft = "";
+      return;
+    }
+    historyIndex += 1;
+    recalled = history[historyIndex];
+    showText(recalled, "end");
   }
 
   /** Enter sends (unless an IME composition is in progress or Shift is held, in which case
@@ -350,6 +463,9 @@
       void send();
     }
     // Shift+Enter falls through to the textarea's default newline insertion.
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      recallHistory(e);
+    }
   }
 </script>
 
@@ -364,9 +480,17 @@
       <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { /** The actor's authored display name, if any. */ displayName?: string } | undefined)?.displayName })}</option>
     {/each}
   </select>
+  <label class="visually-hidden" for="chat-composer-roll-mode">{t("chat.composer.rollMode")}</label>
+  <select id="chat-composer-roll-mode" data-testid="roll-mode" data-tour="chat-composer.roll-mode" bind:value={rollMode} onchange={() => applyRollMode(rollMode)}>
+    <option value="">{t("chat.composer.rollMode")}</option>
+    {#each ROLL_MODES as mode (mode.command)}
+      <option value={mode.command}>{t(mode.labelKey)}</option>
+    {/each}
+  </select>
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>
   <textarea
     id="chat-composer-input"
+    data-tour="chat-composer.input"
     bind:this={textarea}
     bind:value
     {placeholder}
@@ -374,7 +498,7 @@
     oninput={onInput}
     rows="1"
   ></textarea>
-  <button type="button" data-testid="doc-link-trigger" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
+  <button type="button" data-testid="doc-link-trigger" data-tour="chat-composer.doc-link" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
   {#if imagesEnabled}
     <button type="button" data-testid="image-insert" title={t("chat.composer.insertImage")} onclick={() => void insertImage()}>🖼</button>
   {/if}

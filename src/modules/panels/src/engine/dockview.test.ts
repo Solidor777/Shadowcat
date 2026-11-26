@@ -1433,6 +1433,32 @@ test("destroy() clears #floatInvokers and disposes+clears #floatingEscapeSubs", 
   expect(ops.filter((o) => o.op === "close")).toHaveLength(0);
 });
 
+test("Escape pressed outside a floating dialog neither closes it nor is consumed", async () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 0, y: 0, w: 1, h: 1 } });
+  engine.apply(layout.expanded, new Map());
+  expect(attachedHost.querySelector('[role="dialog"]')).toBeTruthy();
+
+  const outside = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  document.body.dispatchEvent(outside);
+
+  expect(ops.filter((o) => o.op === "close")).toHaveLength(0);
+  expect(outside.defaultPrevented).toBe(false);
+});
+
 test("the stage's own tab never renders a .sc-tab-menu-btn — no menu-command affordance exists for it to invoke", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");

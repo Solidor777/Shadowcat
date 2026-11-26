@@ -4,6 +4,7 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DuckSourcesController } from "./controller";
 import { DEFAULT_DUCKING_PREFERENCES } from "./duckingMirror";
 import DuckingRuntime from "./DuckingRuntime.svelte";
+import { makeBindings } from "./__fixtures__/bindings";
 
 const logger = { debug() {}, warn() {}, error() {} };
 
@@ -30,6 +31,7 @@ function audioFixture() {
     },
     setChannel: () => {},
     unlock: async () => {},
+    needsGesture: false,
     context: () => null,
     duck: { addSource, removeSource, gain: 1, depth: 0.7, setDepth: () => {} },
     playOneShot: () => {},
@@ -47,7 +49,7 @@ describe("DuckingRuntime", () => {
   });
 
   it("adds exactly the key and os-monitor duck sources on mount and wires them into the controller", () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger, makeBindings(new EventTarget()).bindings);
     const { audio, addSource } = audioFixture();
     const context = setAppContextForTest({ audio });
     render(DuckingRuntime, { props: { controller }, context });
@@ -59,7 +61,7 @@ describe("DuckingRuntime", () => {
   });
 
   it("removes exactly the key and os-monitor sources on unmount, never the mic source before it was ever added", () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger, makeBindings(new EventTarget()).bindings);
     const { audio, removeSource } = audioFixture();
     const context = setAppContextForTest({ audio });
     const { unmount } = render(DuckingRuntime, { props: { controller }, context });
@@ -72,7 +74,7 @@ describe("DuckingRuntime", () => {
   });
 
   it("stops the key and OS-monitor sources on unmount — the only reliably-firing teardown hook in production, since WorldSession.leave() never calls ModuleRegistry.unload()", () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger, makeBindings(new EventTarget()).bindings);
     const keyStop = vi.spyOn(controller.key, "stop");
     const osStop = vi.spyOn(controller.osMonitor, "stop");
     const { audio } = audioFixture();
@@ -84,7 +86,7 @@ describe("DuckingRuntime", () => {
   });
 
   it("micToggle('unknown') denies enabling before the engine's AudioContext is unlocked", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger, makeBindings(new EventTarget()).bindings);
     const { audio } = audioFixture();
     const context = setAppContextForTest({ audio });
     render(DuckingRuntime, { props: { controller }, context });

@@ -1,19 +1,44 @@
-//! Per-(scene, player) explored fog memory: a sparse set of visited grid cells,
-//! accumulated monotonically from each vision recompute. Engine-owned geometry,
-//! headless + pure (the DB round-trip lives in the repository). Clean-room.
+//! This module holds the per-(scene, player) explored fog memory.
 //!
-//! A cell `(i, j)` covers world rect `[i*size, (i+1)*size) × [j*size, (j+1)*size)`. A vision
-//! recompute marks every cell whose CENTER lies inside any `visible` polygon (resolution = one
-//! grid cell — sufficient for the dimmed "explored memory" layer). Accumulation is a
-//! set union, so revisiting marks nothing new (bounded by O(explored area), no growth on revisit).
+//! `ExploredSet` is a sparse set of visited grid cells, accumulated monotonically: its only
+//! writer, `ExploredSet::mark_cells`, adds cells and nothing removes them. The module is
+//! engine-owned geometry, headless and pure (the DB round-trip lives in the repository), and
+//! clean-room.
+//!
+//! On a square grid a cell `(i, j)` covers world rect
+//! `[i*size, (i+1)*size) × [j*size, (j+1)*size)`.
+//! `ws::conn::enrich_vision_explored` marks the recipient's currently visible cells (the lit mask's
+//! cells, center-sampled through the scene's resolved `GridShape`), so the resolution is one grid
+//! cell. Accumulation is a set union, so revisiting marks nothing new (bounded by O(explored area),
+//! no growth on revisit).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use crate::data::engine::FogPooling;
 use crate::scene::grid_shape::{exceeds_cell_cap, GridShape};
 use crate::scene::vision;
 use crate::scene::GridKind;
 use std::collections::BTreeSet;
+use uuid::Uuid;
+
+/// The `explored_fog` key a caller should read/write for `user` under `pooling`: `user` itself
+/// under `FogPooling::Individual`, or the reserved
+/// `Uuid::nil()` sentinel under `FogPooling::Shared` — every player then reads/writes the SAME
+/// bucket for that scene. Safe with no schema change because `Uuid::new_v4()` (how every real
+/// user id is generated) can never produce the nil UUID, so the sentinel is unambiguously
+/// distinguishable from any real user. Every explored-fog reader and writer goes through this one
+/// derivation and passes the result to `Repository::get_explored`/`Repository::set_explored`,
+/// never `user` directly: `ws::conn::enrich_vision_explored` (read and write, one key per
+/// (scene, level) group), `ws::conn::handle_pathfind`, `Room::publish`'s Create gate and
+/// `Room::execute_move`. A reader keyed on `user` under `Shared` reads a dormant row while the
+/// writer fills the pool.
+pub(crate) fn explored_fog_key(pooling: FogPooling, user: Uuid) -> Uuid {
+    match pooling {
+        FogPooling::Individual => user,
+        FogPooling::Shared => Uuid::nil(),
+    }
+}
 
 /// Magic prefix of a serialized `ExploredSet`. A blob without it states no coordinate system for
 /// its records and is unusable rather than assumed.

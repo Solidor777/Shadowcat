@@ -9,3 +9,6 @@ src/types/generated/** text eol=lf
 
 # Binary assets — never normalize line endings.
 *.png binary
+*.ogg binary
+src/client/shell/e2e-fixtures/audio/** binary
+src/server/tests/fixtures/** binary

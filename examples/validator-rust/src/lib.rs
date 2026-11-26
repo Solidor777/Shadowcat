@@ -1,8 +1,9 @@
-//! Example sandboxed validator: refuses an `actor` whose `system.hp` is negative. `no_std`,
-//! no dependencies (a hand-rolled minimal JSON scan — no `serde-json-core`), no build script.
-//! Built directly with `cargo build --target wasm32-unknown-unknown --release`: this crate sits
-//! outside the repo's root Cargo workspace, so no workspace-level build script or feature runs
-//! against it.
+//! This example sandboxed validator refuses an `actor` whose `system.hp` is negative.
+//!
+//! The crate is `no_std` with no dependencies: it scans the JSON by hand instead of using
+//! `serde-json-core`. It has no build script and is built directly with
+//! `cargo build --target wasm32-unknown-unknown --release`, because it sits outside the repo's root
+//! Cargo workspace and so no workspace-level build script or feature runs against it.
 #![no_std]
 
 use core::panic::PanicInfo;

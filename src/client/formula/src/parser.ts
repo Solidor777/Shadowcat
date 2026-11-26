@@ -457,3 +457,25 @@ export function parseFormula(src: string): Expr | FormulaError {
   if (isErr(toks)) return toks;
   return new Parser(toks, src.length).parseTop();
 }
+
+/** The dotted path a formula names when it is EXACTLY one bare reference and nothing else.
+ * An AST shape check over `parseFormula`'s result, not a second grammar: every other node kind
+ * (`num`, `neg`, `bin`, `call`) and every parse failure answers `null`. The path is the lexer's
+ * lowercased form, the one a resolver is offered.
+ * @param formula A stored formula: a number or formula text. Anything not a string answers `null`.
+ * @returns The reference's segments joined with `"."` (e.g. `"hp.value"`), or `null` when the
+ * formula is not a bare reference.
+ * @example
+ * ```ts
+ * import { isBareLeafReference } from "@shadowcat/formula";
+ *
+ * isBareLeafReference("hp.value"); // "hp.value"
+ * isBareLeafReference("hp.value + 2"); // null
+ * ```
+ */
+export function isBareLeafReference(formula: unknown): string | null {
+  if (typeof formula !== "string") return null;
+  const parsed = parseFormula(formula);
+  if (isErr(parsed) || parsed.kind !== "ref") return null;
+  return parsed.path.join(".");
+}

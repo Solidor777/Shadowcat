@@ -1,15 +1,15 @@
-//! The requester's view of what each document hides, consulted by the merge
-//! at EVERY recursion level by document IDENTITY — the correlated
-//! `(template child, instance child)` pair the merge is currently inside —
-//! never by array index. Two index spaces exist around an embedded merge:
-//! the LIVE document's child positions (which `permission::collect_overrides`
-//! addresses) and the merged OUTPUT's child positions (which
-//! `embedded::prefix_conflicts` addresses); a dropped preceding sibling or a
-//! template-side reorder makes them disagree, so a hidden-pointer set
-//! expressed in one space can never be compared against a conflict path
-//! expressed in the other. Asking the oracle per document, with pointers
-//! relative to that document's own root, removes the index from the
-//! question entirely.
+//! The visibility oracle is the requester's view of what each document hides, consulted by the
+//! merge.
+//!
+//! The oracle is consulted at EVERY recursion level by document IDENTITY — the correlated
+//! `(template child, instance child)` pair the merge is currently inside — never by array index.
+//!
+//! Two index spaces exist around an embedded merge: the LIVE document's child positions (which
+//! `permission::collect_overrides` addresses) and the merged OUTPUT's child positions (which
+//! `embedded::prefix_conflicts` addresses); a dropped preceding sibling or a template-side reorder
+//! makes them disagree, so a hidden-pointer set expressed in one space can never be compared
+//! against a conflict path expressed in the other. Asking the oracle per document, with pointers
+//! relative to that document's own root, removes the index from the question entirely.
 
 use crate::data::document::Document;
 use crate::data::permission::{hidden_own_pointers, Access};
@@ -189,6 +189,7 @@ impl MergeVisibility for AllVisible {
 ///     all: false,
 ///     see_gm_only: false,
 ///     is_owner: false,
+///     user_id: None,
 /// };
 /// let vis = RequesterView { template: &player, child: &player };
 /// // `/base` is hardcoded `OwnerOrGm`; an ordinary player sees neither tier.

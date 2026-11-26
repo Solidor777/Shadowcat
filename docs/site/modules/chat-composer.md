@@ -12,6 +12,7 @@ claiming the same singleton contract.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `chat-composer:main` | `shadowcat.surface:chat.composer` | `Composer` | — |
+| `chat-composer:tour` | `shadowcat.tour` | none | tour `chat-composer.dice`, first use (anchors `chat-composer.input`, `chat-composer.roll-mode`, `chat-composer.doc-link`) |
 
 ## Components
 
@@ -28,6 +29,15 @@ claiming the same singleton contract.
 - Inserts a `[[asset:<id>|<label>]]` span at the cursor on a resolved pick
   (`label` is always the id's first 8 characters — no asset-name lookup
   surface exists on `AppContext`); a cancelled pick is a no-op.
+
+## Roll flavor and link labels
+
+Text typed after the first `|` of a roll command is the roll's flavor, a plain caption shown
+beside the result and searchable: `/roll 1d20+5 | Attack roll`. A roll button takes the same
+form with a label and a flavor: `[[roll:1d20|Attack|Swing the axe]]`; the click re-sends the
+flavor. A document or token link may omit its label (`[[doc:<id>]]`, `[[token:<id>]]`); the
+card then shows the target's current name, or "Unknown document" / "Unknown token" when the
+viewer cannot see it. An explicit label (`[[doc:<id>|Label]]`) is kept as written.
 
 ## Pointers
 

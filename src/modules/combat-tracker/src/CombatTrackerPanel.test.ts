@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { afterEach } from "vitest";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildCombatDoc, buildCombatantDoc, newCombatEngine, type CombatantEngine } from "@shadowcat/core";
+import { DocumentStore, buildWorldSettingsDoc, buildCombatDoc, buildCombatantDoc, newCombatEngine, type CombatantEngine } from "@shadowcat/core";
 import CombatTrackerPanel from "./CombatTrackerPanel.svelte";
 import { TurnBadge } from "./turnBadge";
 import { fakeCombatApi } from "./__fixtures__/fakeCombatApi";
@@ -91,7 +91,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player", selfId: "player-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "own-combatant", owner: "player-1" }) }],
@@ -110,7 +110,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player", selfId: "player-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "someone-elses-combatant", owner: "player-2" }) }],
@@ -129,7 +129,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "gm", selfId: "gm-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "gm-owned", owner: "gm-1" }) }],
@@ -159,8 +159,8 @@ describe("CombatTrackerPanel reorder wiring", () => {
   function twoCombatantCombat(): { store: DocumentStore; combatId: string } {
     const store = new DocumentStore();
     const c = combatOn("scene-1", { id: "c1", active: true });
-    const engineA: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
-    const engineB: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const engineA: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
+    const engineB: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     const a = buildCombatantDoc("w1", "c1", engineA, { id: "a", name: "a" });
     const b = buildCombatantDoc("w1", "c1", engineB, { id: "b", name: "b" });
     (c.engine as { order: string[] }).order = ["a", "b"];
@@ -189,7 +189,7 @@ describe("CombatTrackerPanel reorder wiring", () => {
   it("a two-step pointer drag (from 0 to 2 of three rows) discriminates argument order — moveInOrder(order, 0, 2) differs from moveInOrder(order, 2, 0)", async () => {
     const store = new DocumentStore();
     const c = combatOn("scene-1", { id: "c1", active: true });
-    const mk = (id: string) => buildCombatantDoc("w1", "c1", { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} } as CombatantEngine, { id, name: id });
+    const mk = (id: string) => buildCombatantDoc("w1", "c1", { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} } as CombatantEngine, { id, name: id });
     (c.engine as { order: string[] }).order = ["a", "b", "c"];
     store.applyCommand({ seq: 1, world_id: "w1", author: "x", ts: 0, ops: [{ op: "create", doc: c }, { op: "create", doc: mk("a") }, { op: "create", doc: mk("b") }, { op: "create", doc: mk("c") }] });
     const combat = fakeCombatApi(store, { role: "gm" });
@@ -237,5 +237,61 @@ describe("CombatTrackerPanel reorder wiring", () => {
     const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
     await fireEvent.keyDown(rowEls[0], { key: "ArrowDown", altKey: true });
     expect(combat.calls.reorder).toBeUndefined();
+  });
+});
+
+describe("CombatTrackerPanel whole-session pause", () => {
+  function pausedCombat(paused: boolean): DocumentStore {
+    const store = new DocumentStore();
+    const c = combatOn("scene-1", { id: "c1", active: true });
+    const engine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
+    (c.engine as { order: string[] }).order = ["a", "b"];
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "x", ts: 0,
+      ops: [
+        { op: "create", doc: c },
+        { op: "create", doc: buildCombatantDoc("w1", "c1", engine, { id: "a", name: "a" }) },
+        { op: "create", doc: buildCombatantDoc("w1", "c1", engine, { id: "b", name: "b" }) },
+        { op: "create", doc: buildWorldSettingsDoc("w1", { session: { paused, pauseAudio: false } }) },
+      ],
+    });
+    return store;
+  }
+
+  it("a paused session disables a player's combat controls, shows the notice, and blocks the keyboard reorder", async () => {
+    const store = pausedCombat(true);
+    const combat = fakeCombatApi(store, { role: "player" });
+    combat.setCanAct({ edit: true });
+    const { container, getByTestId } = render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player" }),
+    });
+    expect(getByTestId("combat-tracker:paused").textContent).toBe("combatTracker.paused");
+    const controls = Array.from(container.querySelectorAll("button.drag-handle, [data-testid^='combat-tracker:hide-'], [data-testid='combat-tracker:add-event']")) as HTMLButtonElement[];
+    expect(controls.length).toBeGreaterThan(0);
+    for (const el of controls) expect(el.closest("fieldset[disabled]") !== null || el.disabled).toBe(true);
+    const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
+    await fireEvent.keyDown(rowEls[0], { key: "ArrowDown", altKey: true });
+    expect(combat.calls.reorder).toBeUndefined();
+  });
+
+  it("the GM keeps every control while paused, and a player keeps them when not paused", () => {
+    const gmStore = pausedCombat(true);
+    render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store: gmStore, documents: gmStore, combat: fakeCombatApi(gmStore, { role: "gm" }), viewedSceneId: "scene-1", role: "gm" }),
+    });
+    expect(document.querySelector("[data-testid='combat-tracker:paused']")).toBeNull();
+    expect((document.querySelector("button.drag-handle") as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+    const liveStore = pausedCombat(false);
+    const combat = fakeCombatApi(liveStore, { role: "player" });
+    combat.setCanAct({ edit: true });
+    render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store: liveStore, documents: liveStore, combat, viewedSceneId: "scene-1", role: "player" }),
+    });
+    expect(document.querySelector("[data-testid='combat-tracker:paused']")).toBeNull();
+    expect((document.querySelector("button.drag-handle") as HTMLButtonElement).disabled).toBe(false);
   });
 });

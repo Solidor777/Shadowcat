@@ -53,8 +53,11 @@ push-to-duck key. This milestone never touches gain nodes itself.
 
 `shadowcat audio-monitor [--port 31998] [--allow-origin <origin>...] [--watch <substr>...]`
 serves `ws://127.0.0.1:<port>/levels`. A connection's `Origin` header must be in the allowlist
-(default `http://localhost:30000`, `http://127.0.0.1:30000`) or it is refused before any frame
-is sent. Frames: `{"type":"hello","os":string,"supported":boolean,"reason"?:string}` once on
+(default `http://localhost:30000`, `http://127.0.0.1:30000`, `https://localhost:30000`,
+`https://127.0.0.1:30000`) or it is refused before any frame is sent. An `https://` page reaches
+the monitor's loopback `ws://` endpoint in Chromium and Firefox; Playwright's WebKit build refuses
+that mixed-content connection (real Safari has not been tested), so the settings section shows a
+hint on `https://` pages while the monitor is not connected. Frames: `{"type":"hello","os":string,"supported":boolean,"reason"?:string}` once on
 connect; `{"type":"levels","sessions":[{"process":string,"peak":number}]}` at 10 Hz,
 pre-filtered to the watch list server-side (never reveals an unwatched process); the client
 may send `{"type":"watch","names":string[]}` to replace the live watch list.

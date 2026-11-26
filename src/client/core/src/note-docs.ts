@@ -7,10 +7,10 @@
 import { envelope, grantAuthor } from "./scene-docs";
 import { SegmentListSchema, type ChatSegment, type UnknownSegment } from "./chat-docs";
 import { appendSortKey } from "./sort-key";
-import type { NoteEngine } from "@shadowcat/types";
+import type { NoteEngine, NotePageKind } from "@shadowcat/types";
 import type { WireDocument } from "./wire";
 
-export type { NoteEngine } from "@shadowcat/types";
+export type { NoteEngine, NotePageKind } from "@shadowcat/types";
 
 /** The `doc_type` identifying a stored note document (server:
  * `data::engine::note::NOTE_DOC_TYPE`). */
@@ -33,6 +33,9 @@ export interface BuildNoteDocOptions {
    * session) must pass it explicitly. Omitting it produces a note nobody but a GM can read,
    * delete, or reshare. */
   owner?: string;
+  /** What the page shows above its caption; defaults to `{ kind: "text" }`. A media kind carries
+   * the asset id the sheet renders through `AssetResolver.url`. */
+  kind?: NotePageKind;
 }
 
 /** Builds an unsaved `note` document: `engine: { source, body: [], sort }` (the
@@ -70,11 +73,49 @@ export function buildNoteDoc(
     source,
     body: [],
     sort: opts?.sort ?? 0,
+    kind: opts?.kind ?? { kind: "text" },
   } as unknown as NoteEngine;
   const doc = envelope(worldId, NOTE_DOC_TYPE, opts?.parentId ?? null, {}, opts?.id, engine, name);
   doc.permissions = { ...doc.permissions, default: "none" };
   if (opts?.owner) grantAuthor(doc, opts.owner);
   return doc;
+}
+
+/** A stored `NoteEngine.kind` before `parseNotePageKind` narrows it. */
+interface UnvalidatedPageKind {
+  /** The page-kind tag. */
+  kind?: unknown;
+  /** The media asset id of an image/pdf/video page. */
+  asset_id?: unknown;
+}
+
+/** Fail-closed read of a note's page kind: `{ kind: "text" }` for a non-note `doc_type`, a note
+ * stored without the field, or a value this client's schema does not recognise or that lacks its
+ * `asset_id`. Never throws.
+ * @param doc The candidate document.
+ * @returns The page kind to render.
+ * @example
+ * ```ts
+ * import { parseNotePageKind } from "@shadowcat/core";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const doc: WireDocument;
+ * parseNotePageKind(doc);
+ * ```
+ */
+export function parseNotePageKind(doc: WireDocument): NotePageKind {
+  const text: NotePageKind = { kind: "text" };
+  if (doc.doc_type !== NOTE_DOC_TYPE) return text;
+  const engine = doc.engine as {
+    /** The stored `NoteEngine.kind`, of unvalidated shape until narrowed here. */
+    kind?: UnvalidatedPageKind;
+  } | null | undefined;
+  const k = engine?.kind;
+  if (!k || typeof k.kind !== "string") return text;
+  if ((k.kind === "image" || k.kind === "pdf" || k.kind === "video") && typeof k.asset_id === "string") {
+    return { kind: k.kind, asset_id: k.asset_id };
+  }
+  return text;
 }
 
 /** A note's `engine.sort` field, read as `number` — the ts-rs `bigint` mapping never reaches

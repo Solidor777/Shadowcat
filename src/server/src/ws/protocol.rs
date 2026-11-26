@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
-use crate::data::engine::AudioChannel;
+use crate::data::engine::{AudioChannel, DoorState, RegionShape};
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
@@ -97,8 +97,9 @@ pub enum ClientMsg {
         /// The live search to cancel.
         request_id: Uuid,
     },
-    /// Subscribe to a derived scene channel (`compute_derived` currently recognizes
-    /// "vision", plus a debug-only "identity" channel); unknown channels yield SceneError.
+    /// Subscribe to a derived scene channel (the channel names `compute_derived`
+    /// matches; the `"identity"` channel exists only in debug builds); unknown channels yield
+    /// SceneError.
     /// `as_user` (see-as-player) is **GM-only**: it views the channel as that user; the
     /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
     /// the connection's own view.
@@ -147,6 +148,56 @@ pub enum ClientMsg {
         token: Uuid,
         /// The emote glyph(s); 1..=16 bytes.
         emote: String,
+    },
+    /// A transient shared-ruler update: the sender's measured route preview on `scene`, relayed
+    /// out-of-band to the world room with the sender stamped (`ServerMsg::Ruler`); never
+    /// sequenced, logged, or a document (mirrors `ScenePing`). The scene must exist in this world
+    /// and grant the sender READ. `points` holds at most `ws::ruler::MAX_RULER_POINTS` vertices,
+    /// every coordinate finite and within `scene::move_exec::MAX_GATE_WALK_COORD`, and `origin` is
+    /// at most `ws::ruler::MAX_RULER_ORIGIN_BYTES` bytes. A longer list, or a non-finite
+    /// coordinate (JSON carries it as `null`, which `f64` deserialization rejects), fails to
+    /// deserialize and the sender alone receives a generic `BadMessage`. A frame with a finite
+    /// coordinate past the bound, an over-long `origin`, an unreadable scene, or past the
+    /// per-user budget on its own bucket (`ws::ruler::RULER_RATE_PER_MIN`) is dropped silently.
+    /// Any update with `active: false` or an empty `points` ends the sender's ruler and is
+    /// relayed as the canonical stop (`active: false`, no points; `ws::ruler::canonical`). A
+    /// READ-only spectator may send one (unlike `PlayVfx`, which refuses spectators). Every room
+    /// member, the sender's own connections included, receives the points unclipped.
+    RulerUpdate {
+        /// Scene the ruler is measured on (must grant the sender READ).
+        scene: Uuid,
+        /// The route preview's vertices in scene coordinates, start through goal; a list longer
+        /// than `ws::ruler::MAX_RULER_POINTS` fails to deserialize.
+        #[serde(deserialize_with = "crate::ws::ruler::deserialize_points")]
+        points: Vec<(f64, f64)>,
+        /// `false` ends the sender's ruler; an absent value reads as `false`.
+        #[serde(default)]
+        active: bool,
+        /// Opaque token naming the sending connection, relayed unchanged on `ServerMsg::Ruler`
+        /// so the originating client can recognize its own frame; an absent value reads as
+        /// empty, which no client treats as its own.
+        #[serde(default)]
+        origin: String,
+    },
+    /// GM-only: purge `scene::explored::ExploredSet` memory (the persisted `explored_fog`
+    /// rows), scoped to `scene` and, when present, to one `user` and/or one `level`. Refused
+    /// with a generic `Error { code: Forbidden }` for a non-GM sender or for a scene absent
+    /// from this world — the same uniform-rejection shape every other GM-only intent uses.
+    /// On success the matching rows are deleted and `ServerMsg::ExploredFogReset` is broadcast
+    /// out-of-band to the room so every affected connection's next `"vision"` push reflects the
+    /// cleared memory.
+    ResetExploredFog {
+        /// The scene whose explored memory is reset.
+        scene: Uuid,
+        /// Limit the reset to one user's memory; `None` clears every user's.
+        #[serde(default)]
+        #[ts(optional)]
+        user: Option<Uuid>,
+        /// Limit the reset to one level (`scene::elevation::level_of`'s id); `None` clears
+        /// every level.
+        #[serde(default)]
+        #[ts(optional)]
+        level: Option<String>,
     },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
     /// scene coords; `waypoints`' LAST element is the goal. The route is mask-bounded for non-GM
@@ -212,6 +263,13 @@ pub enum ClientMsg {
         /// Visibility policy (public / gm-only / whisper).
         #[serde(default)]
         audience: Audience,
+        /// Opaque, module-owned payload stored verbatim as the message document's `system`
+        /// band. The server never inspects its shape; it is bounded only by the structural
+        /// size cap every document's `system` band gets, and it inherits the message's own
+        /// audience-derived permissions. `None` stores `{}`.
+        #[serde(default)]
+        #[ts(optional, type = "unknown")]
+        system: Option<serde_json::Value>,
     },
     /// Edit an existing message the requester owns (or any, if GM). The server
     /// re-runs the sanitize+command pipeline; audience/channel are frozen.
@@ -248,6 +306,18 @@ pub enum ClientMsg {
         /// The targeted mutation(s) to apply.
         ops: Vec<WireRecalcOp>,
     },
+    /// GM-only reveal or conceal: replaces a stored message's `audience` and
+    /// readership permissions (`chat::handle_revise_audience`). Same asymmetric
+    /// reply protocol as `SendMessage`; a non-GM sender is rejected via a
+    /// correlated `ChatError`.
+    ReviseAudience {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The message whose audience changes.
+        message_id: Uuid,
+        /// The replacement readership (public / gm-only / whisper).
+        audience: Audience,
+    },
     /// Draw one or more rows from a `table` document, posted as ONE
     /// `MessageKind::Roll` message (`Segment::TableDraw`, recursive through
     /// any nested draws). Same asymmetric reply protocol as `SendMessage`;
@@ -269,6 +339,17 @@ pub enum ClientMsg {
         /// Visibility policy (public / gm-only / whisper).
         #[serde(default)]
         audience: Audience,
+    },
+    /// GM-only: tell every connected member's client to open a shared note. Authors no document
+    /// and is never sequenced or logged; the server relays `ServerMsg::PresentNote` out-of-band.
+    /// A refusal (not a GM, unknown note, note not shared with players, rate limit) is a
+    /// correlated `ChatError` to the sender only, the same asymmetric reply protocol as
+    /// `SendMessage`. See `notes::handle_present_note`.
+    PresentNote {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The `note` document to present.
+        note_id: Uuid,
     },
     /// Activate a combat: pauses any other active combat on its scene in the same command;
     /// a combat with `turn == None` initializes (round 1, first turn), one with a turn resumes.
@@ -451,6 +532,112 @@ pub enum ClientMsg {
         #[ts(optional)]
         elevation: Option<f64>,
     },
+    /// A door-toggle request: flip the named wall's `WallEngine::door` between
+    /// `Closed` and `Open`. Handled by `ws::room::Room::toggle_door`, which authorizes the
+    /// request itself (a non-GM must effectively control a token PHYSICALLY NEAR the door
+    /// and able to see its cells, and must hold engine-tier visibility on the wall document
+    /// itself; a GM bypasses those positional clauses) and commits the write under
+    /// `WriteOrigin::DoorToggle`, so `apply_intent` needs no exemption for it. `scene_id` is
+    /// carried for the SAME redundant-defense-in-depth reason `MoveRequest` carries one: the
+    /// AUTHORITATIVE scene is derived from the wall document's own `parent_id`, never trusted
+    /// from the request, and a mismatch is refused. A rejection replies `DoorToggleError`,
+    /// correlated by `request_id`; success is confirmed by the broadcast `Event` echo of the
+    /// wall's Update (the same asymmetric reply protocol as `SendMessage`).
+    ToggleDoor {
+        /// Correlation token for `DoorToggleError`.
+        request_id: Uuid,
+        /// Scene the wall is expected to be on; checked against the wall's derived
+        /// `parent_id`, never used to select anything.
+        scene_id: Uuid,
+        /// The wall whose door state flips.
+        wall_id: Uuid,
+        /// The target state. A non-GM may name `Closed`/`Open` only (never `Locked`, and a
+        /// wall currently `Locked` refuses a non-GM in either direction); a GM may also
+        /// set/clear `Locked`.
+        to: DoorState,
+    },
+    /// A module-placed effect request: place the effect set the named module declared
+    /// (`modules::PlacementDecl`) over the area `shape`. Handled by `ws::room::Room::place_effect`,
+    /// which resolves the declaration from the world's enabled modules, checks the sender against
+    /// the declaration's `who`, clamps `shape` to its limits and commits one `region` Create under
+    /// `WriteOrigin::ModulePlacement`. The frame carries the area only: behavior, cost and triggers
+    /// come from the manifest, never from the client. A rejection replies `PlaceEffectError`,
+    /// correlated by `request_id`; success is confirmed by the broadcast `Event` of the Create.
+    PlaceEffect {
+        /// Correlation token for `PlaceEffectError`.
+        request_id: Uuid,
+        /// The installed module's folder id that declares the placement.
+        module: String,
+        /// The `PlacementDecl::id` within that module.
+        placement: String,
+        /// The scene the region is created on.
+        scene_id: Uuid,
+        /// The area the sender chose, scene units.
+        shape: RegionShape,
+        /// The caster token, required when the declaration's `who` is `caster_owner`.
+        #[serde(default)]
+        #[ts(optional)]
+        caster: Option<Uuid>,
+    },
+    /// The answer to a `ServerMsg::PortalOffer`: pick destination `choice` (an index into the
+    /// offer's options) or decline with `None`. Handled by `ws::room::Room::handle_choose_portal`,
+    /// which accepts only the token's effective owner or a GM, and only while the offer is
+    /// unexpired and the token still stands in the offering region. An offer answers once,
+    /// whether accepted or declined. A refusal replies `PortalChoiceError`, correlated by
+    /// `request_id`; success is confirmed by the broadcast `Event` of the teleport's commit
+    /// (a decline commits nothing and replies nothing). A non-GM's accept is refused while the
+    /// session is paused (`ws::session_pause::blocks_msg`).
+    ChoosePortal {
+        /// Correlation token for `PortalChoiceError`.
+        request_id: Uuid,
+        /// The offer being answered (`ServerMsg::PortalOffer::offer_id`).
+        offer_id: Uuid,
+        /// The chosen option's `PortalOfferOption::index`, or `None` to decline.
+        choice: Option<u32>,
+    },
+    /// Re-issue the portal offer for a token standing in a `PortalChoice` region, so a player
+    /// who declined or lost the offer need not step out and back in. Handled by
+    /// `ws::room::Room::handle_open_portal` under the same owner-or-GM rule as `ChoosePortal`.
+    /// The offer arrives as a `ServerMsg::PortalOffer`; a refusal replies `PortalChoiceError`.
+    OpenPortal {
+        /// Correlation token for `PortalChoiceError`.
+        request_id: Uuid,
+        /// The token that stands in the portal region.
+        token: Uuid,
+    },
+}
+
+/// One option of a `ServerMsg::PortalOffer`: what the chooser shows for one destination. The
+/// destination's coordinates are never sent, only this index, which `ClientMsg::ChoosePortal`
+/// answers with.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PortalOfferOption;
+///
+/// let option = PortalOfferOption {
+///     index: 0,
+///     label: "The Cellar".to_string(),
+///     destination_name: None,
+///     available: true,
+/// };
+/// let json = serde_json::to_value(&option).unwrap();
+/// assert_eq!(json["label"], "The Cellar");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct PortalOfferOption {
+    /// Position in the authored option list; the value `ChoosePortal::choice` carries.
+    pub index: u32,
+    /// The GM-authored label.
+    pub label: String,
+    /// The destination scene's real name; present only when the option's `reveal_scene` is set
+    /// and the scene resolved at offer time.
+    pub destination_name: Option<String>,
+    /// False when the destination scene no longer exists in this world; the chooser shows the
+    /// option disabled.
+    pub available: bool,
 }
 
 /// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves
@@ -679,6 +866,87 @@ pub enum RejectReason {
     /// Anything else: structurally invalid payload, an absent target, or an
     /// internal failure — not retryable without changing the request.
     Invalid,
+    /// The session is paused and the refused request is a token move, a portal choice that moves
+    /// a token, or a combat control, which a non-GM member may not make until the GM resumes.
+    Paused,
+}
+
+/// Why a `Pathfind` failed. Carried beside the player-presentable text on `PathError` so a
+/// client chooses its notice from a typed value rather than by matching the text.
+/// `Unreachable` is also what the server reports for every refusal it deliberately does not
+/// distinguish (a caller with no token in the scene, a turn or budget refusal), so a client can
+/// never learn more than "no route" from it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PathErrorReason;
+///
+/// let json = serde_json::to_value(PathErrorReason::Exceeded).unwrap();
+/// assert_eq!(json, serde_json::json!("exceeded"));
+/// assert_eq!(PathErrorReason::Unreachable.message(), "unreachable");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum PathErrorReason {
+    /// No route exists for the caller, or the server declines to say why.
+    Unreachable,
+    /// The request was structurally invalid.
+    Invalid,
+    /// The search exceeded its node budget before finding a route.
+    Exceeded,
+}
+
+impl ClientMsg {
+    /// The correlation id of a combat intent (`CombatStart`, `CombatPause`, `CombatEnd`,
+    /// `CombatAdvance`, `CombatRewind`, `CombatRoll`, `CombatResource`, `CombatSort`), or `None`
+    /// for any other message. The list `ws::session_pause`'s refusal reads; `ws::conn`'s dispatch
+    /// match has no wildcard arm, so the compiler forces it to name every new variant, and a test
+    /// in `ws::session_pause` pins this list to every `Combat*` variant declared here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::ClientMsg;
+    /// use uuid::Uuid;
+    ///
+    /// let start = ClientMsg::CombatStart { request_id: Uuid::nil(), combat_id: Uuid::nil() };
+    /// assert_eq!(start.combat_request_id(), Some(Uuid::nil()));
+    /// assert_eq!(ClientMsg::Pong.combat_request_id(), None);
+    /// ```
+    pub fn combat_request_id(&self) -> Option<Uuid> {
+        match self {
+            ClientMsg::CombatStart { request_id, .. }
+            | ClientMsg::CombatPause { request_id, .. }
+            | ClientMsg::CombatEnd { request_id, .. }
+            | ClientMsg::CombatAdvance { request_id, .. }
+            | ClientMsg::CombatRewind { request_id, .. }
+            | ClientMsg::CombatSort { request_id, .. }
+            | ClientMsg::CombatRoll { request_id, .. }
+            | ClientMsg::CombatResource { request_id, .. } => Some(*request_id),
+            _ => None,
+        }
+    }
+}
+
+impl PathErrorReason {
+    /// The player-presentable text sent beside this reason.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::PathErrorReason;
+    ///
+    /// assert_eq!(PathErrorReason::Invalid.message(), "invalid request");
+    /// ```
+    pub fn message(self) -> &'static str {
+        match self {
+            PathErrorReason::Unreachable => "unreachable",
+            PathErrorReason::Invalid => "invalid request",
+            PathErrorReason::Exceeded => "search exceeded",
+        }
+    }
 }
 
 /// The kind of asset mutation an `AssetChanged` frame reports.
@@ -784,6 +1052,8 @@ pub struct VisionSample {
 ///     intensity: 1.0,
 ///     falloff: FalloffCurve::Linear,
 ///     color: 0xffcc00,
+///     angle: None,
+///     rotation: None,
 ///     polygons: vec![],
 /// };
 /// let json = serde_json::to_value(&sample).unwrap();
@@ -806,6 +1076,17 @@ pub struct LightSample {
     pub falloff: crate::data::engine::FalloffCurve,
     /// Packed `0xRRGGBB` light color.
     pub color: u32,
+    /// Cone width in degrees (`LightEmission.angle`); absent for a radial light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub angle: Option<f64>,
+    /// Effective cone direction in degrees at this instant — present exactly when `angle` is,
+    /// so a sample is self-describing: for a token-following cone it already holds the
+    /// bearer's rotation plus the authored offset. Refines how an already-admitted glow is
+    /// shaped; it never changes whether the glow is admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rotation: Option<f64>,
     /// The light's `blocksLight`-occluded illumination polygon(s) at this instant (scene
     /// coords), each an ordered list of [x, y] vertices.
     pub polygons: Vec<Vec<[f64; 2]>>,
@@ -1062,14 +1343,19 @@ pub enum ServerMsg {
         /// The world's UI contract declarations, so the client can validate its
         /// loaded module set against the world's declared topology.
         contract_declarations: Vec<crate::data::document::ContractDeclaration>,
-        /// The world's structural schema declarations (tier-2), so the client
-        /// can mirror expectations. Informational/parity only — tier-1 Zod
-        /// validates client-side; this is NOT a client enforcement gate.
+        /// The world's structural schema declarations, so the client
+        /// can mirror expectations. Informational/parity only — the client Zod
+        /// gate validates client-side; this is NOT a client enforcement gate.
         schema_declarations: Vec<crate::data::document::SchemaDeclaration>,
         /// The connecting user's own world-level capabilities — the `core:create` policy
         /// `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
         /// role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
         role_capabilities: crate::data::document::RoleCapabilities,
+        /// The members with at least one live connection in this world at send time, read from
+        /// the same `Room::presence_online` state the `Presence` frames' transitions maintain.
+        /// Includes the receiving user (their own connection is counted before this frame is
+        /// built). Sent to every member, the audience the member roster already reaches.
+        online_users: Vec<Uuid>,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
@@ -1210,6 +1496,45 @@ pub enum ServerMsg {
         /// Who pinged (senders receive their own echo).
         user: Uuid,
     },
+    /// A GM changed this world's enabled-module set (`http::module_routes::set_world_enabled_modules`
+    /// succeeded). Tells every connection to re-run its own module reconcile, the same
+    /// per-module-contained load/unload pass the saving GM's client runs directly after a
+    /// save. Out-of-band (no seq, never buffered/resynced), mirroring `ScenePing`. Carries no
+    /// payload: each client re-fetches the enabled set itself, and "the set changed" is already
+    /// visible to every world member through the membership-gated enabled-modules route.
+    ModulesChanged,
+    /// A member's live-connection count in this world crossed 0->1 or 1->0
+    /// (`Room::presence_connect`/`presence_disconnect`). Out-of-band (no seq, never
+    /// buffered/resynced), mirroring `ScenePing`, and delivered to every connection in the room:
+    /// the audience the member roster in `Welcome` already reaches, and online status is no more
+    /// sensitive than membership. Transitions only: the snapshot a late joiner needs rides on
+    /// `Welcome::online_users`.
+    Presence {
+        /// The member whose presence changed.
+        user: Uuid,
+        /// `true` when the member's first connection opened, `false` when the last one closed.
+        online: bool,
+    },
+    /// A member's roster row: sent when they change their account profile (colour, pronouns or
+    /// avatar) and when they are seated in a world (`RoomRegistry::announce_member_seated`).
+    /// Out-of-band (no seq, never buffered/resynced), mirroring `Presence`, and delivered to
+    /// every connection in each world the member is seated in (for a seating, the one world):
+    /// the audience `http::routes::list_members` already reaches with the same fields. It
+    /// carries the roster's own projection, so a client applies it exactly as it applies a
+    /// roster read: it adds a member the client has not listed and updates one it has. A client
+    /// fetches avatar bytes from the avatar route, never from this frame.
+    MemberProfile {
+        /// The member the row describes.
+        user: Uuid,
+        /// The member's username, the name the roster and chat show.
+        username: String,
+        /// Colour accent as `#rrggbb`, or `None` when unset.
+        colour: Option<String>,
+        /// Pronouns text, or `None` when unset.
+        pronouns: Option<String>,
+        /// Whether the member has an avatar.
+        has_avatar: bool,
+    },
     /// A relayed emote: the sender's transient glyph over a token. Out-of-band
     /// (no seq, never buffered/resynced), mirroring `ScenePing`.
     Emote {
@@ -1221,6 +1546,62 @@ pub enum ServerMsg {
         user: Uuid,
         /// The emote glyph(s).
         emote: String,
+    },
+    /// A relayed shared ruler: one user's live measured route preview. Out-of-band (no seq, never
+    /// buffered/resynced), mirroring `ScenePing`. Delivered unclipped to every
+    /// connection in the room, including every connection of the sender's own user; the
+    /// originating client recognizes its own frame by `origin`.
+    Ruler {
+        /// The measuring user (server-stamped, never client-asserted).
+        from: Uuid,
+        /// Scene the ruler is measured on.
+        scene: Uuid,
+        /// The route preview's vertices in scene coordinates, start through goal; empty exactly
+        /// when `active` is `false`.
+        points: Vec<(f64, f64)>,
+        /// `false` ends `from`'s ruler for this recipient (`points` is then empty).
+        active: bool,
+        /// The sending connection's opaque token, relayed unchanged from
+        /// `ClientMsg::RulerUpdate::origin`. Not server-verified: a forged value can only make
+        /// the client holding that token hide the forger's own ruler.
+        origin: String,
+    },
+    /// A GM's `ResetExploredFog` intent took effect: `scene::explored::ExploredSet` rows for
+    /// `scene` (scoped to `user`/`level` exactly as the request was) were deleted. Out-of-band
+    /// (no seq, never buffered/resynced), mirroring `ScenePing` — carries only IDs already
+    /// known to every room member, no geometry, no explored-cell contents. `egress_loop` arms
+    /// this connection's own debounced scene-channel re-eval on receipt (mirroring
+    /// `AudioListenAs`'s leading-edge arm) so the affected connection's next `"vision"` push
+    /// reflects the cleared rows; delivered to every connection in the room, including the
+    /// resetting GM's own, so their client sees the reset too.
+    ExploredFogReset {
+        /// The scene whose explored memory was reset.
+        scene: Uuid,
+        /// The user the reset was scoped to, or `None` for every user.
+        user: Option<Uuid>,
+        /// The level the reset was scoped to, or `None` for every level.
+        level: Option<String>,
+    },
+    /// A region-triggered floating overlay over a token — the server-authored twin of `Emote`,
+    /// with its own length bound at INGRESS (`chat::MAX_MESSAGE_CHARS`, the SAME bound
+    /// `ChatNotice` uses — never `Emote`'s 16-byte player bound, and never a tighter
+    /// server-side cap of its own: `TriggerEffect::ScrollingText`'s own doc explains why). The
+    /// CLIENT independently display-truncates a long text to a much shorter limit
+    /// (`@shadowcat/render`'s `MAX_OVERLAY_DISPLAY_CHARS`) — the server accepts more than the
+    /// overlay ever shows. Out-of-band (no seq, never buffered/resynced). `gm_only` is decided
+    /// at fire time (`ws::room::Room::apply_region_trigger_effects`) from the firing region's
+    /// `/engine` visibility: `egress_loop` drops the frame for a non-GM connection when set,
+    /// mirroring a forced-`GmOnly` `ChatNotice`'s own audience restriction.
+    ScrollingText {
+        /// Scene the token stands on.
+        scene: Uuid,
+        /// Token the overlay plays over.
+        token: Uuid,
+        /// The overlay text.
+        text: String,
+        /// True when the firing region is not visible to every world member — the frame is
+        /// delivered only to GM connections.
+        gm_only: bool,
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
@@ -1249,8 +1630,10 @@ pub enum ServerMsg {
     PathError {
         /// The failed pathfind's correlation token.
         request_id: Uuid,
-        /// Player-presentable failure text.
+        /// Player-presentable failure text (`PathErrorReason::message`).
         message: String,
+        /// The typed failure a client chooses its notice from.
+        reason: PathErrorReason,
     },
     /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
     /// Addressed to the originating connection only; never broadcast.
@@ -1259,6 +1642,10 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Player-presentable failure text.
         message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the move; `None` for every
+        /// other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// A `SendMessage`/`EditMessage`/`DeleteMessage` was rejected. One shared
     /// variant covers all three chat ops: they share a single error enum
@@ -1282,6 +1669,10 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Player-presentable failure text.
         message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the intent; `None` for
+        /// every other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// A combat intent was accepted and committed as the sequenced `Event` at `seq`. Addressed to
     /// the originating connection only; never broadcast. The broadcast `Event` remains the state
@@ -1293,6 +1684,69 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// The committed command's sequence number — matches the broadcast `Event`'s `seq`.
         seq: i64,
+    },
+    /// A `ToggleDoor` request was rejected. Addressed to the originating connection only;
+    /// never broadcast. For a non-GM caller `message` is ONE uniform wording ("door
+    /// rejected") across every refusal reason — a distinguishable wording would disclose
+    /// whether the wall exists, is near, is visible, or is locked to a caller with no right
+    /// to learn any of it (mirroring `CombatError`'s own uniform-wording discipline); a GM
+    /// caller may receive a variant-specific diagnostic instead. Success is confirmed by the
+    /// broadcast `Event` echo of the wall's Update.
+    DoorToggleError {
+        /// The refused toggle's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned — see the variant doc).
+        message: String,
+    },
+    /// A `PlaceEffect` request was rejected. Addressed to the originating connection only; never
+    /// broadcast. For a non-GM caller `message` is ONE uniform wording ("placement rejected")
+    /// across every refusal reason, so a refusal never discloses whether a module, declaration,
+    /// scene or token exists; a GM caller may receive a variant-specific diagnostic. Success is
+    /// confirmed by the broadcast `Event` of the region Create.
+    PlaceEffectError {
+        /// The refused request's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned, see the variant doc).
+        message: String,
+    },
+    /// A portal region fired a `TriggerEffect::PortalChoice` for `token`: the destinations the
+    /// answerer may pick from. Out-of-band (no seq, never buffered or resynced) and ADDRESSED:
+    /// `egress_loop` delivers it only to a GM connection and, when `gm_only` is false, to the
+    /// connection of `owner` (`ws::conn::portal_offer_admitted`). `gm_only` is set when the
+    /// firing region is not visible to every world member, so a secret portal never reveals
+    /// itself to a player. A new offer for a token replaces its previous one.
+    PortalOffer {
+        /// Identifies the offer in `ClientMsg::ChoosePortal`.
+        offer_id: Uuid,
+        /// The scene the token stands on.
+        scene: Uuid,
+        /// The token that may take a portal.
+        token: Uuid,
+        /// The GM-authored heading, if any.
+        prompt: Option<String>,
+        /// The destinations in display order.
+        options: Vec<PortalOfferOption>,
+        /// True when only GM connections receive the frame.
+        gm_only: bool,
+        /// The token's effective owner, the one non-GM recipient of a public offer; `None` for
+        /// a token with no owner.
+        owner: Option<Uuid>,
+    },
+    /// A `ChoosePortal` or `OpenPortal` was refused. Addressed to the originating connection
+    /// only; never broadcast. For a non-GM caller `message` is ONE uniform wording across every
+    /// refusal reason, so a distinguishable wording cannot disclose whether an offer, a token
+    /// or a portal exists (`DoorToggleError`'s own discipline); a GM caller may receive a
+    /// variant-specific diagnostic. `reason` is `Some(RejectReason::Paused)` when the session
+    /// pause refused the answer.
+    PortalChoiceError {
+        /// The refused request's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned — see the variant doc).
+        message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the answer; `None` for
+        /// every other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory, `mover_vision` and `mover_light`; observers receive only the position samples
@@ -1406,6 +1860,15 @@ pub enum ServerMsg {
         elevation: Option<f64>,
         /// Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
         id: Uuid,
+    },
+    /// A relayed "the GM is presenting this note" focus signal. Out-of-band (no seq, never
+    /// buffered, resynced or logged), mirroring `Vfx`; carries no note content, so a recipient
+    /// who cannot read the note fails closed when its client tries to open the sheet.
+    PresentNote {
+        /// The `note` document being presented.
+        note_id: Uuid,
+        /// The GM who presented it (server-stamped).
+        presented_by: Uuid,
     },
 }
 

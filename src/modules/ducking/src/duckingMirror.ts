@@ -1,4 +1,3 @@
-import { DEFAULT_KEY } from "./keySource";
 import { DEFAULT_THRESHOLD } from "./osMonitor";
 import { DEFAULT_SENSITIVITY } from "./micVad";
 
@@ -9,8 +8,6 @@ export interface DuckingPreferences {
   masterEnabled: boolean;
   /** Push-to-duck key source enable. */
   keyEnabled: boolean;
-  /** The bound key's `KeyboardEvent.code`. */
-  keyBinding: string;
   /** Mic voice-activity source enable. */
   micEnabled: boolean;
   /** Mic VAD sensitivity multiplier. */
@@ -37,7 +34,6 @@ export const DUCKING_MIRROR_STORAGE_KEY = "shadowcat.ducking";
 export const DEFAULT_DUCKING_PREFERENCES: DuckingPreferences = {
   masterEnabled: true,
   keyEnabled: false,
-  keyBinding: DEFAULT_KEY,
   micEnabled: false,
   micSensitivity: DEFAULT_SENSITIVITY,
   osEnabled: false,

@@ -7,6 +7,7 @@ function ctxWithAudio(audio: {
   unlock: () => Promise<void>;
   setChannel: (id: string, patch: { muted?: boolean }) => void;
   channels: Record<string, { gain: number; muted: boolean }>;
+  needsGesture?: boolean;
 }) {
   return setAppContextForTest({ role: "gm", audio: audio as never });
 }
@@ -41,5 +42,38 @@ describe("StatusBar audio control", () => {
     await fireEvent.click(screen.getByTestId("audio-unlock"));
     await fireEvent.click(await screen.findByTestId("audio-mute-toggle"));
     expect(setChannel).toHaveBeenCalledWith("master", { muted: true });
+  });
+
+  it("needsGesture true keeps the unlock button after an unlock, and clicking it calls unlock again", async () => {
+    const unlock = vi.fn().mockResolvedValue(undefined);
+    render(StatusBar, {
+      context: ctxWithAudio({
+        unlock,
+        setChannel: () => {},
+        channels: { master: { gain: 1, muted: false } },
+        needsGesture: true,
+      }),
+    });
+    await fireEvent.click(screen.getByTestId("audio-unlock"));
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("audio-unlock")).toBeTruthy();
+    expect(screen.queryByTestId("audio-mute-toggle")).toBeNull();
+    await fireEvent.click(screen.getByTestId("audio-unlock"));
+    expect(unlock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an unlock that clears needsGesture swaps to the mute toggle", async () => {
+    const audio = {
+      needsGesture: true,
+      unlock: vi.fn(async () => {
+        audio.needsGesture = false;
+      }),
+      setChannel: () => {},
+      channels: { master: { gain: 1, muted: false } },
+    };
+    render(StatusBar, { context: ctxWithAudio(audio) });
+    await fireEvent.click(screen.getByTestId("audio-unlock"));
+    expect(await screen.findByTestId("audio-mute-toggle")).toBeTruthy();
+    expect(screen.queryByTestId("audio-unlock")).toBeNull();
   });
 });

@@ -1,8 +1,8 @@
-//! The asset query endpoint over the live HTTP surface: folder scope
-//! (root / direct / recursive), all-of tags, kind, the trigger-maintained
-//! `assets_fts` full-text `q` filter, size-capped regex, sorting, keyset
-//! pagination followed to the end — and the bare listing contract (no
-//! parameters ⇒ a plain array).
+//! The asset query endpoint over the live HTTP surface.
+//!
+//! The tests cover folder scope (root / direct / recursive), all-of tags, kind, the
+//! trigger-maintained `assets_fts` full-text `q` filter, size-capped regex, sorting, keyset
+//! pagination followed to the end — and the bare listing contract (no parameters ⇒ a plain array).
 
 use common::{spawn, Harness};
 use shadowcat::data::asset::{Asset, AssetMeta};
@@ -307,7 +307,7 @@ async fn sort_and_keyset_pagination_walk_to_the_end() {
     );
 
     // Name sort is case-insensitive; a regex page still carries a cursor
-    // over the rows it examined, so nothing is skipped when it is followed.
+    // at the last row tested, so nothing is skipped when it is followed.
     assert_eq!(
         names(&page(&h, "sort=name").await),
         vec![
@@ -344,4 +344,218 @@ async fn query_is_membership_gated() {
         .await
         .unwrap();
     assert_eq!(res.status(), 403);
+}
+
+/// Seeds one image per `(name, created_at)` pair, oldest first.
+async fn seed_named(h: &Harness, names: &[&str]) {
+    for (i, name) in names.iter().enumerate() {
+        seed(
+            h,
+            Seed {
+                name,
+                content_type: "image/webp",
+                size: 1,
+                created_at: i as i64 + 1,
+                folder: None,
+                explicit: &[],
+                derived: &[],
+            },
+        )
+        .await;
+    }
+}
+
+/// Follows `next_cursor` from the first page of `query` to the end, returning every visited
+/// item name in visit order.
+async fn walk_cursor_chain(h: &Harness, query: &str) -> Vec<String> {
+    let mut visited = Vec::new();
+    let mut next = query.to_string();
+    for _ in 0..20 {
+        let p = page(h, &next).await;
+        visited.extend(names(&p));
+        match p["next_cursor"].as_str() {
+            Some(c) => next = format!("{query}&cursor={c}"),
+            None => return visited,
+        }
+    }
+    panic!("cursor chain did not end: {visited:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_filling_mid_sql_page_resumes_at_the_next_untested_row() {
+    let h = spawn().await;
+    // A page of three fills after hit-5 while hit-6 is still untested and an SQL row follows.
+    seed_named(
+        &h,
+        &[
+            "hit-1", "miss-2", "miss-3", "hit-4", "hit-5", "hit-6", "miss-7", "hit-8",
+        ],
+    )
+    .await;
+    let visited = walk_cursor_chain(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(visited, vec!["hit-1", "hit-4", "hit-5", "hit-6", "hit-8"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_filling_on_the_last_sql_page_still_returns_a_cursor() {
+    let h = spawn().await;
+    // The final SQL page has no extra row, yet its last match is untested when the page fills.
+    seed_named(
+        &h,
+        &["hit-1", "miss-2", "miss-3", "hit-4", "hit-5", "hit-6"],
+    )
+    .await;
+    let visited = walk_cursor_chain(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(visited, vec!["hit-1", "hit-4", "hit-5", "hit-6"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn name_sort_cursor_chain_visits_every_non_ascii_uppercase_name_once() {
+    let h = spawn().await;
+    seed_named(&h, &["Éclair", "Élan", "Zed", "Álamo", "apple"]).await;
+    let mut visited = walk_cursor_chain(&h, "sort=name&limit=1").await;
+    visited.sort();
+    let mut want = vec!["Éclair", "Élan", "Zed", "Álamo", "apple"];
+    want.sort();
+    assert_eq!(visited, want);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_that_exactly_fills_with_no_row_after_it_has_no_cursor() {
+    let h = spawn().await;
+    seed_named(&h, &["hit-1", "hit-2", "hit-3"]).await;
+    let p = page(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(names(&p), vec!["hit-1", "hit-2", "hit-3"]);
+    assert!(
+        p["next_cursor"].is_null(),
+        "no row follows, so no cursor: {p}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_that_fills_with_a_non_matching_row_after_it_ends_on_an_empty_page() {
+    let h = spawn().await;
+    seed_named(&h, &["hit-1", "hit-2", "hit-3", "miss-4"]).await;
+    let first = page(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(names(&first), vec!["hit-1", "hit-2", "hit-3"]);
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("a row follows")
+        .to_string();
+    let second = page(&h, &format!("limit=3&name_regex=hit&cursor={cursor}")).await;
+    assert!(names(&second).is_empty());
+    assert!(second["next_cursor"].is_null(), "{second}");
+}
+
+/// The id of the asset named `name` in `h`'s world, via the bare listing.
+async fn id_of(h: &Harness, name: &str) -> Uuid {
+    let all: serde_json::Value = h
+        .client
+        .get(format!("http://{}/api/worlds/{}/assets", h.addr, h.world))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let found = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["original_name"] == name)
+        .unwrap_or_else(|| panic!("no asset named {name}"));
+    found["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// GETs the query and returns the status alone.
+async fn status_of(h: &Harness, world: Uuid, query: &str) -> u16 {
+    h.client
+        .get(format!(
+            "http://{}/api/worlds/{}/assets?{}",
+            h.addr, world, query
+        ))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_returns_only_the_named_assets_and_combines_with_other_filters() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let crypt = id_of(&h, "crypt").await;
+    let notes = id_of(&h, "notes.pdf").await;
+    let goblin = id_of(&h, "goblin.png").await;
+
+    assert_eq!(
+        names(&page(&h, &format!("ids={crypt},{notes}")).await),
+        vec!["notes.pdf", "crypt"],
+        "default order is creation time"
+    );
+    // AND-combined with the other filters: notes.pdf is not an image.
+    assert_eq!(
+        names(
+            &page(
+                &h,
+                &format!("ids={crypt},{notes},{goblin}&kind=image&sort=name")
+            )
+            .await
+        ),
+        vec!["crypt", "goblin.png"]
+    );
+    // An id naming no asset matches nothing; present-but-empty is an empty set, never the library.
+    assert!(names(&page(&h, &format!("ids={}", Uuid::new_v4())).await).is_empty());
+    assert!(names(&page(&h, "ids=").await).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_never_reaches_another_worlds_asset() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let other = h.repo.create_world("elsewhere", 0).await.unwrap();
+    let foreign = Uuid::new_v4();
+    h.repo
+        .insert_asset(&Asset {
+            id: foreign,
+            world_id: other.id,
+            storage_key: format!("{}/{}", other.id, foreign),
+            original_name: "foreign.png".into(),
+            content_type: "image/webp".into(),
+            byte_size: 1,
+            created_by: Some(h.user),
+            created_at: 1,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: AssetMeta::unprocessed("image/webp", 1),
+        })
+        .await
+        .unwrap();
+    let own = id_of(&h, "crypt").await;
+
+    // Naming a foreign id through the caller's own world yields nothing of it.
+    assert_eq!(
+        names(&page(&h, &format!("ids={foreign},{own}")).await),
+        vec!["crypt"]
+    );
+    // And the membership gate still refuses a world the caller is not in.
+    assert_eq!(
+        status_of(&h, other.id, &format!("ids={foreign}")).await,
+        403
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_is_capped_and_validated() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let cap = shadowcat::http::assets::query::MAX_IDS;
+    let at_cap = vec![Uuid::new_v4().to_string(); cap].join(",");
+    assert_eq!(status_of(&h, h.world, &format!("ids={at_cap}")).await, 200);
+    let over = vec![Uuid::new_v4().to_string(); cap + 1].join(",");
+    assert_eq!(status_of(&h, h.world, &format!("ids={over}")).await, 400);
+    assert_eq!(status_of(&h, h.world, "ids=not-a-uuid").await, 400);
 }

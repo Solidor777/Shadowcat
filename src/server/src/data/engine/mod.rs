@@ -1,7 +1,7 @@
-//! Typed `engine` band structs + the doc_type registry: the engine band
-//! exists iff `doc_type` is engine-defined, and its stored JSON must
-//! deserialize into that doc_type's struct — a strict ingress gate rather
-//! than an opaque pointer-walked body.
+//! This module declares the typed `engine` band structs and the doc_type registry.
+//!
+//! The engine band exists iff `doc_type` is engine-defined, and its stored JSON must deserialize
+//! into that doc_type's struct — a strict ingress gate rather than an opaque pointer-walked body.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -10,6 +10,7 @@
 
 pub mod asset_folder;
 pub mod audio;
+pub mod bars;
 pub mod combat;
 pub mod geometry;
 pub mod note;
@@ -17,6 +18,7 @@ pub mod registries;
 pub mod scene;
 pub mod system_defaults;
 pub mod table;
+pub mod table_folder;
 pub mod token;
 
 pub use audio::{
@@ -24,39 +26,49 @@ pub use audio::{
     AUDIO_STATE_DOC_TYPE, MAX_PLAYING_TRACKS, MAX_PLAYLIST_FADE_MS, MAX_PLAYLIST_TRACKS,
     PLAYLIST_DOC_TYPE,
 };
+pub use bars::{
+    validate_bars, BarAttribute, BarDisplayMode, MAX_BAR_ATTRIBUTES, MAX_BAR_LABEL_CHARS,
+};
 pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
-    CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
-    EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula,
-    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
-    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
+    CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, Duration,
+    DurationUnit, EffectEngine, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot,
+    Enforcement, ExpiryPoint, Formula, Interpretation, MovementRules, Recovery,
+    ResolvedCombatRules, Resource, ResourceBinding, ResourceRegistryEngine, TurnControl,
+    TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
-    DrawingEngine, DrawingShape, ElevationBand, Fill, NoticeAudience, PortalTarget, RegionEngine,
-    RegionShape, RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect,
-    TriggerEvent, WallEngine, MAX_TRIGGER_ID_CHARS,
+    AmbientLightMode, AmbientLightOverride, CompoundShapePart, DoorState, DrawingEngine,
+    DrawingShape, EffectiveWallFlags, ElevationBand, Fill, NoticeAudience, PortalOption,
+    PortalTarget, RegionAnchor, RegionEngine, RegionGeometry, RegionOcclusion, RegionShape,
+    RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent,
+    WallDirection, WallEngine, WallProximity, WallSense, WallSightTier, MAX_PORTAL_LABEL_CHARS,
+    MAX_PORTAL_OPTIONS, MAX_PROXIMITY_CELLS, MAX_REGION_SHAPE_PARTS, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
     ConditionRegistryEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction,
-    FactionRegistryEngine, FactionStance,
+    FactionRegistryEngine, FactionStance, ModuleSettingsEngine,
 };
 pub use scene::{
-    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
-    FalloffCurve, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode,
-    MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, SceneDimensions,
-    SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
-    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
-    MAX_SCENE_LEVELS,
+    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, FacingTurnRule,
+    Falloff, FalloffCurve, FogPooling, Grid, GridDistance, LightEmission, LightEngine,
+    LightGradationEngine, LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding,
+    Perception, RenderHint, SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides,
+    SceneVisionOverrides, SessionState, VisionMode, VisionModesEngine, WorldSceneDefaults,
+    WorldSettingsEngine, MAX_LEVEL_ID_CHARS, MAX_RENDER_TREATMENT_CHARS, MAX_SCENE_LEVELS,
+    MAX_SCENE_PADDING_CELLS, MAX_SESSION_MESSAGE_CHARS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
+pub use table_folder::TableFolderEngine;
 pub use token::{
-    ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
+    ActorEngine, AnimatedSource, FacingVision, GeneratedBackground, GeneratedBorder, GeneratedCrop,
+    RenderVisual, Size, SoundEmission, TokenArtFilter, TokenEngine, TokenOverrides, TokenVisual,
+    TransformAnchor, VisionAssignment, VisualTransform,
 };
 
 use crate::data::DataError;
@@ -69,6 +81,9 @@ pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
 /// Doc_type for the world's singleton channel registry config document.
 pub const CHANNEL_REGISTRY_DOC_TYPE: &str = "channel-registry";
+/// Doc_type for the world's singleton module-settings config document: one opaque `system`-band
+/// value per module id.
+pub const MODULE_SETTINGS_DOC_TYPE: &str = "module-settings";
 /// Maximum length of a chat channel id, in characters — the one declaration,
 /// shared by the message ingest check (`chat::handle_send_message`) and
 /// `ChannelRegistryEngine::validate` (a longer key could never be posted to).
@@ -81,6 +96,8 @@ pub const LIGHT_GRADATION_DOC_TYPE: &str = "light-gradation";
 pub const COMBAT_DOC_TYPE: &str = "combat";
 /// Doc_type for a combatant: always a child (`parent_id`) of a combat.
 pub const COMBATANT_DOC_TYPE: &str = "combatant";
+/// Doc_type for a combatant group: always a child (`parent_id`) of a combat.
+pub const COMBATANT_GROUP_DOC_TYPE: &str = "combatant-group";
 /// Doc_type for the world's singleton turn-resource registry.
 pub const RESOURCE_REGISTRY_DOC_TYPE: &str = "resource-registry";
 /// Doc_type for an effect (embedded under actors/items, or standalone).
@@ -91,6 +108,8 @@ pub const SYSTEM_DEFAULTS_DOC_TYPE: &str = "system-defaults";
 pub const COMBAT_HISTORY_DOC_TYPE: &str = "combat-history";
 /// Doc_type for an asset folder (`assets.folder_id` names one); parent = `parent_id`.
 pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
+/// Doc_type for a table folder: a `table` or another `table_folder` names one as its `parent_id`.
+pub const TABLE_FOLDER_DOC_TYPE: &str = "table_folder";
 
 /// Every doc_type carrying a typed `engine` band, the single data source
 /// `is_engine_doc_type` and `search_text` both dispatch from — so the
@@ -125,18 +144,21 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "effect",
     "system-defaults",
     "combat-history",
+    "combatant-group",
     "asset_folder",
+    "table_folder",
     "table",
     "note",
     "playlist",
     "audio-state",
+    "module-settings",
 ];
 
 /// Every `/engine/<key>` path a `doc_type`'s `normalize_engine` arm can
 /// rewrite BEYOND the path a caller's own `FieldChange`s named — the single
 /// source `data::validation::derive_engine_side_effects` consults to decide
 /// which top-level engine keys to diff at all. The only such derivation
-/// today is `NoteEngine::derive_body` (the `"note"` arm of `normalize_engine`
+/// is `NoteEngine::derive_body` (the `"note"` arm of `normalize_engine`
 /// above), which rewrites `/engine/body` from `/engine/source`; every other
 /// registered doc_type derives nothing beyond what it was asked to write, so
 /// it names an empty slice. INVARIANT: any `derive_*` call added to
@@ -277,7 +299,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("scene: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "wall" => round_trip::<WallEngine>(v, "wall"),
+        "wall" => {
+            let typed: WallEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("wall: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("wall: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "region" => {
             let typed: RegionEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("region: {e}")))?;
@@ -327,7 +356,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("world-settings: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
+        "vision-modes" => {
+            let typed: VisionModesEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("vision-modes: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("vision-modes: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
         "dice-settings" => {
@@ -410,7 +446,16 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("combat-history: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "combatant-group" => {
+            let typed: CombatantGroupEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("combatant-group: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("combatant-group: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
+        "table_folder" => round_trip::<table_folder::TableFolderEngine>(v, "table_folder"),
         "table" => {
             let typed: TableEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("table: {e}")))?;
@@ -438,6 +483,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("playlist: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "module-settings" => round_trip::<ModuleSettingsEngine>(v, "module-settings"),
         "audio-state" => {
             let typed: AudioStateEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("audio-state: {e}")))?;
@@ -597,6 +643,9 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
         "light-gradation" => typed_or_none::<LightGradationEngine>(engine)
             .map(|g| join_names(g.bands.iter().map(|b| b.name.as_str())))
             .unwrap_or_default(),
+        "combatant-group" => typed_or_none::<CombatantGroupEngine>(engine)
+            .map(|g| g.name)
+            .unwrap_or_default(),
         "token" => typed_or_none::<TokenEngine>(engine)
             .map(|t| t.overrides.and_then(|o| o.name).unwrap_or_default())
             .unwrap_or_default(),
@@ -612,7 +661,8 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
             .unwrap_or_default(),
         "scene" | "wall" | "region" | "light" | "drawing" | "template" | "world-settings"
         | "chat-settings" | "dice-settings" | "combat" | "combatant" | "effect"
-        | "system-defaults" | "asset_folder" | "playlist" | "audio-state" => String::new(),
+        | "system-defaults" | "asset_folder" | "table_folder" | "playlist" | "audio-state"
+        | "module-settings" => String::new(),
         _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
     })
 }

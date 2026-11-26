@@ -10,18 +10,19 @@
 // Test lines count. Splitting a test module into its own file is the intended remedy, and
 // `check-inline-tests.mjs` enforces that Rust test modules live in sibling files.
 //
-// Enumeration is `git ls-files`, so untracked scratch and build output never count.
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files,
+// minus files deleted in the working tree), so a new oversize file fails before `git add` and
+// ignored build output never counts.
 
 import { readFileSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { extname } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { GENERATED_ROOT, norm, under } from "./lib/gate-corpus.mjs";
+import { GENERATED_ROOT, REPO_ROOTS, norm, repoFiles, under } from "./lib/gate-corpus.mjs";
 
 export const SOFT_LIMIT = 5000;
 export const HARD_LIMIT = 10000;
-export const ROOTS = ["src", "scripts", "examples"];
+export const ROOTS = REPO_ROOTS;
 export const COVERED_EXTS = new Set([".rs", ".ts", ".js", ".mjs", ".svelte", ".scss", ".css"]);
 export const ALLOWLIST = ".claude/file-size-allowlist.toml";
 
@@ -98,7 +99,7 @@ export function evaluate({ files, allow }) {
         path,
         lines: lines ?? 0,
         message: `${path}: allowlist entry is stale (${
-          lines === undefined ? "file is not tracked" : `${lines} lines, at or under ${SOFT_LIMIT}`
+          lines === undefined ? "file is not in the corpus" : `${lines} lines, at or under ${SOFT_LIMIT}`
         }). Remove the entry.`,
       });
     }
@@ -106,14 +107,18 @@ export function evaluate({ files, allow }) {
   return errors;
 }
 
-/** Tracked paths under the roots, from git so build output and scratch never count. */
-function trackedFiles() {
-  const out = execFileSync("git", ["ls-files", "-z", "--", ...ROOTS], { encoding: "utf8" });
-  return out.split("\0").filter((p) => p.length > 0);
+/** Corpus paths under the roots, from git so ignored build output never counts. */
+function corpusFiles() {
+  try {
+    return repoFiles({ roots: ROOTS, label: "lint:file-size" });
+  } catch (e) {
+    console.error(`lint:file-size: ${e.message}`);
+    process.exit(2);
+  }
 }
 
 function main() {
-  const files = trackedFiles()
+  const files = corpusFiles()
     .filter(isCovered)
     .map((path) => ({ path: norm(path), lines: countLines(readFileSync(path, "utf8")) }));
   let allow = [];

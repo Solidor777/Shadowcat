@@ -9,14 +9,20 @@ use tokio::sync::Semaphore;
 // shared with `ws::room`'s test module.
 use crate::ws::test_support::{token_engine, ws_engine};
 
-/// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
+mod client_frame;
 mod combat_intents;
-/// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
+mod door_toggle;
+mod join_refusal;
 mod mover_light;
+mod place_effect;
+mod portal_choice;
+mod refusal_drain;
+mod reset_explored_fog;
+mod ruler;
 mod senses;
+mod shared_fog;
+mod shutdown_bound;
 
-/// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
-/// push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.
 mod merge_intents;
 
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
@@ -1046,6 +1052,8 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // A masked payload whose lit set is a 3×3 cell block in `scene` (5-int cells).
     let mut payload = json!({
@@ -1057,6 +1065,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1090,6 +1099,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1119,6 +1129,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1140,6 +1151,8 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
     let ghost = crate::test_ids::test_uuid(0xDEAD);
     let grid: std::collections::HashMap<Uuid, f64> = std::collections::HashMap::new();
     let shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     let mut payload = json!({
         "mode": "masked",
@@ -1150,6 +1163,7 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &shapes,
+            fog_pooling: &fog_pooling,
             repo: repo.as_ref(),
             world,
             user,
@@ -1176,6 +1190,8 @@ async fn enrich_see_as_player_is_read_only() {
     let target = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // Seed the target with one explored cell (as if they'd been there).
     let mut seed = crate::scene::explored::ExploredSet::new();
@@ -1201,6 +1217,7 @@ async fn enrich_see_as_player_is_read_only() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user: target,
@@ -1368,7 +1385,7 @@ async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
     )
     .await;
     assert!(
-        matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+        matches!(player_result, ServerMsg::PathError { ref message, reason: PathErrorReason::Unreachable, .. } if message == "unreachable"),
         "non-GM in dark scene should be unreachable; got {player_result:?}"
     );
 }
@@ -1699,122 +1716,8 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
     .unwrap();
     let refused = handle_pathfind(request(0xF103), &player, &room, repo.as_ref()).await;
     assert!(
-        matches!(refused, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+        matches!(refused, ServerMsg::PathError { ref message, reason: PathErrorReason::Unreachable, .. } if message == "unreachable"),
         "a non-turn-owner's Hard preview is refused with the one generic wording; got {refused:?}"
-    );
-}
-
-/// `scene_ping_permitted` admits a token-less reader and refuses a foreign-world scene, a
-/// scene whose `permissions.default` denies READ, and a ghost id.
-#[tokio::test]
-async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
-    use crate::auth::role::ServerRole;
-    use crate::data::document::{DocRole, WorldRole};
-    use crate::data::membership::PermissionContext;
-    use crate::ws::room::RoomRegistry;
-
-    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-    let gm = repo
-        .create_user("gm", None, ServerRole::User, 0)
-        .await
-        .unwrap();
-    let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    let other_world = repo.create_world_owned("X", gm, 0).await.unwrap();
-    let p = repo
-        .create_user("player", None, ServerRole::User, 0)
-        .await
-        .unwrap();
-    repo.add_member(world.id, p, WorldRole::Spectator)
-        .await
-        .unwrap();
-    let spectator = PermissionContext {
-        user_id: p,
-        world_role: WorldRole::Spectator,
-    };
-    let gm_ctx = PermissionContext {
-        user_id: gm,
-        world_role: WorldRole::Gm,
-    };
-    let gm_ctx_other = PermissionContext {
-        user_id: gm,
-        world_role: WorldRole::Gm,
-    };
-
-    let reg = RoomRegistry::new();
-    let room = reg
-        .get_or_create(repo.as_ref(), world.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let room_other = reg
-        .get_or_create(repo.as_ref(), other_world.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let wdoc = crate::data::document::tests::world_scoped_doc;
-
-    let (vis_id, foreign_id, hidden_id) = (
-        crate::test_ids::test_uuid(0xB001),
-        crate::test_ids::test_uuid(0xB002),
-        crate::test_ids::test_uuid(0xB003),
-    );
-
-    // A readable scene in this world (default DocRole is `None`, so an explicit
-    // `Observer` default is required for the spectator to hold READ).
-    let mut vis = wdoc(world.id, vis_id, "scene");
-    vis.owner = Some(gm);
-    vis.permissions.default = DocRole::Observer;
-    room.publish(
-        repo.as_ref(),
-        &gm_ctx,
-        vec![crate::data::command::Operation::Create { doc: vis }],
-        0,
-        WriteOrigin::Client,
-    )
-    .await
-    .unwrap();
-
-    // A scene in a DIFFERENT world (same GM authoring it).
-    let mut foreign = wdoc(other_world.id, foreign_id, "scene");
-    foreign.owner = Some(gm);
-    room_other
-        .publish(
-            repo.as_ref(),
-            &gm_ctx_other,
-            vec![crate::data::command::Operation::Create { doc: foreign }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-    // A scene in this world whose default grants nobody READ.
-    let mut hidden = wdoc(world.id, hidden_id, "scene");
-    hidden.owner = Some(gm);
-    hidden.permissions.default = DocRole::None;
-    room.publish(
-        repo.as_ref(),
-        &gm_ctx,
-        vec![crate::data::command::Operation::Create { doc: hidden }],
-        0,
-        WriteOrigin::Client,
-    )
-    .await
-    .unwrap();
-
-    // Token-less spectator may ping the scene they can read...
-    assert!(scene_ping_permitted(vis_id, &spectator, world.id, repo.as_ref()).await);
-    // ...but not a scene in another world, a scene that denies READ, or a ghost id.
-    assert!(!scene_ping_permitted(foreign_id, &spectator, world.id, repo.as_ref()).await);
-    assert!(!scene_ping_permitted(hidden_id, &spectator, world.id, repo.as_ref()).await);
-    assert!(
-        !scene_ping_permitted(
-            crate::test_ids::test_uuid(0xDEAD),
-            &spectator,
-            world.id,
-            repo.as_ref()
-        )
-        .await
     );
 }
 
@@ -1835,6 +1738,23 @@ fn audio_listen_as_permitted_admits_only_the_gm() {
     };
     assert!(audio_listen_as_permitted(&gm));
     assert!(!audio_listen_as_permitted(&player));
+}
+
+/// `scrolling_text_admitted` is the pure predicate `egress_loop`'s `ServerMsg::ScrollingText`
+/// arm calls to decide per-connection delivery: a non-`gm_only` frame reaches everyone; a
+/// `gm_only` frame reaches only a GM connection. Mutation witness: inverting the predicate's
+/// body to `gm_only && world_role == WorldRole::Gm` fails the first assertion below
+/// (`scrolling_text_admitted(false, WorldRole::Player)` flips from admitted to refused).
+#[test]
+fn scrolling_text_admitted_drops_for_non_gm_gm_only_and_keeps_for_gm() {
+    use crate::data::document::WorldRole;
+
+    // Not gm_only: every role is admitted.
+    assert!(scrolling_text_admitted(false, WorldRole::Player));
+    assert!(scrolling_text_admitted(false, WorldRole::Gm));
+    // gm_only: only a GM connection is admitted.
+    assert!(!scrolling_text_admitted(true, WorldRole::Player));
+    assert!(scrolling_text_admitted(true, WorldRole::Gm));
 }
 
 /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that
@@ -1975,7 +1895,7 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
     )
     .await;
     assert!(
-        matches!(leaked, ServerMsg::PathError { .. }),
+        matches!(leaked, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "a player with no token in B must not route inside B; got {leaked:?}"
     );
 
@@ -1996,7 +1916,7 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
     )
     .await;
     assert!(
-        matches!(leaked_with_named_token, ServerMsg::PathError { .. }),
+        matches!(leaked_with_named_token, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "naming an owned token grants no presence in another scene; got {leaked_with_named_token:?}"
     );
 
@@ -2044,8 +1964,8 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
 /// `Pathfind` naming a token the requester does not effectively own is refused generically —
 /// the named token is a footprint SOURCE, not a delegated presence grant, so an attacker
 /// cannot read a stranger's token size (or probe gaps sized to it) by naming an id they do
-/// not control. Both requesters have their OWN token in the scene, so the Step-0 presence
-/// gate passes for both — isolating this test to the token-ownership check (Step 4).
+/// not control. Both requesters have their OWN token in the scene, so the presence gate
+/// passes for both — isolating this test to the named-token ownership check.
 #[tokio::test]
 async fn pathfind_naming_an_unowned_token_is_refused() {
     use crate::auth::role::ServerRole;
@@ -2181,14 +2101,14 @@ async fn pathfind_naming_an_unowned_token_is_refused() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "an unowned token is refused generically; got {res:?}"
     );
 }
 
 /// Guards the cross-scene axis: the requester has their OWN token in the named scene (so
-/// Step-0 presence passes), but names a token they own in a DIFFERENT scene — the footprint
-/// derivation (Step 4) must still refuse, isolating this from the presence gate.
+/// the presence gate passes), but names a token they own in a DIFFERENT scene — the footprint
+/// derivation must still refuse, isolating this from the presence gate.
 #[tokio::test]
 async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     use crate::auth::role::ServerRole;
@@ -2290,8 +2210,8 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     .await
     .unwrap();
 
-    // The player's OWN token in B, so the Step-0 presence gate for B passes independently of
-    // the named token — isolating this test to Step 4's cross-scene check.
+    // The player's OWN token in B, so the presence gate for B passes independently of
+    // the named token — isolating this test to the footprint derivation's cross-scene check.
     let mut tb = wdoc(world.id, token_in_b, "token");
     tb.parent_id = Some(scene_b);
     tb.owner = Some(p);
@@ -2323,7 +2243,7 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "a token outside the named scene is refused; got {res:?}"
     );
 }
@@ -2331,8 +2251,8 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
 /// Builds a scene with a 1-cell-wide corridor (walls at x=100 and x=200, cell=100) and one
 /// owned, actor-linked token whose real footprint (radius 1.0 cell, `circle` shape, size
 /// 2.0x2.0) is far too wide for the 100-unit corridor (which admits at most radius 0.5 cell).
-/// Shared by the "ignores a lying wire footprint" (Step 4 derives and refuses) and "no token
-/// honors the wire value" (Step 4 is skipped entirely) tests below.
+/// Shared by the "ignores a lying wire footprint" (the footprint derivation refuses) and "no token
+/// honors the wire value" (the footprint derivation is skipped entirely) tests below.
 async fn harness_with_narrow_corridor_and_large_owned_token() -> (
     Arc<SqliteRepository>,
     Arc<crate::ws::room::Room>,
@@ -2506,7 +2426,7 @@ async fn pathfind_naming_an_owned_token_ignores_a_lying_wire_footprint() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "the derived footprint does not fit the corridor, so no route is returned; got {res:?}"
     );
 }
@@ -2676,7 +2596,10 @@ async fn pathfind_refuses_an_oversized_derived_footprint() {
         repo.as_ref(),
     )
     .await;
-    assert!(matches!(res, ServerMsg::PathError { .. }), "got {res:?}");
+    assert!(
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
+        "got {res:?}"
+    );
 }
 
 /// `handle_move_request` executes a move, broadcasts `MoveStream` to the room,
@@ -2887,12 +2810,15 @@ async fn enrich_token_less_player_emits_no_explored() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let grid = std::collections::HashMap::new();
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
     let mut payload = json!({ "mode": "masked", "polygons": [], "lit": [] });
     enrich_vision_explored(
         &mut payload,
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world: crate::test_ids::test_uuid(1),
             user: crate::test_ids::test_uuid(2),
@@ -3872,7 +3798,7 @@ async fn clip_gm_see_as_clips_to_target_vision() {
 
 /// A see-as whose target has NO vision source in the move's scene (their token is in a
 /// DIFFERENT scene) must NOT clip — the see-as is not applicable to this scene, so the GM
-/// keeps the full unclipped stream (today's plain-GM behavior). Scene-exactness guard: the
+/// keeps the full unclipped stream. Scene-exactness guard: the
 /// target's token lives in `scene_id`, but the move targets an unrelated scene, so
 /// `player_vision_polygons(target)` (tagged with `scene_id`) filters to empty for the move's
 /// scene.
@@ -4537,6 +4463,8 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // Two lit groups: a floor-1 source sees cell (0,0); a floor-2 source sees cell (5,5).
     let mut payload = json!({
@@ -4552,6 +4480,7 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -4587,6 +4516,7 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -4599,6 +4529,272 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     assert_eq!(emitted.len(), 1);
     assert_eq!(emitted[0]["level"], json!("l2"));
     assert_eq!(emitted[0]["cells"].as_array().unwrap().len(), 2);
+}
+
+/// A scene resolved to `FogPooling::Shared` reads/writes the reserved `Uuid::nil()` bucket, not
+/// the recipient's own `user` id — `enrich_vision_explored` never persists under `user` once
+/// pooling is on.
+#[tokio::test]
+async fn enrich_vision_explored_reads_the_shared_bucket_when_scene_is_pooled() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    assert!(
+        repo.get_explored(scene, "", user).await.unwrap().is_none(),
+        "pooled mode must not write under the real user id"
+    );
+    let pooled = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(
+        pooled.len(),
+        1,
+        "the visible cell landed in the nil-sentinel bucket"
+    );
+}
+
+/// Absent from `fog_pooling` (or explicitly `Individual`) keys the bucket by the recipient's own
+/// `user` id.
+#[tokio::test]
+async fn enrich_vision_explored_reads_the_individual_bucket_by_default() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    // No entry for `scene`: `enrich_vision_explored` must fall back to `Individual`.
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
+
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    assert!(
+        repo.get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .is_none(),
+        "individual mode must not write under the nil sentinel"
+    );
+    let stored = crate::scene::explored::ExploredSet::from_bytes(
+        &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(stored.len(), 1);
+}
+
+/// The end-to-end pin: two distinct real users produce IDENTICAL `explored` WIRE PAYLOADS for
+/// the same pooled scene, because both keyed reads resolve to the same nil-sentinel bucket. A and
+/// B explore DIFFERENT cells so a broken (per-user) keying would leave each seeing only their own
+/// cell -- a same-cell setup would coincidentally match even when broken, since it discloses
+/// nothing about whose bucket the read actually came from. B's call happens second (folding in A's
+/// cell via the shared bucket), then A re-queries so both comparisons happen after the same writes
+/// have landed; the assertion compares the WIRE payloads themselves, not just repository state.
+#[tokio::test]
+async fn two_different_users_see_the_same_explored_set_under_shared_pooling() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user_a = crate::test_ids::test_uuid(20);
+    let user_b = crate::test_ids::test_uuid(21);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+    let ctx = |user: Uuid| ExploredCtx {
+        grid: &grid,
+        grid_shapes: &grid_shapes,
+        fog_pooling: &fog_pooling,
+        repo: &repo,
+        world,
+        user,
+    };
+
+    // User A explores cell (0,0).
+    let mut payload_a = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_a, ctx(user_a), "", true).await;
+
+    // User B explores a DIFFERENT cell, (1,1).
+    let mut payload_b = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [1, 1, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_b, ctx(user_b), "", true).await;
+
+    // A re-checks with no NEW cell (re-lighting its own already-explored (0,0)) so its second
+    // payload reflects the bucket as it stands after B's write too.
+    let mut payload_a2 = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_a2, ctx(user_a), "", true).await;
+
+    // The actual property under test: A's post-write view and B's own emitted view are
+    // byte-identical wire frames, each containing BOTH cells -- proof both reads/writes landed
+    // in the one shared bucket rather than two independent per-user buckets that coincidentally
+    // agree.
+    assert_eq!(
+        payload_a2["explored"], payload_b["explored"],
+        "two distinct users on a Shared-pooling scene must receive identical `explored` wire \
+         payloads, not merely agree on repository state"
+    );
+    assert_eq!(
+        payload_b["explored"][0]["cells"].as_array().unwrap().len(),
+        4,
+        "the shared bucket must contain both users' cells: (0,0) and (1,1)"
+    );
+
+    let pool_view = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(pool_view.len(), 2);
+    assert!(
+        repo.get_explored(scene, "", user_a)
+            .await
+            .unwrap()
+            .is_none(),
+        "user A's own id must hold no separate row once pooled"
+    );
+    assert!(
+        repo.get_explored(scene, "", user_b)
+            .await
+            .unwrap()
+            .is_none(),
+        "user B's own id must hold no separate row once pooled"
+    );
+}
+
+/// Flipping the mode does not delete or merge existing rows: the old per-user row survives
+/// under the old key, invisible while `Shared`, and reappears unchanged if flipped back.
+#[tokio::test]
+async fn flipping_pooling_mode_does_not_delete_or_merge_existing_rows() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+
+    // Seed an individual-mode row directly (as if explored before any mode flip).
+    let mut individual = crate::scene::explored::ExploredSet::new();
+    individual.mark_cells([(0, 0)]);
+    repo.set_explored(
+        world,
+        scene,
+        "",
+        user,
+        &individual.to_bytes(crate::scene::GridKind::Square),
+    )
+    .await
+    .unwrap();
+
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let shared =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+
+    // Flip to Shared and explore a different cell -- writes land in the nil bucket, the
+    // individual row is left untouched.
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [5, 5, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &shared,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    let old_individual_row = crate::scene::explored::ExploredSet::from_bytes(
+        &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(
+        old_individual_row.len(),
+        1,
+        "the pre-flip individual row is neither deleted nor merged into"
+    );
+    assert!(old_individual_row.contains((0, 0)));
+    assert!(
+        !old_individual_row.contains((5, 5)),
+        "the Shared-mode write did not land in the individual row"
+    );
+
+    let shared_row = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert!(shared_row.contains((5, 5)));
+    assert!(
+        !shared_row.contains((0, 0)),
+        "the shared bucket starts empty; nothing was migrated into it"
+    );
 }
 
 #[test]
@@ -4618,4 +4814,42 @@ fn ws_max_message_bytes_exceeds_the_largest_admissible_intent_and_stays_under_th
         WS_MAX_MESSAGE_BYTES < upload_max_bytes,
         "cap {WS_MAX_MESSAGE_BYTES} must stay well below the HTTP upload limit {upload_max_bytes}"
     );
+}
+
+/// Every pathfinder failure reaches the wire through one conversion, and each variant keeps its own
+/// typed reason and presentable text.
+#[test]
+fn path_fail_converts_to_its_wire_reason() {
+    use crate::scene::pathfinding::PathFail;
+    let cases = [
+        (
+            PathFail::Invalid,
+            PathErrorReason::Invalid,
+            "invalid request",
+        ),
+        (
+            PathFail::Unreachable,
+            PathErrorReason::Unreachable,
+            "unreachable",
+        ),
+        (
+            PathFail::Exceeded,
+            PathErrorReason::Exceeded,
+            "search exceeded",
+        ),
+    ];
+    for (fail, reason, text) in cases {
+        let converted = PathErrorReason::from(fail);
+        assert_eq!(converted, reason);
+        let ServerMsg::PathError {
+            message,
+            reason: carried,
+            ..
+        } = path_error(Uuid::nil(), converted)
+        else {
+            panic!("path_error must build a PathError");
+        };
+        assert_eq!(carried, reason);
+        assert_eq!(message, text);
+    }
 }

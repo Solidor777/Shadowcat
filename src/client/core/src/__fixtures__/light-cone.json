@@ -1,0 +1,18 @@
+[
+  { "name": "straight ahead of a 90 degree cone", "pos": [0, 0], "rotation": 0, "angle": 90, "point": [10, 0], "lit": true },
+  { "name": "directly behind a 90 degree cone", "pos": [0, 0], "rotation": 0, "angle": 90, "point": [-10, 0], "lit": false },
+  { "name": "exactly on the upper edge", "pos": [0, 0], "rotation": 0, "angle": 90, "point": [10, 10], "lit": true },
+  { "name": "just past the upper edge", "pos": [0, 0], "rotation": 0, "angle": 90, "point": [10, 11], "lit": false },
+  { "name": "exactly on the lower edge", "pos": [0, 0], "rotation": 0, "angle": 90, "point": [10, -10], "lit": true },
+  { "name": "rotation 90 points toward +y", "pos": [0, 0], "rotation": 90, "angle": 90, "point": [0, 10], "lit": true },
+  { "name": "rotation 90 does not light -y", "pos": [0, 0], "rotation": 90, "angle": 90, "point": [0, -10], "lit": false },
+  { "name": "rotation 350 wraps across zero", "pos": [0, 0], "rotation": 350, "angle": 40, "point": [10, 1], "lit": true },
+  { "name": "rotation 350 does not reach 30 degrees", "pos": [0, 0], "rotation": 350, "angle": 40, "point": [10, 6], "lit": false },
+  { "name": "negative rotation equals its positive twin", "pos": [0, 0], "rotation": -10, "angle": 40, "point": [10, 1], "lit": true },
+  { "name": "rotation past a full turn", "pos": [0, 0], "rotation": 720, "angle": 90, "point": [10, 0], "lit": true },
+  { "name": "a 360 degree cone lights behind", "pos": [0, 0], "rotation": 0, "angle": 360, "point": [-5, 0], "lit": true },
+  { "name": "the light's own position is lit", "pos": [40, 40], "rotation": 180, "angle": 10, "point": [40, 40], "lit": true },
+  { "name": "no angle is a full circle", "pos": [0, 0], "rotation": 0, "angle": null, "point": [-10, 0], "lit": true },
+  { "name": "offset light facing -x lights its west", "pos": [100, 100], "rotation": 180, "angle": 60, "point": [50, 100], "lit": true },
+  { "name": "offset light facing -x does not light its east", "pos": [100, 100], "rotation": 180, "angle": 60, "point": [150, 100], "lit": false }
+]

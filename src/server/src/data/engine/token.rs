@@ -1,6 +1,7 @@
-//! `token`/`actor` engine bands. Field shapes mirror the
-//! client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
-//! lives on the envelope instead).
+//! This module defines the `token` and `actor` engine bands.
+//!
+//! The client's `TokenEngine` and `ActorEngine` are the TypeScript types generated from these
+//! structs. Neither carries a `name` field, because the envelope `name` holds it.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -13,9 +14,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::bars::{validate_bars, BarAttribute, BarDisplayMode};
+use crate::data::engine::registries::FactionStance;
 use crate::data::engine::scene::LightEmission;
 
-/// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
+/// A token's transform + visual (exported to the client as `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
 ///
@@ -35,6 +38,9 @@ use crate::data::engine::scene::LightEmission;
 ///     overrides: None,
 ///     face: None,
 ///     elevation: None,
+///     lock_rotation: false,
+///     identity_hidden: false,
+///     facing_vision: None,
 /// };
 /// assert_eq!(token.w, 50.0);
 /// ```
@@ -74,6 +80,32 @@ pub struct TokenEngine {
     /// stored value to ground.
     #[serde(default)]
     pub elevation: Option<f64>,
+    /// When true, a move never auto-rotates this token to face its movement direction (see
+    /// `scene::move_exec::bearing_degrees`), whatever the resolved scene's `auto_rotate_tokens`
+    /// says. Per-token presentation state like `elevation`, so linked and instanced tokens
+    /// carry it identically (it is not an `overrides` field). Writing it is GM-only
+    /// (`permission::rotation_lock_touched`): the lock binds a player's rotation
+    /// (`scene::rotation_gate::rotation_refusal`), so an owner who could clear it would not be
+    /// bound by it.
+    #[serde(default)]
+    pub lock_rotation: bool,
+    /// Secret-identity mode: when true, every recipient who is neither the token's effective
+    /// owner nor a GM receives the token without its presented identity (`/name`,
+    /// `/engine/visual`, `/engine/overrides/visual`, `/engine/overrides/name`,
+    /// `/engine/overrides/disposition` and `/engine/actor_id`, so the linked actor's own
+    /// visual, faction and disposition cannot be joined back). `permission::own_overrides`
+    /// synthesizes that set from this one flag, so it cannot apply to some readers and not
+    /// others. Writing it is GM-only (`permission::identity_hidden_touched`): it changes what
+    /// every other viewer perceives.
+    #[serde(default)]
+    pub identity_hidden: bool,
+    /// Facing-limited field of view of an ACTORLESS token (no `actor_id`, no embedded actor);
+    /// every other token resolves it from its actor or `TokenOverrides::facing_vision`
+    /// (`SceneEcs::token_facing_vision`). Ignored unless the scene's `facing_vision` switch is on.
+    /// Writing it is GM-only (`permission::facing_vision_touched`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
 }
 
 impl TokenEngine {
@@ -107,6 +139,9 @@ impl TokenEngine {
             if !e.is_finite() {
                 return Err("elevation must be finite".to_string());
             }
+        }
+        if let Some(f) = &self.facing_vision {
+            f.validate()?;
         }
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
         if self.x.abs() > bound || self.y.abs() > bound {
@@ -328,11 +363,15 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 ///     size: None,
 ///     shape: None,
 ///     vision: None,
+///     facing_vision: None,
 ///     light: None,
 ///     movement: None,
 ///     aura: None,
 ///     sound: None,
 ///     vfx: None,
+///     disposition: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
 /// ```
@@ -354,14 +393,21 @@ pub struct TokenOverrides {
     /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     #[serde(default)]
     pub size: Option<Size>,
-    /// "square" | "circle" — kept a `String` in v1 (the literal set is
-    /// asserted by the unit battery, not enforced by a Rust enum).
+    /// "square" | "circle" by client convention; ingress accepts any string within the
+    /// engine band's `MAX_SYSTEM_BYTES` cap. A square scene's `resolve_footprint_cells` reads
+    /// `"circle"` as a disc and every other value as a box; a hex scene ignores it.
     #[serde(default)]
     pub shape: Option<String>,
     /// Per-token vision override: replaces the actor's `vision[]` entirely
     /// when present.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Per-token facing-limited field of view: replaces the actor's `facing_vision` wholesale
+    /// when present. Ignored unless the scene's `facing_vision` switch is on. Writing it is
+    /// GM-only (`permission::facing_vision_touched`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
     /// Per-token light override: replaces the actor's `light` entirely when
     /// present (wholesale, same shape as `vision`); an emission with
     /// `enabled: false` suppresses this token's carried light. Authoring it is
@@ -387,6 +433,20 @@ pub struct TokenOverrides {
     /// present (wholesale, never merged).
     #[serde(default)]
     pub vfx: Option<VfxEmission>,
+    /// Per-token disposition override (friendly/neutral/hostile), independent of the linked
+    /// faction's `Faction.stance`. Precedence: this value, else the faction's stance, else
+    /// neutral. Reuses `FactionStance`, the one three-value stance enum.
+    #[serde(default)]
+    pub disposition: Option<FactionStance>,
+    /// Per-token bar list: replaces the actor's `bars` entirely when present (wholesale, never
+    /// merged); at most `MAX_BAR_ATTRIBUTES` entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Per-token nameplate delivery override, replacing the actor's `nameplate_mode` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl TokenOverrides {
@@ -398,6 +458,9 @@ impl TokenOverrides {
             visual
                 .validate()
                 .map_err(|m| format!("overrides.visual: {m}"))?;
+        }
+        if let Some(f) = &self.facing_vision {
+            f.validate().map_err(|m| format!("overrides.{m}"))?;
         }
         if let Some(light) = &self.light {
             light
@@ -412,6 +475,9 @@ impl TokenOverrides {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "overrides.bars")?;
         }
         Ok(())
     }
@@ -473,6 +539,60 @@ pub struct VisionAssignment {
     pub range: Option<f64>,
 }
 
+/// A creature's facing-limited field of view: it sees a forward arc of `arc` degrees instead of
+/// all round, plus an all-round awareness bubble of `near` cells. It takes effect only on a scene
+/// whose resolved `facing_vision` switch is on (`ResolvedScene::facing_vision`); the forward
+/// direction is the token's `TokenEngine::rotation`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FacingVision;
+///
+/// let guard = FacingVision { arc: 120.0, near: 1.0 };
+/// assert!(guard.validate().is_ok());
+/// assert!(FacingVision { arc: 0.0, near: 0.0 }.validate().is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct FacingVision {
+    /// Full width of the forward arc in degrees, finite and in `(0, 360]`; `360` is no restriction.
+    pub arc: f64,
+    /// All-round awareness radius in grid CELLS, finite and `>= 0`: inside it facing does not
+    /// matter.
+    pub near: f64,
+}
+
+impl FacingVision {
+    /// Ingress validation: `arc` finite and in `(0, 360]`, `near` finite and `>= 0`. A stored value
+    /// that fails this at read time resolves to the bubble-only view (`scene::facing_arc_for`),
+    /// never to full sight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::FacingVision;
+    ///
+    /// assert!(FacingVision { arc: 360.0, near: 0.0 }.validate().is_ok());
+    /// assert!(FacingVision { arc: 361.0, near: 0.0 }.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.arc.is_finite() || self.arc <= 0.0 || self.arc > 360.0 {
+            return Err("facing_vision.arc must be finite and in (0, 360]".to_string());
+        }
+        if !self.near.is_finite() || self.near < 0.0 {
+            return Err("facing_vision.near must be finite and >= 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Serde skip predicate: omits a `false` flag from the wire form.
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 /// The client-owned token/actor visual union. Internally tagged on
 /// `kind`; serde does not support `deny_unknown_fields` on an internally
 /// tagged enum (a documented limitation — NOT applied here).
@@ -482,7 +602,7 @@ pub struct VisionAssignment {
 /// ```
 /// use shadowcat::data::engine::TokenVisual;
 ///
-/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false };
 /// let json = serde_json::to_value(&visual).unwrap();
 /// // Internally tagged on `kind`, lowercase.
 /// assert_eq!(json["kind"], "image");
@@ -497,6 +617,18 @@ pub enum TokenVisual {
     Image {
         /// Asset id of the image.
         asset: String,
+        /// True when the server drew this image from a `RandomVariant` pool; false for art an
+        /// author chose. A pool save redraws only drawn art
+        /// (`SqliteRepository::redraw_linked_token_art`), so hand-set art is never replaced. The
+        /// flag is the only record of provenance, so it travels with the value.
+        #[serde(default, skip_serializing_if = "is_false")]
+        #[ts(optional, type = "boolean")]
+        drawn: bool,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A frame-animated visual.
     Animated {
@@ -507,6 +639,11 @@ pub enum TokenVisual {
         /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A named set of switchable faces.
     Faces {
@@ -534,6 +671,50 @@ pub enum TokenVisual {
         #[serde(default)]
         background: Option<GeneratedBackground>,
     },
+    /// A pool of candidate images, resolved to one concrete `Image` server-side on every save
+    /// that writes it (`SqliteRepository::resolve_token_random_variants`, at a token's Create
+    /// and at a token's Update), for every per-token storage location it appears in
+    /// (`TokenEngine.visual`, `TokenOverrides.visual`, each embedded-actor copy's
+    /// `engine.visual` of an instanced token). A token document never keeps a `RandomVariant`
+    /// past the save that set it. The one place it persists is a SHARED actor's own
+    /// `ActorEngine.visual`: there it is the template, each linked token draws independently
+    /// into its own `overrides.visual` when created or when its override is cleared, and every
+    /// save of the actor's pool draws again for each linked token whose `overrides.visual` is
+    /// absent or server-drawn (`TokenVisual::Image::drawn`). A linked token whose art a person
+    /// set by hand keeps it (`SqliteRepository::redraw_linked_token_art`).
+    #[serde(rename = "randomVariant")]
+    RandomVariant {
+        /// Candidate pool, scoped to the token's world and to image assets at draw time.
+        filter: TokenArtFilter,
+        /// Used verbatim when `filter` matches no asset, so a token is never left with no visual.
+        /// `TokenVisual::validate` refuses a `RandomVariant` here: `Box<TokenVisual>` does not
+        /// exclude the recursive case at the type level the way `Box<RenderVisual>` does.
+        fallback: Box<TokenVisual>,
+    },
+}
+
+/// The pool specification of `TokenVisual::RandomVariant`: a restricted mirror of
+/// `data::asset::query::AssetFilter` (folder and tags only; a pool is authored, never searched).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TokenArtFilter;
+///
+/// let filter = TokenArtFilter::default();
+/// assert!(filter.folder.is_none() && filter.tags.is_empty());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+pub struct TokenArtFilter {
+    /// Restrict the pool to this `asset_folder`'s subtree (`FolderFilter::In` with
+    /// `recursive: true`); `None` is the whole world (`FolderFilter::Any`).
+    #[ts(optional)]
+    pub folder: Option<Uuid>,
+    /// Every listed tag must be present (explicit or derived), the all-of semantics of
+    /// `AssetFilter.tags`.
+    pub tags: Vec<String>,
 }
 
 impl TokenVisual {
@@ -543,11 +724,19 @@ impl TokenVisual {
     /// `RenderVisual::validate`.
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            TokenVisual::Image { asset } => {
+            TokenVisual::Image {
+                asset, transform, ..
+            } => {
                 crate::data::engine::geometry::validate_asset_ref(asset)
-                    .map_err(|m| format!("asset: {m}"))
+                    .map_err(|m| format!("asset: {m}"))?;
+                validate_transform(transform)
             }
-            TokenVisual::Animated { source, .. } => source.validate(),
+            TokenVisual::Animated {
+                source, transform, ..
+            } => {
+                source.validate()?;
+                validate_transform(transform)
+            }
             TokenVisual::Faces { faces, .. } => {
                 for (name, visual) in faces {
                     visual
@@ -571,6 +760,12 @@ impl TokenVisual {
                 }
                 Ok(())
             }
+            TokenVisual::RandomVariant { fallback, .. } => {
+                if matches!(**fallback, TokenVisual::RandomVariant { .. }) {
+                    return Err("a random-variant pool's fallback cannot itself be a pool".into());
+                }
+                fallback.validate().map_err(|m| format!("fallback: {m}"))
+            }
         }
     }
 }
@@ -584,7 +779,7 @@ impl TokenVisual {
 /// ```
 /// use shadowcat::data::engine::RenderVisual;
 ///
-/// let visual = RenderVisual::Image { asset: "token-goblin.png".to_string() };
+/// let visual = RenderVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
 /// let json = serde_json::to_value(&visual).unwrap();
 /// assert_eq!(json["kind"], "image");
 /// // A face's visual is a leaf kind: the `faces` discriminant is refused here.
@@ -599,6 +794,11 @@ pub enum RenderVisual {
     Image {
         /// Asset id of the image.
         asset: String,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A frame-animated visual.
     Animated {
@@ -609,6 +809,11 @@ pub enum RenderVisual {
         /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A generated token visual: existing art framed by a shape crop, an
     /// optional decorative border ring, and an optional background fill. The
@@ -637,11 +842,17 @@ impl RenderVisual {
     /// here, never `Faces` itself — see this enum's own doc).
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            RenderVisual::Image { asset } => {
+            RenderVisual::Image { asset, transform } => {
                 crate::data::engine::geometry::validate_asset_ref(asset)
-                    .map_err(|m| format!("asset: {m}"))
+                    .map_err(|m| format!("asset: {m}"))?;
+                validate_transform(transform)
             }
-            RenderVisual::Animated { source, .. } => source.validate(),
+            RenderVisual::Animated {
+                source, transform, ..
+            } => {
+                source.validate()?;
+                validate_transform(transform)
+            }
             RenderVisual::Generated {
                 art,
                 border,
@@ -738,6 +949,100 @@ impl GeneratedBackground {
     }
 }
 
+/// The point of the art that aligns to the token's footprint origin, as a fraction of the art's
+/// own box (`{0.5, 0.5}` is the centered default). Not clamped to `[0, 1]`: an author may anchor
+/// outside the box on purpose.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TransformAnchor;
+///
+/// let anchor = TransformAnchor { x: 0.5, y: 0.75 };
+/// assert_eq!(anchor.y, 0.75);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct TransformAnchor {
+    /// Horizontal anchor fraction.
+    pub x: f64,
+    /// Vertical anchor fraction.
+    pub y: f64,
+}
+
+/// Authored framing of a plain image or animated token visual: where the art is anchored, how
+/// much it is scaled against the token's box, and a static multiply tint. `"generated"` visuals
+/// frame their art with crop/border/background instead and carry no transform of their own; a
+/// generated visual's nested `art` may carry one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{TransformAnchor, VisualTransform};
+///
+/// let transform = VisualTransform {
+///     anchor: TransformAnchor { x: 0.5, y: 0.6 },
+///     scale: 1.25,
+///     tint: Some("#ffcc88".to_string()),
+///     facing: Some(270.0),
+/// };
+/// assert_eq!(transform.scale, 1.25);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VisualTransform {
+    /// Art point aligned to the token's footprint origin.
+    pub anchor: TransformAnchor,
+    /// Multiplier on the art's drawn size against the token's box; `> 1` bleeds past the
+    /// footprint. Finite and positive.
+    pub scale: f64,
+    /// Multiply tint, a css `#rrggbb` string, or `None` for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tint: Option<String>,
+    /// The direction the art itself faces as drawn, in degrees in the `TokenEngine::rotation`
+    /// convention (0 faces +x, clockwise on the y-down canvas, so 90 faces down and 270 faces
+    /// up), in `[0, 360)`. The renderer turns the art by the token's rotation minus this angle,
+    /// so the art points along the token's facing. `None` means the art is drawn facing +x.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing: Option<f64>,
+}
+
+impl VisualTransform {
+    /// Ingress validation beyond serde shape: finite anchor, finite positive scale, a css
+    /// `#rrggbb` tint when present, and a finite `facing` in `[0, 360)` when present. The anchor
+    /// is deliberately not range-clamped.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(facing) = self.facing {
+            if !facing.is_finite() || !(0.0..360.0).contains(&facing) {
+                return Err("transform facing must be finite and in [0, 360)".to_string());
+            }
+        }
+        if !self.anchor.x.is_finite() || !self.anchor.y.is_finite() {
+            return Err("transform anchor must be finite".to_string());
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err("transform scale must be finite and positive".to_string());
+        }
+        if let Some(tint) = &self.tint {
+            crate::data::engine::geometry::validate_hex_color(tint)?;
+        }
+        Ok(())
+    }
+}
+
+/// Validates an optional `VisualTransform`, prefixing a failure with its field name; `None`
+/// passes. Shared by every `TokenVisual`/`RenderVisual` arm that carries a transform.
+fn validate_transform(transform: &Option<VisualTransform>) -> Result<(), String> {
+    match transform {
+        Some(t) => t.validate().map_err(|m| format!("transform: {m}")),
+        None => Ok(()),
+    }
+}
+
 /// An animated visual's frame source: an ordered list of individually
 /// uploaded assets, or one grid-sliced sheet asset.
 ///
@@ -802,9 +1107,9 @@ impl AnimatedSource {
     }
 }
 
-/// An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
-/// `name` which moves to the envelope). Every other field of `ActorEngine`
-/// (inventory, stats, …) lives in `system` — this is a SPLIT type.
+/// An actor's engine-owned body (exported to the client as `ActorEngine`).
+/// `name` lives on the envelope and the actor's other data (inventory,
+/// stats, …) lives in `system` — this is a SPLIT type.
 ///
 /// # Examples
 ///
@@ -813,18 +1118,21 @@ impl AnimatedSource {
 ///
 /// let actor = ActorEngine {
 ///     display_name: "Goblin Scout".to_string(),
-///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string() },
+///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false },
 ///     size: Size { w: 1.0, h: 1.0 },
 ///     shape: "square".to_string(),
 ///     faction: None,
 ///     conditions: Vec::new(),
 ///     prototype: false,
 ///     vision: None,
+///     facing_vision: None,
 ///     light: None,
 ///     movement: Vec::new(),
 ///     aura: None,
 ///     sound: None,
 ///     vfx: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(actor.display_name, "Goblin Scout");
 /// ```
@@ -844,7 +1152,8 @@ pub struct ActorEngine {
     /// client multiplies it by the scene's cell size to reach scene units. Not to be confused with
     /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     pub size: Size,
-    /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
+    /// "square" | "circle"; a `String`, not a Rust enum. `shape_literal_set_deserializes` checks
+    /// that both literals pass `validate_engine`.
     pub shape: String,
     /// The client's `ActorEngine.faction: string | null`. INVARIANT: `Option<T>`
     /// always accepts a missing key as `None` (serde special-cases `Option`
@@ -863,6 +1172,13 @@ pub struct ActorEngine {
     /// + range in grid cells.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// The actor's facing-limited field of view, inherited by every token resolving this actor
+    /// (a per-token `TokenOverrides::facing_vision` replaces it wholesale). Ignored unless the
+    /// scene's `facing_vision` switch is on. Writing it is GM-only
+    /// (`permission::facing_vision_touched`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
     /// Light this actor's tokens carry: every token resolving this actor
     /// emits it at its live position unless the token's override replaces or
     /// suppresses it (`TokenOverrides::light`). Writing it is GM-only at ingress
@@ -891,6 +1207,18 @@ pub struct ActorEngine {
     /// `TokenOverrides.vfx` replaces it wholesale).
     #[serde(default)]
     pub vfx: Option<VfxEmission>,
+    /// Attribute bars drawn on this actor's tokens, inherited by linked tokens (a per-token
+    /// `TokenOverrides.bars` replaces the list wholesale); at most `MAX_BAR_ATTRIBUTES`. Absent
+    /// means none. Delivered as evaluated numbers through the `"bars"` derived channel, never
+    /// as this authored form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Who receives the nameplate of this actor's tokens; absent means `BarDisplayMode::Hover`
+    /// (a per-token `TokenOverrides.nameplate_mode` replaces it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl ActorEngine {
@@ -900,6 +1228,9 @@ impl ActorEngine {
     /// serde-enforced shape.
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.visual.validate().map_err(|m| format!("visual: {m}"))?;
+        if let Some(f) = &self.facing_vision {
+            f.validate()?;
+        }
         if let Some(light) = &self.light {
             light.validate().map_err(|m| format!("light: {m}"))?;
         }
@@ -911,6 +1242,9 @@ impl ActorEngine {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "bars")?;
         }
         Ok(())
     }

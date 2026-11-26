@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
+  import { httpsTargets } from "@shadowcat/core";
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { DuckSourcesController } from "./controller";
   import type { MicVadDenialReason } from "./micVad";
@@ -17,33 +18,52 @@
     controller: DuckSourcesController;
   } = $props();
 
-  const { t, audio } = getAppContext();
+  const appContext = getAppContext();
+  const { t, audio } = appContext;
+
+  /**
+   * The message for a microphone denial. An `unavailable` microphone on a page that is not a
+   * secure context has one remedy when the server also answers HTTPS: the address that does.
+   * Without TLS on the server the only remedy is loopback, which the generic message names.
+   * @param reason The denial `MicVadSource.enable` returned.
+   * @returns The player-facing text.
+   * @example
+   * ```
+   * // module-private; not part of the public API — rendered under the mic toggle
+   * const text = denialText("unavailable");
+   * ```
+   */
+  function denialText(reason: MicVadDenialReason): string {
+    // `tls` is read at use time: it is reactive context state, not a value fixed at mount. The
+    // https address is offered only from a plain-http page (from an https page the microphone is
+    // already available, so the denial has another cause) and only when there is one to offer.
+    const tls = appContext.tls;
+    if (reason === "unavailable" && tls?.enabled && window.location.protocol === "http:") {
+      const url = httpsTargets(tls, window.location)[0];
+      if (url !== undefined) return t("ducking.micSource.denied.unavailableHttpsAvailable", { url });
+    }
+    return t(`ducking.micSource.denied.${reason}`);
+  }
 
   let depth = $state(audio.duck.depth);
 
   let prefs = $state<DuckingPreferences>(readDuckingMirror(localStorage));
-  let osStatus = $state<OsMonitorStatus>(controller.osMonitor.getStatus());
+  // Placeholder until the effect below reads the controller's monitor; `OsMonitorSource` starts in
+  // "connecting" and the effect runs before the first paint.
+  let osStatus = $state<OsMonitorStatus>("connecting");
   let micDenial = $state<MicVadDenialReason | null>(null);
-  let capturingKey = $state(false);
   let watchListText = $state(prefs.watchList.join(", "));
-
-  /** The in-progress key-capture listener, tracked so `onDestroy`/`cancelKeyCapture` can
-   * remove it even if no keydown ever fires — `startKeyCapture`'s own inline listener had no
-   * way to reach it from outside the closure that added it. */
-  let activeKeyCaptureListener: ((e: KeyboardEvent) => void) | null = null;
 
   onMount(() => {
     controller.applyPreferences(prefs);
-    return controller.osMonitor.onStatusChange((s) => (osStatus = s));
   });
 
-  onDestroy(() => {
-    // A capture started then abandoned by navigating away, without this, leaves a capturing
-    // `keydown` listener on `window` forever, hijacking the next keydown anywhere in the app.
-    if (activeKeyCaptureListener) {
-      window.removeEventListener("keydown", activeKeyCaptureListener, true);
-      activeKeyCaptureListener = null;
-    }
+  // Follows the current `controller`'s monitor: re-reads its status and re-subscribes when the
+  // prop is replaced, and unsubscribes from the previous monitor on teardown.
+  $effect(() => {
+    const monitor = controller.osMonitor;
+    osStatus = monitor.getStatus();
+    return monitor.onStatusChange((s) => (osStatus = s));
   });
 
   /**
@@ -57,29 +77,6 @@
   function persist(): void {
     writeDuckingMirror(localStorage, prefs);
     controller.applyPreferences(prefs);
-  }
-
-  /**
-   * Starts listening for the next keydown and binds it as the push-to-duck key.
-   * @example
-   * ```
-   * // private function; not part of the public API — wired to the "bind" button
-   * startKeyCapture();
-   * ```
-   */
-  function startKeyCapture(): void {
-    capturingKey = true;
-    const onKeydown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      window.removeEventListener("keydown", onKeydown, true);
-      activeKeyCaptureListener = null;
-      capturingKey = false;
-      if (e.code === "Escape") return; // cancels the capture rather than binding as the key
-      prefs.keyBinding = e.code;
-      persist();
-    };
-    activeKeyCaptureListener = onKeydown;
-    window.addEventListener("keydown", onKeydown, true);
   }
 
   /**
@@ -145,9 +142,6 @@
       />
       {t("ducking.keySource.enable")}
     </label>
-    <button type="button" onclick={startKeyCapture} disabled={capturingKey}>
-      {capturingKey ? t("ducking.keySource.bindPrompt") : t("ducking.keySource.bind", { key: prefs.keyBinding })}
-    </button>
   </fieldset>
 
   <fieldset disabled={!prefs.masterEnabled}>
@@ -172,7 +166,7 @@
       />
     </label>
     <p class="denial" role="alert" aria-live="assertive">
-      {#if micDenial}{t(`ducking.micSource.denied.${micDenial}`)}{/if}
+      {#if micDenial}{denialText(micDenial)}{/if}
     </p>
   </fieldset>
 
@@ -215,6 +209,9 @@
       />
     </label>
     <p aria-live="polite">{t(`ducking.osSource.status.${osStatus}`)}</p>
+    {#if osStatus !== "connected" && osStatus !== "unsupported" && window.location.protocol === "https:"}
+      <p class="hint">{t("ducking.osSource.httpsHint")}</p>
+    {/if}
     <p class="command-line">{t("ducking.osSource.commandLine")}: <code>{commandLine}</code></p>
   </fieldset>
 
@@ -242,6 +239,10 @@
   }
   .denial {
     color: var(--danger);
+  }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.875rem;
   }
   .command-line code {
     user-select: all;

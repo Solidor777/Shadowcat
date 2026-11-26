@@ -149,6 +149,9 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<Option<Uuid>, DataError> {
         self.inner.member_id_by_username(world, username).await
     }
+    async fn last_whisper_to(&self, world: Uuid, user: Uuid) -> Result<Option<Uuid>, DataError> {
+        self.inner.last_whisper_to(world, user).await
+    }
     async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
         self.inner.asset_id_by_name(world, name).await
     }
@@ -192,7 +195,10 @@ impl Repository for DeleteMidHydration<'_> {
     async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
         self.inner.reset_validator_fault_streak(world, module).await;
     }
-    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    async fn list_members(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::data::repository::WorldMemberRow>, DataError> {
         self.inner.list_members(world).await
     }
     async fn search(
@@ -218,28 +224,43 @@ impl Repository for DeleteMidHydration<'_> {
     }
     async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
-        self.inner.get_link_preview_cache(url).await
+        self.inner.get_link_preview_cache(world_id, url).await
     }
     async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
         self.inner
-            .upsert_link_preview_cache(url, title, description, fetched_at_ms)
+            .upsert_link_preview_cache(world_id, url, title, description, fetched_at_ms)
+            .await
+    }
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        self.inner
+            .insert_link_preview_cache_if_absent(world_id, url, title, description, fetched_at_ms)
             .await
     }
     async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
         self.inner
-            .set_link_preview_cache_image(url, image_asset_id)
+            .set_link_preview_cache_image(world_id, url, image_asset_id)
             .await
     }
     async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
@@ -3064,9 +3085,9 @@ async fn execute_move_revealed_union_allows_explored_cell() {
 /// Identical to `movement_scene`, but the scene doc's `engine.vision.movementModel` is
 /// explicitly `"continuous"`: proves `execute_move` gates an any-angle route
 /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
-/// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
-/// being engine-agnostic; this mirrors `movement_scene`'s body (the established
-/// per-scenario-helper convention) with one added JSON key.
+/// `SceneEcs::resolve_scene` reads the key into `MovementModel::Continuous`, which
+/// `execute_move` prices with its continuous tail; the body otherwise mirrors
+/// `movement_scene` with one added JSON key.
 async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
     use serde_json::json;
 
@@ -3124,7 +3145,7 @@ async fn movement_scene_continuous(restriction: &str, with_light: bool) -> Movem
     .unwrap();
 
     // Only structural difference from `movement_scene`: declares `vision.movementModel` on
-    // the scene doc. Inert server-side today — execute_move has no movementModel branch.
+    // the scene doc, which `SceneEcs::resolve_scene` resolves to `MovementModel::Continuous`.
     let mut scene = wdoc(world_id, scene_id, "scene");
     scene.owner = Some(gm.user_id);
     scene.system = json!({
@@ -3452,17 +3473,15 @@ async fn resync_floor_is_established_seq_plus_one() {
 
 /// Discriminating test for the whole feature: a user who never called
 /// `establish_resync_floor` fails closed to `current_seq() + 1` (empty resync), NOT to
-/// `1` (today's effectively-unbounded reach). Verified by hand: temporarily changing
-/// `resync_floor`'s `None` branch to `1` makes this assertion fail (`1 != current_seq()
-/// + 1` once at least one event has committed), confirming the test actually catches a
-/// regression back to the unbounded default rather than passing vacuously.
+/// `1` (an unbounded reach). The two differ once at least one event has committed, so the
+/// assertion distinguishes the fail-closed `None` branch of `resync_floor` from a floor of `1`.
 #[tokio::test]
 async fn resync_floor_fails_closed_for_a_user_who_never_established_one() {
     let (repo, world_id, ctx) = repo_with_world().await;
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
 
-    // Advance current_seq so `1` (the old unbounded default) and
+    // Advance current_seq so `1` (the unbounded floor) and
     // `current_seq() + 1` (the fail-closed default) are distinguishable.
     let mut scene = crate::data::document::tests::world_scoped_doc(
         world_id,
@@ -3542,13 +3561,18 @@ async fn resync_floors_are_independent_per_user() {
     );
 }
 
-/// GM audio-transport handling and the activeScene ambience swap.
 mod audio_transport;
+mod auto_rotate;
+mod door_toggle;
 mod movement_budget;
 
-/// `MoveStream.mover_light` computation: presence, sampling, suppression.
 mod mover_light;
+mod portal_choice;
+mod presence;
 mod region_triggers;
+mod rotation_gate;
+mod session_pause;
+mod shared_fog;
 
 // ---------- Room::disable_faulting_validator_locked ----------
 

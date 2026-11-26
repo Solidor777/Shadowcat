@@ -54,6 +54,15 @@ impl PairingFixture {
             auth_throttle: std::sync::Arc::new(crate::http::throttle::AuthThrottle::new()),
             write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
             preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+            file_permits: std::sync::Arc::new(
+                crate::http::assets::permits::StreamedFilePermits::production(),
+            ),
+            tls: crate::tls::TlsRuntime::disabled(),
+            portmap: crate::portmap::PortMapRuntime::disabled(),
+            trash: std::sync::Arc::new(crate::trash::Trash::new(
+                std::env::temp_dir(),
+                crate::trash::TrashRetention::Disabled,
+            )),
         };
         PairingFixture {
             _dir: dir,

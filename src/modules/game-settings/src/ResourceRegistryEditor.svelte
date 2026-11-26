@@ -1,8 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { parseFormula } from "@shadowcat/formula";
-  import { buildUpdate, type WireDocument, type ResourceRegistryEngine, type Resource, type ResourceBinding, type Formula } from "@shadowcat/core";
+  import { coerceFormula } from "@shadowcat/formula";
+  import { buildUpdate, type WireDocument, type ResourceRegistryEngine, type Resource, type ResourceBinding } from "@shadowcat/core";
 
   const ctx = getAppContext();
 
@@ -15,25 +15,6 @@
     const eng = registry?.engine as ResourceRegistryEngine | undefined;
     return Object.entries(eng?.resources ?? {}).sort((a, b) => a[1].order - b[1].order);
   });
-
-  /** Coerces a text input into a `Formula`: a finite numeric literal becomes a number, else a
-   * valid formula string is kept trimmed, else `null` (the caller shows the inline error and
-   * skips the write). Mirrors `CombatSettings.onLifecycleInput`'s coercion rule.
-   * @param text The raw input value.
-   * @returns The coerced `Formula`, or `null` when `text` is neither a number nor a valid formula.
-   * @example
-   * ```
-   * coerceFormula("2"); // 2
-   * ```
-   */
-  function coerceFormula(text: string): Formula | null {
-    const trimmed = text.trim();
-    const n = Number(trimmed);
-    if (trimmed !== "" && Number.isFinite(n)) return n;
-    const parsed = parseFormula(trimmed);
-    if ("error" in parsed) return null;
-    return trimmed;
-  }
 
   let errors = $state<Record<string, string | null>>({});
 
@@ -69,7 +50,7 @@
    */
   function onFormulaInput(key: string, errKey: string, path: string, old: unknown, text: string): void {
     const coerced = coerceFormula(text);
-    if (coerced === null) {
+    if (typeof coerced === "object") {
       errors[errKey] = ctx.t("gameSettings.resources.invalid", { detail: text });
       return;
     }

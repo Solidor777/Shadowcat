@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, EMPTY_BARS, CombatController, NotConnectedError, resolveViewedScene } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { Dice3DBridge } from "../dice3dInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
@@ -9,6 +9,9 @@ import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
 import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
+import { SnapModePreference } from "../snapModePreference.svelte";
+import { StageView } from "../stageView.svelte";
+import { ShareRulerPreference } from "../shareRulerPreference.svelte";
 import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
 import { PerformanceController } from "../performance.svelte";
 
@@ -69,13 +72,18 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     // Defaults to a plain user: a world GM is not a server admin, so
     // admin-only surfaces stay hidden unless a test opts in explicitly.
     serverRole: over.serverRole ?? "user",
+    tls: over.tls ?? null,
     selfId: over.selfId ?? "u-self",
     canEdit: over.canEdit ?? (() => true),
     canCreate: over.canCreate ?? (() => (over.role ?? "gm") === "gm"),
     canDelete: over.canDelete ?? (() => (over.role ?? "gm") === "gm"),
     openDocument: over.openDocument ?? (() => {}),
     notify: over.notify ?? (() => {}),
+    notifyProgress:
+      over.notifyProgress ?? (() => ({ id: "progress", update: () => {}, dismiss: () => {} })),
     members: over.members ?? new Map(),
+    memberProfiles: over.memberProfiles ?? new Map(),
+    presence: over.presence ?? new Map(),
     t: over.t ?? ((k: string) => k),
     plural: over.plural ?? ((k: string) => k),
     compare: over.compare ?? ((a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)),
@@ -87,16 +95,23 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     tokenSelection: over.tokenSelection ?? new TokenSelection(),
     sendPing: over.sendPing ?? (() => {}),
     sendEmote: over.sendEmote ?? (() => {}),
-    pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
-    moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
+    sendRulerUpdate: over.sendRulerUpdate ?? (() => {}),
+    shareRuler: over.shareRuler ?? new ShareRulerPreference("u1"),
+    resetExploredFog: over.resetExploredFog ?? (() => {}),
+    pathfind: over.pathfind ?? (() => Promise.reject(new NotConnectedError())),
+    moveRequest: over.moveRequest ?? (() => Promise.reject(new NotConnectedError())),
+    toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),
+    placeEffect: over.placeEffect ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onEmote: over.onEmote ?? (() => () => {}),
+    onRuler: over.onRuler ?? (() => () => {}),
+    onScrollingText: over.onScrollingText ?? (() => () => {}),
     onMoveOutcome: over.onMoveOutcome ?? (() => () => {}),
     chat: over.chat ?? {
       send: () => Promise.resolve(),
       edit: () => Promise.resolve(),
       delete: () => Promise.resolve(),
-      recalc: () => Promise.resolve(),
+      recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(),
       drawTable: () => Promise.resolve(),
     },
     leaveWorld: over.leaveWorld ?? (() => {}),
@@ -106,6 +121,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setPanelLayout: () => {},
       getChatRead: () => null,
       setChatRead: () => {},
+      getChatHistory: () => [],
+      pushChatHistory: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
     dice3d: over.dice3d ?? new Dice3DBridge(),
@@ -121,6 +138,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       },
       setChannel: () => {},
       unlock: async () => {},
+      needsGesture: false,
       context: () => null,
       duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
       playOneShot: () => {},
@@ -130,17 +148,31 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       preload: () => {},
     },
     vfx: over.vfx ?? { play: () => {}, onVfx: () => () => {} },
+    notes: over.notes ?? { present: () => Promise.resolve() },
+    portal: over.portal ?? {
+      onOffer: () => () => {},
+      choose: () => Promise.resolve(),
+      decline: () => Promise.resolve(),
+      open: () => Promise.resolve(),
+    },
     // Identity passthrough (no listener, no cancellation): a test opting into pre-send
     // interception overrides this with its own emitter.
     hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
-    viewedSceneId: over.viewedSceneId ?? null,
+    moduleStatus: over.moduleStatus ?? new Map(),
+    activeModuleManifests: over.activeModuleManifests ?? (() => []),
+    // Mirrors `WorldSession.viewedSceneId`: null only when no scene exists, otherwise the
+    // `resolveViewedScene` answer (snapshotted at construction).
+    viewedSceneId: over.viewedSceneId !== undefined ? over.viewedSceneId : resolveViewedScene(documents),
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
+    bars: over.bars ?? EMPTY_BARS,
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
     speakAsToken: over.speakAsToken ?? new SpeakAsToken(),
     speakAs: over.speakAs ?? new SpeakAs(),
+    snapModePreference: over.snapModePreference ?? new SnapModePreference(),
+    stageView: over.stageView ?? new StageView(),
     templates: over.templates ?? {
       stampInstance: (s) => s,
       pull: () => {},

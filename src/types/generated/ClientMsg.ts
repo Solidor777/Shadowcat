@@ -6,6 +6,8 @@ import type { CombatRollEntry } from "./CombatRollEntry";
 import type { Operation } from "./Operation";
 import type { ResourceOp } from "./ResourceOp";
 import type { WireRecalcOp } from "./WireRecalcOp";
+import type { DoorState } from "./engine/DoorState";
+import type { RegionShape } from "./engine/RegionShape";
 
 /**
  * Client -> server frames.
@@ -121,7 +123,39 @@ token: string,
 /**
  * The emote glyph(s); 1..=16 bytes.
  */
-emote: string, } | { "type": "pathfind", 
+emote: string, } | { "type": "ruler_update", 
+/**
+ * Scene the ruler is measured on (must grant the sender READ).
+ */
+scene: string, 
+/**
+ * The route preview's vertices in scene coordinates, start through goal; a list longer
+ * than `ws::ruler::MAX_RULER_POINTS` fails to deserialize.
+ */
+points: Array<[number, number]>, 
+/**
+ * `false` ends the sender's ruler; an absent value reads as `false`.
+ */
+active: boolean, 
+/**
+ * Opaque token naming the sending connection, relayed unchanged on `ServerMsg::Ruler`
+ * so the originating client can recognize its own frame; an absent value reads as
+ * empty, which no client treats as its own.
+ */
+origin: string, } | { "type": "reset_explored_fog", 
+/**
+ * The scene whose explored memory is reset.
+ */
+scene: string, 
+/**
+ * Limit the reset to one user's memory; `None` clears every user's.
+ */
+user?: string, 
+/**
+ * Limit the reset to one level (`scene::elevation::level_of`'s id); `None` clears
+ * every level.
+ */
+level?: string, } | { "type": "pathfind", 
 /**
  * Correlation token for `PathResult`/`PathError`.
  */
@@ -185,7 +219,14 @@ actor_owner: ActorOwnerRef | null,
 /**
  * Visibility policy (public / gm-only / whisper).
  */
-audience: Audience, } | { "type": "edit_message", 
+audience: Audience, 
+/**
+ * Opaque, module-owned payload stored verbatim as the message document's `system`
+ * band. The server never inspects its shape; it is bounded only by the structural
+ * size cap every document's `system` band gets, and it inherits the message's own
+ * audience-derived permissions. `None` stores `{}`.
+ */
+system?: unknown, } | { "type": "edit_message", 
 /**
  * Correlation token for a `ChatError` rejection.
  */
@@ -221,7 +262,19 @@ roll_id: string,
 /**
  * The targeted mutation(s) to apply.
  */
-ops: Array<WireRecalcOp>, } | { "type": "draw_table", 
+ops: Array<WireRecalcOp>, } | { "type": "revise_audience", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The message whose audience changes.
+ */
+message_id: string, 
+/**
+ * The replacement readership (public / gm-only / whisper).
+ */
+audience: Audience, } | { "type": "draw_table", 
 /**
  * Correlation token for a `ChatError` rejection.
  */
@@ -245,7 +298,15 @@ actor_owner: ActorOwnerRef | null,
 /**
  * Visibility policy (public / gm-only / whisper).
  */
-audience: Audience, } | { "type": "combat_start", 
+audience: Audience, } | { "type": "present_note", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The `note` document to present.
+ */
+note_id: string, } | { "type": "combat_start", 
 /**
  * Correlation token for `CombatError`.
  */
@@ -409,4 +470,67 @@ sound?: string,
 /**
  * Elevation the effect plays at; the render layer filters by the viewed level.
  */
-elevation?: number, };
+elevation?: number, } | { "type": "toggle_door", 
+/**
+ * Correlation token for `DoorToggleError`.
+ */
+request_id: string, 
+/**
+ * Scene the wall is expected to be on; checked against the wall's derived
+ * `parent_id`, never used to select anything.
+ */
+scene_id: string, 
+/**
+ * The wall whose door state flips.
+ */
+wall_id: string, 
+/**
+ * The target state. A non-GM may name `Closed`/`Open` only (never `Locked`, and a
+ * wall currently `Locked` refuses a non-GM in either direction); a GM may also
+ * set/clear `Locked`.
+ */
+to: DoorState, } | { "type": "place_effect", 
+/**
+ * Correlation token for `PlaceEffectError`.
+ */
+request_id: string, 
+/**
+ * The installed module's folder id that declares the placement.
+ */
+module: string, 
+/**
+ * The `PlacementDecl::id` within that module.
+ */
+placement: string, 
+/**
+ * The scene the region is created on.
+ */
+scene_id: string, 
+/**
+ * The area the sender chose, scene units.
+ */
+shape: RegionShape, 
+/**
+ * The caster token, required when the declaration's `who` is `caster_owner`.
+ */
+caster?: string, } | { "type": "choose_portal", 
+/**
+ * Correlation token for `PortalChoiceError`.
+ */
+request_id: string, 
+/**
+ * The offer being answered (`ServerMsg::PortalOffer::offer_id`).
+ */
+offer_id: string, 
+/**
+ * The chosen option's `PortalOfferOption::index`, or `None` to decline.
+ */
+choice: number | null, } | { "type": "open_portal", 
+/**
+ * Correlation token for `PortalChoiceError`.
+ */
+request_id: string, 
+/**
+ * The token that stands in the portal region.
+ */
+token: string, };

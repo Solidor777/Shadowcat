@@ -1,7 +1,10 @@
-//! `combat::handle_combat_intent`'s wire-dispatch layer: authz per variant, dice-context
-//! resolution for `CombatRoll`, and the one-server-authored-command commit via
-//! `Room::commit_combat`. Fixture pattern mirrors
-//! `handle_move_request_broadcasts_move_stream_no_etx_on_success`'s harness construction.
+//! These tests exercise `combat::handle_combat_intent`'s wire-dispatch layer.
+//!
+//! They cover authz per variant, dice-context resolution for `CombatRoll`, and the
+//! one-server-authored-command commit via `Room::commit_combat`.
+//!
+//! The fixture pattern mirrors the harness construction of
+//! `handle_move_request_broadcasts_move_stream_no_etx_on_success`.
 
 use super::*;
 use crate::auth::role::ServerRole;
@@ -37,6 +40,10 @@ struct Harness {
     player_combatant: Uuid,
     /// The GM's hidden NPC combatant.
     hidden_npc: Uuid,
+    /// The scene the combat runs on (and the player's token stands on).
+    scene: Uuid,
+    /// The player's actor-linked token, bound to `player_combatant`.
+    token: Uuid,
     /// Cached `WorldCapDefaults`, for `filter_command`.
     world_defaults: crate::data::document::WorldCapDefaults,
     /// A fresh per-test combat-intent flood budget — every `handle_combat_intent`
@@ -355,6 +362,8 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -382,6 +391,8 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
+        group: None,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -408,6 +419,8 @@ async fn combat_harness() -> Harness {
         combat: combat_id,
         player_combatant: pc_id,
         hidden_npc: npc_id,
+        scene: scene_id,
+        token: token_id,
         world_defaults,
         rate: crate::ws::PingRateLimiter::new(),
     }
@@ -449,14 +462,98 @@ async fn current_docs(
     crate::data::permission::load_current_docs(h.repo.as_ref(), cmd).await
 }
 
+/// Places a world-readable region carrying a public `chat_notice` trigger for each of the four
+/// turn/round boundary events on the player's token's cell, then nudges the token (a genuine
+/// position Update) so the placement funnel records the token's region membership — a
+/// region-doc create alone never fires, so the region must exist before the placement.
+async fn place_boundary_trigger_region(h: &Harness, id: u128) {
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let mut region = wdoc(h.world_id, crate::test_ids::test_uuid(id), "region");
+    region.parent_id = Some(h.scene);
+    region.owner = Some(h.gm.user_id);
+    region.permissions.default = DocRole::Observer;
+    region.engine = Some(json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] },
+        "behavior": "terrain",
+        "cost": 1.0,
+        "enabled": true,
+        "triggers": [
+            { "on": "turn_start", "effect": { "type": "chat_notice", "text": "turn-start", "audience": "public" } },
+            { "on": "turn_end", "effect": { "type": "chat_notice", "text": "turn-end", "audience": "public" } },
+            { "on": "round_start", "effect": { "type": "chat_notice", "text": "round-start", "audience": "public" } },
+            { "on": "round_end", "effect": { "type": "chat_notice", "text": "round-end", "audience": "public" } },
+        ],
+    }));
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Update {
+                doc_id: h.token,
+                changes: vec![crate::data::command::FieldChange {
+                    remove: false,
+                    path: "/engine/x".into(),
+                    old: json!(50.0),
+                    new: json!(60.0),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+}
+
+/// The committed `message` docs on the region channel, as a text→count map
+/// (order-independent; the pure plan tests pin the ordering).
+async fn region_notice_counts(h: &Harness) -> std::collections::HashMap<String, usize> {
+    let mut out: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for doc in h.repo.query_documents(h.world_id, "message").await.unwrap() {
+        let Ok(engine) =
+            serde_json::from_value::<crate::chat::MessageEngine>(doc.engine.clone().unwrap())
+        else {
+            continue;
+        };
+        if engine.channel != "region" {
+            continue;
+        }
+        if let crate::chat::Segment::Text { text } = &engine.content[0] {
+            *out.entry(text.clone()).or_insert(0) += 1;
+        }
+    }
+    out
+}
+
 /// Full GM round trip (`CombatStart` → `CombatAdvance` → `CombatPause` → `CombatEnd`), each call
 /// confirmed by a correlated `ServerMsg::CombatResult`. `CombatStart` creates a
 /// GM-only `combat-history` record; a player's filtered view of that same broadcast carries no
 /// `combat-history` op, the first WS-layer exercise of the document-level secrecy the combat
 /// history engine enforces. `CombatEnd` deletes the combat; its children cascade.
+/// The combat also rides a turn/round-scoped region trigger end to end: a
+/// region on the player's token's cell carries a notice for each of the four
+/// boundary events, and every phase the round trip crosses fires it for the
+/// token standing inside (CombatStart's `round_start` sweep + `turn_start`
+/// settle; CombatAdvance's `turn_end`, the hidden NPC's auto-resolve wrap,
+/// and the round-2 `round_end`/`round_start`/`turn_start` that follow).
 #[tokio::test]
 async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
     let h = combat_harness().await;
+
+    // A trigger-bearing region covering the player's token's cell, placed
+    // BEFORE the room subscription below so these setup commands never shift
+    // the event stream the history-secrecy assertion drains.
+    place_boundary_trigger_region(&h, 0xCA0A).await;
+
     let (mut gm_rx, _) = h.room.subscribe();
 
     assert!(handle_combat_intent(
@@ -476,6 +573,16 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
     let combat = h.repo.get_document(h.combat).await.unwrap().unwrap();
     let e: CombatEngine = serde_json::from_value(combat.engine.unwrap()).unwrap();
     assert!(e.active && e.round == 1);
+
+    // CombatStart crossed the round-1 `round_start` sweep and settled the
+    // player's combatant's `turn_start`: both fire for the token standing in
+    // the region (the hidden NPC names no token, so it fires nothing).
+    let notices = region_notice_counts(&h).await;
+    assert_eq!(
+        (notices.get("round-start"), notices.get("turn-start")),
+        (Some(&1), Some(&1)),
+        "round_start + turn_start fired once each at start: {notices:?}"
+    );
 
     let history = h
         .repo
@@ -516,6 +623,24 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
     )
     .await
     .succeeded());
+
+    // CombatAdvance ends the player's turn (`turn_end`), auto-resolves the
+    // hidden NPC (no token — nothing fires for it), wraps the round
+    // (`round_end` + `round_start`), and starts the player's turn again —
+    // every one of the four boundary events has now fired exactly once per
+    // boundary for the member token.
+    let notices = region_notice_counts(&h).await;
+    assert_eq!(
+        (
+            notices.get("turn-end"),
+            notices.get("round-end"),
+            notices.get("round-start"),
+            notices.get("turn-start"),
+        ),
+        (Some(&1), Some(&1), Some(&2), Some(&2)),
+        "all four boundary events fired, each once per boundary crossed: {notices:?}"
+    );
+
     assert!(handle_combat_intent(
         &h.room,
         h.repo.as_ref(),
@@ -546,6 +671,86 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
     assert!(
         h.repo.query_children(h.combat).await.unwrap().is_empty(),
         "cascade"
+    );
+    // Pause and End cross no clock boundary, so they fire nothing further.
+    assert_eq!(
+        region_notice_counts(&h).await.values().sum::<usize>(),
+        6,
+        "no boundary, no fire"
+    );
+}
+
+/// `CombatSort`/`CombatRoll`/`CombatResource` cross no clock boundary, so they fire no
+/// turn/round region triggers — pinned at the observable level (their transition functions
+/// carry no boundary-record channel at all; this test exists so a future change can't grow
+/// firing behavior on them silently).
+#[tokio::test]
+async fn non_boundary_combat_intents_fire_no_region_triggers() {
+    let h = combat_harness().await;
+    place_boundary_trigger_region(&h, 0xCA0B).await;
+
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatStart {
+            request_id: crate::test_ids::test_uuid(1),
+            combat_id: h.combat,
+        },
+        0,
+        &h.rate,
+    )
+    .await
+    .succeeded());
+    let baseline: usize = region_notice_counts(&h).await.values().sum();
+    assert_eq!(
+        baseline, 2,
+        "start's round_start sweep + turn_start settle fired once each"
+    );
+
+    for (i, msg) in [
+        ClientMsg::CombatResource {
+            request_id: crate::test_ids::test_uuid(2),
+            combat_id: h.combat,
+            combatant_id: h.player_combatant,
+            resource: "movement".to_string(),
+            op: ResourceOp::Delta { amount: -1.0 },
+        },
+        ClientMsg::CombatRoll {
+            request_id: crate::test_ids::test_uuid(3),
+            combat_id: h.combat,
+            channel: "general".to_string(),
+            rolls: vec![
+                CombatRollEntry {
+                    combatant_id: h.player_combatant,
+                    notation: "1d20".to_string(),
+                },
+                CombatRollEntry {
+                    combatant_id: h.hidden_npc,
+                    notation: "1d20".to_string(),
+                },
+            ],
+        },
+        ClientMsg::CombatSort {
+            request_id: crate::test_ids::test_uuid(4),
+            combat_id: h.combat,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            handle_combat_intent(&h.room, h.repo.as_ref(), &h.gm, msg, i as i64 + 1, &h.rate)
+                .await
+                .succeeded(),
+            "non-boundary intent {i} succeeded"
+        );
+    }
+
+    assert_eq!(
+        region_notice_counts(&h).await.values().sum::<usize>(),
+        baseline,
+        "sort/roll/resource crossed no boundary and fired nothing"
     );
 }
 
@@ -854,7 +1059,7 @@ async fn combat_dispatch_is_rate_limited() {
 /// Every one of the eight `Combat*` `ClientMsg` variants parses from its wire tag, round-tripping
 /// through `serde_json`. This proves the WIRE TAG round-trip only — it says nothing about
 /// `conn.rs`'s actual dispatch routing. Dispatch-arm coverage is guaranteed independently, by the
-/// compiler: the inner `match serde_json::from_str::<ClientMsg>(...)` in `conn.rs` enumerates
+/// compiler: the inner `match` over `client_frame::parse_client_msg`'s result in `handle_socket` enumerates
 /// `Ok(...)` per `ClientMsg` variant with no catch-all over the enum, so removing a `Combat*`
 /// variant from the combined dispatch arm makes that match non-exhaustive and fails the build,
 /// rather than silently dropping the frame.
@@ -966,6 +1171,8 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
             },
             initiative: None,
             tiebreak: 0.0,
+            defeated: false,
+            group: None,
             resources: Default::default(),
         })
         .unwrap(),
@@ -1578,6 +1785,8 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
             },
             initiative: None,
             tiebreak: 0.0,
+            defeated: false,
+            group: None,
             resources: Default::default(),
         })
         .unwrap(),
@@ -1695,4 +1904,178 @@ async fn a_rejected_combat_intent_never_yields_a_combat_result() {
         !refused.succeeded(),
         "a rejection must never be mistaken for a CombatResult"
     );
+}
+
+/// Creates a `combatant-group` child of the harness combat and points each of `members` at it,
+/// through ordinary GM writes, returning the group id.
+async fn make_group(h: &Harness, members: &[Uuid]) -> Uuid {
+    let group_id = crate::test_ids::test_uuid(0x77);
+    let mut group =
+        crate::data::document::tests::world_scoped_doc(h.world_id, group_id, "combatant-group");
+    group.parent_id = Some(h.combat);
+    group.owner = Some(h.gm.user_id);
+    group.engine = Some(serde_json::json!({ "name": "Swarm", "color": null }));
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Create { doc: group }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    for member in members {
+        h.room
+            .publish(
+                h.repo.as_ref(),
+                &h.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: *member,
+                    changes: vec![crate::data::command::FieldChange {
+                        remove: false,
+                        path: "/engine/group".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!(group_id),
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+    group_id
+}
+
+/// The `initiative` currently stored on combatant `id`.
+async fn stored_initiative(h: &Harness, id: Uuid) -> Option<f64> {
+    let doc = h.repo.get_document(id).await.unwrap().unwrap();
+    serde_json::from_value::<CombatantEngine>(doc.engine.unwrap())
+        .unwrap()
+        .initiative
+}
+
+/// A GM rolling a group id stamps one result on every member and posts one message.
+#[tokio::test]
+async fn a_gm_group_roll_stamps_every_member_and_posts_one_message() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant, h.hidden_npc]).await;
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(ok.succeeded());
+    let a = stored_initiative(&h, h.player_combatant).await;
+    assert!(a.is_some());
+    assert_eq!(a, stored_initiative(&h, h.hidden_npc).await);
+    let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "one message for the group, not one per member"
+    );
+    assert_eq!(
+        msgs[0].permissions.default,
+        DocRole::None,
+        "a hidden member makes the group's message GM-only"
+    );
+}
+
+/// A player may not roll a group holding a combatant they do not own: the refusal is whole, so
+/// the player's own member is not rolled either.
+#[tokio::test]
+async fn a_player_cannot_roll_a_group_holding_a_combatant_they_do_not_own() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant, h.hidden_npc]).await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+    assert_eq!(stored_initiative(&h, h.player_combatant).await, None);
+}
+
+/// A player may roll a group whose every member they own.
+#[tokio::test]
+async fn a_player_may_roll_a_group_of_only_their_own_combatants() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant]).await;
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(ok.succeeded());
+    assert!(stored_initiative(&h, h.player_combatant).await.is_some());
+}
+
+/// Naming a group and one of its members in one roll writes that member twice, so it is refused.
+#[tokio::test]
+async fn naming_a_group_and_its_member_in_one_roll_is_a_duplicate() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant]).await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![
+                CombatRollEntry {
+                    combatant_id: group,
+                    notation: "1d20".into(),
+                },
+                CombatRollEntry {
+                    combatant_id: h.player_combatant,
+                    notation: "1d20".into(),
+                },
+            ],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+    assert_eq!(stored_initiative(&h, h.player_combatant).await, None);
 }

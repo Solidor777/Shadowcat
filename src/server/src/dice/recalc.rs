@@ -1,3 +1,7 @@
+//! This module re-evaluates an existing roll after targeted dice operations.
+//!
+//! `RecalcOp` names the operations (reroll, replace, remove) and `recalculate` applies them.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -181,7 +185,7 @@ fn rederive(
             rederive(lhs, groups, group_index, rng, out);
             rederive(rhs, groups, group_index, rng, out);
         }
-        Expr::Call { args, .. } => {
+        Expr::Call { args, .. } | Expr::BestOf(args) => {
             for arg in args {
                 rederive(arg, groups, group_index, rng, out);
             }

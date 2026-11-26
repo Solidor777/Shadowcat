@@ -69,8 +69,8 @@ And the refusal reason it returns:
 | Module size | 4 MiB |
 | Input size | 1 MiB |
 | Guest memory | 16 MiB |
-| Wall clock per call (measured, post-return) | 50 ms — a slower call still runs to completion, but counts as a fault |
-| Wall clock hang guard (never-returning call) | 250 ms — the call is abandoned and counts as a fault |
+| Fuel per call | 50 000 000 units (about one interpreted instruction each) — a call that exhausts it is stopped and counts as a fault; this is the only bound on the work a call does |
+| Hang guard (a call that never returns) | 10 s — a liveness backstop for a stall fuel cannot see, not a per-call time budget; the call is abandoned and counts as a fault |
 | Consecutive faults before auto-disable | 5 |
 
 ## Building

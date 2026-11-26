@@ -1,4 +1,5 @@
-import type { VfxAnchor } from "@shadowcat/core";
+import type { RenderHint, VfxAnchor } from "@shadowcat/core";
+import type { EmoteKind } from "./emote-view";
 
 /** A point in scene coordinates. */
 export interface Point {
@@ -146,6 +147,23 @@ export interface VfxNodeSpec {
   tint?: number;
 }
 
+/** An authored art transform, already resolved for the backend: anchor and scale are the raw
+ * authored numbers, the tint is packed `0xRRGGBB` (the backend never parses colors). Absent on a
+ * `ResolvedArtVisual` means the centered, unscaled, untinted default. */
+export interface ResolvedArtTransform {
+  /** Horizontal anchor as a fraction of the art's box; `0.5` is centered. */
+  anchorX: number;
+  /** Vertical anchor as a fraction of the art's box; `0.5` is centered. */
+  anchorY: number;
+  /** Multiplier on the art's drawn size against the token's box. */
+  scale: number;
+  /** Multiply tint, packed `0xRRGGBB`; absent for none. */
+  tint?: number;
+  /** Direction the art faces as drawn, degrees in the `TokenNodeSpec.rotation` convention; the
+   * backend turns the art by the token's rotation minus this. Absent means the art faces +x. */
+  facing?: number;
+}
+
 /** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
  * both a `TokenNodeSpec.visual` arm in its own right and the `art` payload of a resolved
  * `"generated"` visual (whose frame composes around exactly these two drawable kinds). */
@@ -155,6 +173,8 @@ export type ResolvedArtVisual =
       kind: "image";
       /** Resolved image serve URL (already asset-id-resolved). */
       url: string;
+      /** Authored anchor/scale/tint of the art; absent for the default framing. */
+      transform?: ResolvedArtTransform;
     }
   | {
       /** Discriminant: a tick-driven animated visual. */
@@ -167,6 +187,8 @@ export type ResolvedArtVisual =
       /** `true` wraps at the end of the sequence; `false` holds the final frame — see
        * `computeAnimatedFrame`. */
       loop: boolean;
+      /** Authored anchor/scale/tint of the art; absent for the default framing. */
+      transform?: ResolvedArtTransform;
     };
 
 /** One built-in per-token art effect, applied to the token's visual by the backend (composed
@@ -233,8 +255,10 @@ export interface TokenNodeSpec {
          * background fill, ringed by an optional decorative border. */
         kind: "generated";
         /** The art being framed — never itself `"generated"` (`resolveTokenVisual` fails closed
-         * on nesting before a spec reaches the backend). */
-        art: ResolvedArtVisual;
+         * on nesting before a spec reaches the backend). Absent for a frame-only composition
+         * (the generic hidden-identity silhouette): the backend draws the background, ring and
+         * border and loads no texture. */
+        art?: ResolvedArtVisual;
         /** The shape `art` is cropped to: the inscribed ellipse of the token extent
          * (`"circle"`), or the extent rect (`"square"`). */
         crop: "circle" | "square";
@@ -258,6 +282,10 @@ export interface TokenNodeSpec {
    * `resolveConditions`, then an elevation chip (`↑n`/`↓n`) when the token is off the ground
    * plane (`TokenView.toSpec`). */
   badges: string[];
+  /** The glyph of the token's overlay condition — the first condition flagged `overlay` in
+   * effective order — drawn large and centered over the art, below the badge chips, or absent
+   * for none. The condition's badge chip is still present in `badges`. */
+  overlayIcon?: string;
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
   /** `true` = the token is perceived ONLY through a creature sense (tremorsense & kin), so its
@@ -280,9 +308,37 @@ export interface TokenNodeSpec {
   };
   /** Built-in art effects (see `TokenFx`), composed by the backend onto the token's visual
    * container — the fx rotate with the art; the badge chips stay clean. Fully pre-resolved by
-   * `TokenView.toSpec` (condition-registry fx folded in condition array order, then the
-   * selection highlight); absent or empty for no effects. */
+   * `TokenView.toSpec` (condition-registry fx folded in condition array order, the
+   * creature-sense marker tint when `perceived`, then the selection highlight); absent or empty
+   * for no effects. */
   fx?: TokenFx[];
+  /** The token's facing-vision wedge, drawn ON the rotating `visualContainer` (so it turns with
+   * the token), or absent for none. Present only for a viewer entitled to see the token's facing
+   * (`TokenView`'s `facingWedgeVisible`) on a scene whose resolved `facingVision` switch is on.
+   * Fully pre-resolved: lengths already in scene units, angle in degrees. */
+  facing?: {
+    /** Forward arc width, in degrees, centered on the facing direction (+x at rotation 0). */
+    arc: number;
+    /** All-round awareness radius, in scene units; `0` draws no ring. */
+    near: number;
+    /** Wedge length, in scene units. */
+    radius: number;
+  };
+  /** The token's nameplate text, drawn upright ABOVE the token, or absent for none. Present only
+   * while the server delivers a nameplate to this viewer AND its mode is revealing now
+   * (`TokenView.toSpec`); the text is the server's name or the client's fallback label. */
+  nameplate?: string;
+  /** The token's attribute bars, stacked BELOW the token in order, or absent for none. Each bar
+   * is a fill fraction already clamped to `[0,1]` and a packed color — the backend never sees
+   * the raw current/max numbers. Present only for the bars revealing now. */
+  bars?: {
+    /** The bar's label. */
+    label: string;
+    /** Filled fraction, `current / max` clamped to `[0,1]` (`0` when `max` is not positive). */
+    fraction: number;
+    /** Fill color, packed `0xRRGGBB`. */
+    color: number;
+  }[];
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill
@@ -294,8 +350,20 @@ export interface ShapeNodeSpec {
    * `CORE_LAYERS`. */
   layer: string;
   /** Flat `[x0,y0,x1,y1,…]` scene-coord points, already tessellated before reaching the
-   * backend. */
+   * backend. For a compound (multi-part) shape this is the FIRST additive ring; the rest
+   * are `extraParts`. */
   points: number[];
+  /** Additional additive rings unioned with `points` in the same fill/stroke (a compound
+   * region's second-and-later additive parts). Absent for every single-shape node; the
+   * rings overlap-blend under the shared fill alpha, which is the accepted rendering of two
+   * overlapping parts of ONE authored region (the parts' union is what the server composes
+   * cell-wise — this is a drawing, not the coverage read). */
+  extraParts?: number[][];
+  /** Hole rings subtracted from the additive union, rendered by the backend through an
+   * inverse mask (the fog sheets' own `setMask({ inverse: true })` mechanism, per-region)
+   * and excluded from hit-testing — a point inside a hole is NOT inside the shape. Absent
+   * for every shape with no hole parts. */
+  holes?: number[][];
   /** `true` draws the point list as a closed polygon (fill-eligible); `false` as an open
    * polyline (no fill). */
   closed: boolean;
@@ -305,6 +373,15 @@ export interface ShapeNodeSpec {
     color: number;
     /** Stroke width, in scene (px) units. */
     width: number;
+    /** Dash pattern in scene units (`on` drawn, `off` skipped), or absent for a solid stroke. The
+     * pattern runs continuously along the path across vertices, over an open polyline and over a
+     * closed ring (closing edge included) alike. */
+    dash?: {
+      /** Length of each drawn dash, in scene units. */
+      on: number;
+      /** Length of each gap, in scene units. */
+      off: number;
+    };
   } | null;
   /** Fill styling, or `null` for no fill (also unused when `closed` is `false`). */
   fill: {
@@ -376,6 +453,11 @@ export interface MoveLightSample {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
   falloff: "linear" | "quadratic" | "none";
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this sample (`0` = +x, growing toward +y); present
+   * exactly when `angle` is. */
+  rotation?: number;
   /** The light's occluded illumination polygon(s), each a list of `[x,y]` scene-coord
    * vertices — NOT clipped to the viewer's sight; the sweep intersects them itself. */
   polygons: [number, number][][];
@@ -418,9 +500,25 @@ export interface LightingInput {
     min: number;
   }[];
   /** `renderHints` lookup table; `LitCell.hint` indexes into this. */
-  hints: string[];
+  hints: RenderHint[];
   /** Active scene's visible cells. */
   cells: LitCell[];
+}
+
+/** Which lattice point `SceneToolHost.snap` resolves a point to while snapping is enabled:
+ * `"center"` snaps to the containing/nearest cell's center; `"vertex"` snaps to the nearest
+ * cell corner (`Grid.snapVertex`); `"edge"` snaps to the nearest point on the nearest cell
+ * edge (`Grid.snapEdge`). Orthogonal to the snap on/off axis
+ * (`SceneToolHost.setSnapEnabled`): the mode selects the snap TARGET, never whether a snap
+ * happens. */
+export type SnapMode = "center" | "vertex" | "edge";
+
+/** Options for `SceneToolHost.panToPoint` / `panToToken`. The easing curve is the scene's
+ * resolved token-move easing and reduced motion follows the performance budget, so neither is a
+ * per-call choice. */
+export interface PanToOptions {
+  /** Tween length in milliseconds; defaults to the camera's own default. */
+  durationMs?: number;
 }
 
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
@@ -429,10 +527,12 @@ export interface SceneToolHost {
   /** Set (or clear) the active tool; the no-tool case falls back to camera pan/zoom.
    * @param tool The tool to activate, or `null` so the camera owns all gestures. */
   setActiveTool(tool: SceneTool | null): void;
-  /** Snap a scene point to the active grid's nearest cell CENTER (square: the containing
-   * cell's center; hex: the nearest hex's center) — never a vertex/corner.
+  /** Snap a scene point to the active grid per the current snap mode (see
+   * `setSnapMode`): the containing/nearest cell's CENTER under `"center"` (square: the
+   * containing cell's center; hex: the nearest hex's center), the nearest cell VERTEX
+   * under `"vertex"`, the nearest point on a cell EDGE under `"edge"`.
    * @param p A scene-coordinate point.
-   * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled. */
+   * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled. */
   snap(p: Point): Point;
   /** Toggle the scene-level snap-to-grid axis: disabled makes `snap` identity
    * (free-form float placement/movement for a snap-off scene); grid RENDERING is unaffected —
@@ -441,6 +541,24 @@ export interface SceneToolHost {
    * @param enabled `false` disables snapping (free-form placement/movement); `true` re-enables
    * it. */
   setSnapEnabled(enabled: boolean): void;
+  /** Select WHICH lattice point `snap` resolves to (see `SnapMode`) — an axis orthogonal
+   * to `setSnapEnabled`'s whether-to-snap toggle, so a snap-off scene stays identity under
+   * either mode. Every tool that calls `snap` via the AppContext `scene` bridge inherits the
+   * mode automatically; no per-tool opt-in exists.
+   * @param mode The snap-target mode to apply. */
+  setSnapMode(mode: SnapMode): void;
+  /** Animate the camera so scene point `(x,y)` is centered in the viewport (snaps instantly
+   * under the reduced-motion budget). A manual pan or zoom cancels it.
+   * @param x The scene x-coordinate to center.
+   * @param y The scene y-coordinate to center.
+   * @param opts Optional tween duration. */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void;
+  /** Animate the camera to center on token `tokenId`, tracking the token's LIVE (tweened)
+   * position each frame so a moving token is followed rather than panned to a stale spot. A
+   * token the view does not track is a no-op.
+   * @param tokenId The token document id to center on.
+   * @param opts Optional tween duration. */
+  panToToken(tokenId: string, opts?: PanToOptions): void;
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it.
    * @param id The token document id to mark as dragging, or `null` to clear it. */
@@ -466,12 +584,13 @@ export interface SceneToolHost {
    * @param x The ping's scene x-coordinate.
    * @param y The ping's scene y-coordinate. */
   addPing(x: number, y: number): void;
-  /** Spawn a transient emote glyph above `tokenId`'s current position (from a
-   * received/own emote). A token the host cannot resolve renders no overlay — the
+  /** Spawn a transient emote overlay above `tokenId`'s current position (from a
+   * received/own emote/caption). A token the host cannot resolve renders no overlay — the
    * relay is room-wide, so recipients drop overlays for unknown token ids.
-   * @param tokenId The token document id the emote plays over.
-   * @param emote The emote glyph(s). */
-  addEmote(tokenId: string, emote: string): void;
+   * @param tokenId The token document id the overlay plays over.
+   * @param emote The emote glyph(s) or caption text.
+   * @param kind Which draw treatment the caller wants; defaults to `"glyph"`. */
+  addEmote(tokenId: string, emote: string, kind?: EmoteKind): void;
   /** Drive a smooth local walk of a token along a route's scene-coord waypoints.
    * @param id The token document id to animate.
    * @param path Scene-coord `[x,y]` waypoints, in walk order. */

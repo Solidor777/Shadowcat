@@ -1,16 +1,18 @@
-//! Notation-template rewriting: a template such as `1d20 + str` — a mix of
-//! dice-notation atoms (numbers, the dice operator, `NOTATION_KEYWORDS`
-//! modifiers, bracketed label spans) and dotted identifier references — is
-//! rewritten into plain dice notation by substituting each reference with its
-//! resolved value as a labeled constant (`1d20 + 3[str]`). Twin of the client
-//! package's `template` module's rewrite half; the two are pinned together by
-//! the `templates` section of the shared conformance corpus. The client
-//! module's `checkNotationKey` half has no twin: it is an authoring aid, and
-//! the server answers "does this reference run" by running it.
+//! This module rewrites a notation template into plain dice notation.
 //!
-//! INVARIANT: never panics on any input; every failure is a `FormulaError`
-//! value. INVARIANT: the rewritten text carries the author's case and the
-//! author's labels verbatim — only identifier claims are rewritten.
+//! A template such as `1d20 + str` — a mix of dice-notation atoms (numbers, the dice operator,
+//! `NOTATION_KEYWORDS` modifiers, bracketed label spans) and dotted identifier references — is
+//! rewritten into plain dice notation by substituting each reference with its resolved value as a
+//! labeled constant (`1d20 + 3[str]`).
+//!
+//! It is the twin of the client package's `template` module's rewrite half; the two are pinned
+//! together by the `templates` section of the shared conformance corpus. The client module's
+//! `checkNotationKey` half has no twin: it is an authoring aid, and the server answers "does this
+//! reference run" by running it.
+//!
+//! INVARIANT: nothing here panics on any input; every failure is a `FormulaError` value.
+//! INVARIANT: the author's case and labels pass through verbatim; the rewrite replaces identifier
+//! claims and inserts a `1` before a dice operator that does not immediately follow an integer run.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -39,7 +41,7 @@ const DICE_OPERATOR: &str = "d";
 /// chain. A consuming system's stat-key authoring validation calls the client
 /// package's `checkNotationKey`, which RUNS that chain, and must not
 /// reimplement a rule over this list instead.
-pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
+pub(crate) const NOTATION_KEYWORDS: [&str; 19] = [
     DICE_OPERATOR,
     "kh",
     "kl",
@@ -55,18 +57,23 @@ pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
     "rs",
     "xs",
     "xf",
+    "mn",
+    "mx",
+    "cse",
+    "cso",
 ];
 
-/// The dice-notation grammar's math-function vocabulary (the six spellings
-/// `dice::spec::FnName` declares and `dice::notation::parser`'s `fn_call`
-/// recognizes). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
+/// The dice-notation grammar's function vocabulary (the six spellings
+/// `dice::spec::FnName` declares plus `best`, the `dice::spec::Expr::BestOf` call, all
+/// recognized by `dice::notation::parser`'s `fn_call`). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
 /// dice-MECHANIC modifier vocabulary, while function names are notation only
 /// when followed by `(` after any spaces/tabs — `claim_notation_function` tests exactly
 /// that, and anywhere else the same word is an ordinary identifier a resolver
 /// may answer. One of three declarations of one decision (the client
 /// template module's own list and the dice parser's match arms are the other
 /// two); the notation-modifier parity gate reads all three.
-pub(crate) const NOTATION_FUNCTIONS: [&str; 6] = ["floor", "ceil", "round", "abs", "min", "max"];
+pub(crate) const NOTATION_FUNCTIONS: [&str; 7] =
+    ["floor", "ceil", "round", "abs", "min", "max", "best"];
 
 /// Largest magnitude a substituted value may have (asymmetric about zero on
 /// purpose: the most negative representable i32 exceeds it and is rejected).
@@ -80,8 +87,8 @@ enum ClaimKind {
     /// A run of digits.
     Integer,
     /// An identifier-start run that is a `NOTATION_KEYWORDS` member when
-    /// lowercased, or a `NOTATION_FUNCTIONS` member immediately followed by
-    /// `(`.
+    /// lowercased, or a `NOTATION_FUNCTIONS` member followed by `(` after any
+    /// spaces or tabs.
     Keyword,
     /// A dotted reference span — the only kind whose text reaches the
     /// consumer's resolver.
@@ -152,9 +159,7 @@ fn claim_integer_run(chars: &[(char, usize)], at: usize) -> Option<usize> {
 /// lowercased. The run's extent is `is_word_start`'s alone (over `kh_max` it
 /// is the whole six characters; over `kh1` only `kh`), and only the whole run
 /// is tested for membership. Ordered before `claim_identifier_span`, which is
-/// what makes the reserved set wider than the list — the one adjacency in the
-/// chain whose order is observable, since the two share `is_word_start` as
-/// their start set.
+/// what makes the reserved set wider than the list.
 fn claim_notation_keyword(chars: &[(char, usize)], at: usize) -> Option<usize> {
     if !is_word_start(chars[at].0) {
         return None;
@@ -268,22 +273,59 @@ fn claim_at(chars: &[(char, usize)], at: usize) -> Result<Claim, FormulaError> {
     })
 }
 
+/// Whether the next claim after spaces and tabs, starting at `from`, is the
+/// dice operator. The dice notation lexer skips spaces and tabs, so `prof d6`
+/// reads as a count of `prof` before the operator. An identifier span absorbs
+/// adjacent word characters, so an identifier is never directly adjacent to the
+/// operator and the skip is the only way the two meet. A scan error at the
+/// peeked position reads as "not the operator": the main scan reaches that
+/// position itself and reports it.
+fn dice_operator_follows(chars: &[(char, usize)], from: usize) -> bool {
+    let mut at = from;
+    while at < chars.len() && matches!(chars[at].0, ' ' | '\t') {
+        at += 1;
+    }
+    // `claim_at` indexes `chars[at]` unconditionally, so a trailing identifier
+    // must not peek past the end.
+    if at >= chars.len() {
+        return false;
+    }
+    match claim_at(chars, at) {
+        Ok(next) => {
+            next.kind == ClaimKind::Keyword
+                && claim_text(chars, &next).eq_ignore_ascii_case(DICE_OPERATOR)
+        }
+        Err(_) => false,
+    }
+}
+
 /// Turns a claim into the text it contributes to the rewritten notation. The
 /// ONLY stage that reads the scan's carried state or calls the consumer's
-/// resolver; recognition does neither.
+/// resolver; recognition does neither. `count_precedes` is true when an integer
+/// run or a bare-count identifier is already the count of a following dice
+/// operator, so the operator gains no synthesized `1`. `bare_count` is true for
+/// an identifier in a dice count position, which emits an unlabeled integer.
 fn emit_claim(
     chars: &[(char, usize)],
     claim: &Claim,
-    prev_was_int: bool,
+    count_precedes: bool,
+    bare_count: bool,
     resolve: &dyn Resolve,
     out: &mut String,
 ) -> Result<(), FormulaError> {
     if claim.kind == ClaimKind::Identifier {
-        out.push_str(&substitute_identifier(&claim_text(chars, claim), resolve)?);
+        let text = claim_text(chars, claim);
+        if bare_count {
+            out.push_str(&substitute_bare_count(&text, resolve)?);
+        } else {
+            out.push_str(&substitute_identifier(&text, resolve)?);
+        }
         return Ok(());
     }
     let text = claim_text(chars, claim);
-    if claim.kind == ClaimKind::Keyword && text.eq_ignore_ascii_case(DICE_OPERATOR) && !prev_was_int
+    if claim.kind == ClaimKind::Keyword
+        && text.eq_ignore_ascii_case(DICE_OPERATOR)
+        && !count_precedes
     {
         out.push('1');
     }
@@ -291,18 +333,13 @@ fn emit_claim(
     Ok(())
 }
 
-/// Resolves a `.`-joined identifier path (e.g. `hp.max`) to a labeled
-/// substitution. The resolver's `Err` passes through verbatim; its `Ok` passes
-/// the same finite gate every other resolver boundary in this crate applies,
-/// so a non-finite value becomes a `NonFinite` error rather than leaking into
-/// the notation. A non-integer value is a `Type` error (roll templates require
-/// integers) and a magnitude past `I32_MAX` a `Cap` — the cap is a MAGNITUDE
-/// test, asymmetric about zero on purpose. A negative value emits the same
-/// labeled shape as a positive one, prefixed with a unary minus, so the
-/// notation parser reads a negation of a labeled constant rather than two
-/// unlabeled constants and the roll breakdown surfaces a correctly-signed
-/// chip.
-fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, FormulaError> {
+/// Resolves a `.`-joined identifier path (e.g. `hp.max`) to the integer a roll
+/// template requires. The resolver's `Err` passes through verbatim; its `Ok`
+/// passes `finite`, so a non-finite value becomes a `NonFinite` error rather
+/// than reaching the notation. A non-integer value is a `Type` error and a
+/// magnitude past `I32_MAX` a `Cap` — the cap is a MAGNITUDE test, asymmetric
+/// about zero on purpose.
+fn resolve_integer(text: &str, resolve: &dyn Resolve) -> Result<f64, FormulaError> {
     let path: Vec<String> = text.split('.').map(str::to_owned).collect();
     let n = finite(resolve.resolve(&path)?)?;
     if n.fract() != 0.0 {
@@ -320,19 +357,55 @@ fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, Fo
             format!("'{text}' = {}: out of i32 range", js_number(n)),
         ));
     }
+    Ok(n)
+}
+
+/// Resolves a `.`-joined identifier path to a labeled substitution, with
+/// `resolve_integer`'s errors. A negative value emits the same labeled shape as
+/// a positive one, prefixed with a unary minus, so the notation parser reads a
+/// negation of a labeled constant rather than two unlabeled constants and the
+/// roll breakdown surfaces a correctly-signed chip.
+fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, FormulaError> {
+    let n = resolve_integer(text, resolve)?;
     if n < 0.0 {
         return Ok(format!("-{}[{text}]", js_number(-n)));
     }
     Ok(format!("{}[{text}]", js_number(n)))
 }
 
+/// Resolves an identifier in a dice count position to a BARE integer
+/// (`prof d6` → `3 d6`), with `resolve_integer`'s errors. Substituting before
+/// the dice parser runs leaves ordinary dice notation, so the `MAX_ROLL_DICE`
+/// walk over the parsed groups bounds the count exactly as it bounds a typed
+/// one; a count evaluated at roll time could not be capped before rolling. No
+/// label is emitted because the dice grammar accepts none between count and
+/// operator. A negative value is a `Type` error (no die count below zero);
+/// zero is a legal empty group.
+fn substitute_bare_count(text: &str, resolve: &dyn Resolve) -> Result<String, FormulaError> {
+    let n = resolve_integer(text, resolve)?;
+    if n < 0.0 {
+        return Err(FormulaError::new(
+            FormulaErrorKind::Type,
+            format!(
+                "'{text}' = {}: a dice count cannot be negative",
+                js_number(n)
+            ),
+        ));
+    }
+    Ok(js_number(n))
+}
+
 /// Rewrites a notation template into plain dice notation by substituting every
 /// identifier reference with its resolved value as a labeled constant
 /// (`1d20 + str` → `1d20 + 3[str]`). The scan runs the recognizer chain left
 /// to right through `claim_at`, emitting via `emit_claim`; an unclaimed
-/// character always passes through as a `Literal` claim, so the scan never
-/// fails on unfamiliar input and the returned notation is NOT guaranteed to
+/// character passes through as a `Literal` claim, so an unfamiliar character
+/// never fails the scan and the returned notation is NOT guaranteed to
 /// be text the dice parser accepts — parse validity is the caller's next step.
+///
+/// An identifier followed (after any spaces or tabs) by the dice operator is a
+/// dice count and substitutes as a bare integer (`prof d6` → `3 d6`); see
+/// `substitute_bare_count`.
 ///
 /// The resolver is offered each identifier's path in the author's RAW case
 /// (unlike the formula grammar's lowercasing lexer). A template longer than
@@ -376,14 +449,27 @@ pub fn resolve_notation_template(src: &str, resolve: &dyn Resolve) -> Result<Str
     };
     let mut out = String::with_capacity(src.len());
     let mut i = 0usize;
-    // The scan's only carried state: whether the immediately preceding claim
-    // was an integer run.
-    let mut prev_was_int = false;
+    // The scan's carried state: whether an integer run or a bare-count
+    // identifier is still waiting for its dice operator, across the spaces and
+    // tabs the dice lexer skips.
+    let mut count_precedes = false;
     while i < chars.len() {
         let claim = claim_at(&chars, i)?;
-        emit_claim(&chars, &claim, prev_was_int, resolve, &mut out)?;
+        let bare_count =
+            claim.kind == ClaimKind::Identifier && dice_operator_follows(&chars, claim.end);
+        emit_claim(
+            &chars,
+            &claim,
+            count_precedes,
+            bare_count,
+            resolve,
+            &mut out,
+        )?;
         i = claim.end;
-        prev_was_int = claim.kind == ClaimKind::Integer;
+        let is_blank =
+            claim.kind == ClaimKind::Literal && matches!(chars[claim.start].0, ' ' | '\t');
+        count_precedes =
+            claim.kind == ClaimKind::Integer || bare_count || (count_precedes && is_blank);
     }
     Ok(out)
 }

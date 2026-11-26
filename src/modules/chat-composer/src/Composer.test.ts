@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import type { AppContext } from "@shadowcat/ui-kit";
 import { SpeakAsToken } from "@shadowcat/ui-kit";
-import { DocumentStore, buildActorDoc, buildChatSettingsDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument, type ChatComposerSendPayload } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildChatSettingsDoc, MAX_MESSAGE_CHARS, pushChatHistory, type WireAudience, type WireCommand, type WireDocument, type ChatComposerSendPayload } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
 
@@ -34,11 +34,12 @@ function renderComposer(
     speakAsToken?: SpeakAsToken;
     pickAsset?: AppContext["pickAsset"];
     hooks?: AppContext["hooks"];
+    uiState?: AppContext["uiState"];
   } = {},
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
   const context = setAppContextForTest({
-    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}), drawTable: vi.fn(async () => {}) },
+    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}), reviseAudience: vi.fn(async () => {}), drawTable: vi.fn(async () => {}) },
     documents: opts.documents ?? new DocumentStore(),
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",
@@ -46,6 +47,7 @@ function renderComposer(
     speakAsToken: opts.speakAsToken,
     pickAsset: opts.pickAsset,
     hooks: opts.hooks,
+    uiState: opts.uiState,
   });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
@@ -64,13 +66,150 @@ function storeWithImagesToggle(enabled: boolean): DocumentStore {
       op: "create",
       doc: buildChatSettingsDoc(
         "w1",
-        { markdown: null, html: null, images: enabled, hyperlinks: null, emails: null, link_previews: null },
+        { markdown: null, html: null, images: enabled, hyperlinks: null, emails: null, link_previews: null, blind_visible_to_players: null, blind_visible_to_actor_owner: null },
         "chat1",
       ),
     }],
   });
   return s;
 }
+
+/** A `uiState` seam whose chat history is a real bounded list, as the shell keeps it. */
+function historyState(initial: string[] = []): AppContext["uiState"] & { history: string[] } {
+  const state = {
+    history: [...initial],
+    getPanelLayout: () => null,
+    setPanelLayout: () => {},
+    getChatRead: () => null,
+    setChatRead: () => {},
+    getChatHistory: () => state.history,
+    pushChatHistory: (text: string) => {
+      state.history = pushChatHistory(state.history, text);
+    },
+  };
+  return state;
+}
+
+describe("Composer — sent-text history recall", () => {
+  /** Puts the caret at `at` with a collapsed selection. */
+  function caretAt(textarea: HTMLTextAreaElement, at: number): void {
+    textarea.setSelectionRange(at, at);
+  }
+
+  it("records the raw typed text on send, command prefix included", async () => {
+    const uiState = historyState();
+    renderComposer({ uiState });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "  /roll 1d6  " } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(uiState.history).toEqual(["/roll 1d6"]));
+  });
+
+  it("records nothing when the send hook vetoes", async () => {
+    const uiState = historyState();
+    const hooks = { emitMutate: async (_n: string, p: unknown) => ({ ...(p as object), cancel: true }) } as unknown as AppContext["hooks"];
+    renderComposer({ uiState, hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "vetoed" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(uiState.history).toEqual([]);
+  });
+
+  it("ArrowUp at the start recalls the newest entry, then older ones; ArrowDown walks back", async () => {
+    renderComposer({ uiState: historyState(["first", "second"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("second");
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("first");
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("first");
+    await fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("second");
+  });
+
+  it("stepping down past the newest entry restores the unsent draft", async () => {
+    renderComposer({ uiState: historyState(["old"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "work in progress" } });
+    caretAt(textarea, 0);
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("old");
+    await fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("work in progress");
+  });
+
+  it("leaves ArrowUp alone when the caret is not at the start", async () => {
+    renderComposer({ uiState: historyState(["old"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "line one\nline two" } });
+    caretAt(textarea, 12);
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("line one\nline two");
+  });
+
+  it("leaves ArrowUp alone while text is selected", async () => {
+    renderComposer({ uiState: historyState(["old"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "abc" } });
+    textarea.setSelectionRange(0, 3);
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("abc");
+  });
+
+  it("leaves ArrowDown alone when no entry is recalled", async () => {
+    renderComposer({ uiState: historyState(["old"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "abc" } });
+    caretAt(textarea, 3);
+    await fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("abc");
+  });
+
+  it("does nothing with an empty history", async () => {
+    renderComposer({ uiState: historyState() });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("");
+  });
+
+  it("editing a recalled entry makes it the new draft", async () => {
+    renderComposer({ uiState: historyState(["old", "newer"]) });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    await fireEvent.input(textarea, { target: { value: "newer plus" } });
+    caretAt(textarea, 0);
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("newer");
+    await fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("newer plus");
+  });
+
+  it("a recalled entry can be sent again and joins the history as newest", async () => {
+    const uiState = historyState(["a", "b"]);
+    const { send } = renderComposer({ uiState });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    await fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ content: "a" }));
+    await waitFor(() => expect(uiState.history).toEqual(["a", "b", "a"]));
+  });
+
+  it("a second composer on the same state sees the recorded history", async () => {
+    const uiState = historyState();
+    const first = renderComposer({ uiState });
+    const textarea = screen.getAllByRole("textbox")[0] as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "persisted" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(uiState.history).toEqual(["persisted"]));
+    expect(first.send).toHaveBeenCalled();
+    renderComposer({ uiState });
+    const second = screen.getAllByRole("textbox")[1] as HTMLTextAreaElement;
+    await fireEvent.keyDown(second, { key: "ArrowUp" });
+    expect(second.value).toBe("persisted");
+  });
+});
 
 describe("Composer — sending", () => {
   it("Enter sends trimmed content with the given channel/audience and clears", async () => {
@@ -134,6 +273,29 @@ describe("Composer — sending", () => {
     await fireEvent.input(textarea, { target: { value: "secret" } });
     await fireEvent.keyDown(textarea, { key: "Enter" });
     expect(send).toHaveBeenCalledWith({ channel: "general", content: "secret", audience: gmAudience });
+  });
+
+  it("the roll-mode picker puts the blind command in front of the draft, which then sends verbatim", async () => {
+    const { send } = renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "1d20+5" } });
+    const picker = screen.getByTestId("roll-mode") as HTMLSelectElement;
+    await fireEvent.change(picker, { target: { value: "/blindroll " } });
+    expect(textarea.value).toBe("/blindroll 1d20+5");
+    expect(picker.value).toBe("");
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "/blindroll 1d20+5", audience: publicAudience });
+  });
+
+  it("the roll-mode picker swaps the command a draft already starts with", async () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const picker = screen.getByTestId("roll-mode") as HTMLSelectElement;
+    await fireEvent.input(textarea, { target: { value: "/roll 2d6" } });
+    await fireEvent.change(picker, { target: { value: "/selfroll " } });
+    expect(textarea.value).toBe("/selfroll 2d6");
+    await fireEvent.change(picker, { target: { value: "/blindroll " } });
+    expect(textarea.value).toBe("/blindroll 2d6");
   });
 
   it("sends a slash-command body verbatim without any client-side parsing", async () => {

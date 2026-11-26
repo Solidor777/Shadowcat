@@ -1,3 +1,8 @@
+//! This module scores the crit events of one die.
+//!
+//! `score_die` returns the `DieCrit` of one die, and `score_die_net` combines it with the die's
+//! base-success test into a `DieScore`.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -157,7 +162,8 @@ pub struct DieScore {
 }
 
 impl DieScore {
-    /// This die's net success delta: base (0/1) + crit extra − crit lost.
+    /// This die's net success delta: base (0/1) + crit extra − crit lost, summed in `i64` so the
+    /// result is exact for every `i32` input.
     ///
     /// # Examples
     ///
@@ -169,8 +175,9 @@ impl DieScore {
     /// };
     /// assert_eq!(scored.net(), 2); // 1 (base) + 2 (extra) - 1 (lost)
     /// ```
-    pub fn net(&self) -> i32 {
-        i32::from(self.base_success) + self.crit.extra_successes - self.crit.lost
+    pub fn net(&self) -> i64 {
+        i64::from(self.base_success) + i64::from(self.crit.extra_successes)
+            - i64::from(self.crit.lost)
     }
 }
 
@@ -204,6 +211,7 @@ pub fn score_die_net(
     let base_success = match &cfg.success {
         SuccessRule::Numeric { comp, target } => comp.test(value, *target),
         SuccessRule::HasSymbol(s) => symbols.contains(s),
+        SuccessRule::Parity(parity) => parity.test(value),
     };
     DieScore {
         base_success,

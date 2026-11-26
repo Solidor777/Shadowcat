@@ -62,12 +62,13 @@
   }
 </script>
 
-<section class="notes" data-testid="notes-panel">
+<section class="notes" data-testid="notes-panel" data-tour="notes.panel">
   <h3>{t("notes.tab")}</h3>
   <input
     class="search"
     type="search"
     data-testid="notes-search"
+    data-tour="notes.search"
     placeholder={t("notes.search")}
     aria-label={t("notes.search")}
     bind:value={query}
@@ -75,7 +76,7 @@
   {#if tree.length === 0}
     <p class="empty">{t("notes.empty")}</p>
   {:else}
-    <NoteTree nodes={tree} allNotes={allNotes} />
+    <NoteTree nodes={tree} allNotes={allNotes} reorderable={!query.trim()} />
   {/if}
   {#if ctx.canCreate(NOTE_DOC_TYPE)}
     <form onsubmit={(e) => { e.preventDefault(); create(); }}>

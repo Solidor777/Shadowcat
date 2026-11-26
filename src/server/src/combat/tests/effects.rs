@@ -103,12 +103,13 @@ fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_ho
 
 /// `walk_any_host`'s TOKEN branch: an effect reachable only through a token's embedded actor
 /// copy is collected by its anchor exactly once, at the SAME `(host, path)` key the token's own
-/// combatant's first pass produces for the same slot. The two must agree, because every
+/// combatant's own-host collection produces for the same slot. The two must agree, because every
 /// boundary sweep that dedupes across combatants (`transition::run_boundary`,
 /// `transition::end`, `history::capture`) keys on `(host, path)` alone — a token-branch key
-/// shaped differently from pass 1's would let one effect be ticked twice in one sweep.
+/// shaped differently from the own-host collection's would let one effect be ticked twice in one
+/// sweep.
 #[test]
-fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_path() {
+fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_own_host_path() {
     let combat = crate::test_ids::test_uuid(1);
     let token_id = crate::test_ids::test_uuid(0x70);
     // A is hosted by a TOKEN (only its embedded actor copy carries effects); B merely anchors.
@@ -161,7 +162,7 @@ fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_p
         "the anchor reaches the token-hosted effect exactly once"
     );
 
-    // Unanchored: the same slot, reached instead by the token's OWN combatant through pass 1.
+    // Unanchored: the same slot, reached instead by the token's OWN combatant through its own-host collection.
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
         vec![a.clone(), b],
@@ -170,7 +171,7 @@ fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_p
     assert_eq!(
         keys(collect_effects(&snap, &a)),
         expected,
-        "pass 1 and the cross-host token branch key on the identical (host, path)"
+        "the own-host collection and the cross-host token branch key on the identical (host, path)"
     );
 }
 

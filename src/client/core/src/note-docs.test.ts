@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { buildNoteDoc, parseNoteBody, appendNoteSortKey, NOTE_DOC_TYPE } from "./note-docs";
+import { buildNoteDoc, parseNoteBody, parseNotePageKind, appendNoteSortKey, NOTE_DOC_TYPE } from "./note-docs";
 import { AUTHOR_CAPS } from "./scene-docs";
 import type { WireDocument } from "./wire";
 
@@ -10,7 +10,7 @@ describe("buildNoteDoc", () => {
     expect(doc.name).toBe("Session 1");
     expect(doc.parent_id).toBeNull();
     expect(doc.system).toEqual({});
-    expect(doc.engine).toEqual({ source: "# Hi", body: [], sort: 0 });
+    expect(doc.engine).toEqual({ source: "# Hi", body: [], sort: 0, kind: { kind: "text" } });
     expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
   });
 
@@ -32,7 +32,12 @@ describe("buildNoteDoc", () => {
   test("carries parentId and sort into the engine body and envelope", () => {
     const doc = buildNoteDoc("w1", null, "hello", { parentId: "parent-1", sort: 3 });
     expect(doc.parent_id).toBe("parent-1");
-    expect(doc.engine).toEqual({ source: "hello", body: [], sort: 3 });
+    expect(doc.engine).toEqual({ source: "hello", body: [], sort: 3, kind: { kind: "text" } });
+  });
+
+  test("carries opts.kind into the engine body", () => {
+    const doc = buildNoteDoc("w1", null, "caption", { kind: { kind: "pdf", asset_id: "a1" } });
+    expect(doc.engine).toEqual({ source: "caption", body: [], sort: 0, kind: { kind: "pdf", asset_id: "a1" } });
   });
 
   test("uses the explicit id when given", () => {
@@ -105,5 +110,34 @@ describe("parseNoteBody", () => {
       sort: 0,
     });
     expect(parseNoteBody(doc)).toEqual([{ kind: "future_kind", stuff: 1 }]);
+  });
+});
+
+describe("parseNotePageKind", () => {
+  test("reads each media kind with its asset id", () => {
+    for (const kind of ["image", "pdf", "video"] as const) {
+      const doc = buildNoteDoc("w1", null, "c", { kind: { kind, asset_id: "a1" } });
+      expect(parseNotePageKind(doc)).toEqual({ kind, asset_id: "a1" });
+    }
+  });
+
+  test("a note stored without kind reads as text", () => {
+    const doc = buildNoteDoc("w1", null, "c");
+    doc.engine = { source: "c", body: [], sort: 0 };
+    expect(parseNotePageKind(doc)).toEqual({ kind: "text" });
+  });
+
+  test("an unknown kind or a media kind without an asset id fails closed to text", () => {
+    const doc = buildNoteDoc("w1", null, "c");
+    doc.engine = { source: "c", body: [], sort: 0, kind: { kind: "audio", asset_id: "a1" } };
+    expect(parseNotePageKind(doc)).toEqual({ kind: "text" });
+    doc.engine = { source: "c", body: [], sort: 0, kind: { kind: "image" } };
+    expect(parseNotePageKind(doc)).toEqual({ kind: "text" });
+  });
+
+  test("a non-note document reads as text", () => {
+    const doc = buildNoteDoc("w1", null, "c", { kind: { kind: "image", asset_id: "a1" } });
+    doc.doc_type = "item";
+    expect(parseNotePageKind(doc)).toEqual({ kind: "text" });
   });
 });

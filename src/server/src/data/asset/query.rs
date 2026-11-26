@@ -1,6 +1,7 @@
-//! Asset query filters and ordering — the data-layer vocabulary
-//! `SqliteRepository::query_assets` accepts (the HTTP layer parses query
-//! strings into these; regex matching stays above the repository).
+//! This module defines the asset query filters and ordering.
+//!
+//! The types are the data-layer vocabulary `SqliteRepository::query_assets` accepts. The HTTP
+//! layer parses query strings into them, and regex matching stays above the repository.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -152,7 +153,7 @@ pub enum AssetKind {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AssetSort {
-    /// `lower(original_name)`, then id.
+    /// `lower(original_name)`, then id. SQLite's `lower` folds ASCII letters only.
     Name,
     /// `created_at`, then id (the default).
     #[default]
@@ -244,9 +245,11 @@ pub struct AssetFilter {
     /// Content class.
     pub kind: Option<AssetKind>,
     /// Full-text query over `original_name` and every tag (explicit and
-    /// derived), sanitized by `data::search::build_match`. Replaces the
-    /// former `lower(...) LIKE '%…%'` substring over `original_name` alone.
+    /// derived), sanitized by `data::search::build_match`.
     pub query: Option<String>,
+    /// Restrict to these asset ids (an id of another world never matches, since the world
+    /// scope still applies). `Some(empty)` matches nothing; `None` applies no id filter.
+    pub ids: Option<Vec<Uuid>>,
 }
 
 /// A keyset position: the sort key and id of the last row already returned.
@@ -276,6 +279,9 @@ pub struct AssetCursor {
 
 /// The sort key of `asset` under `sort`, in the textual form `AssetCursor` carries.
 ///
+/// The `AssetSort::Name` key is the ASCII-lowercased name, the same function as SQLite's `lower`
+/// in `AssetSort::sql_key`, so a cursor built from a row compares equal to that row's SQL key.
+///
 /// # Examples
 ///
 /// ```
@@ -303,7 +309,7 @@ pub struct AssetCursor {
 /// ```
 pub fn sort_key_of(asset: &super::Asset, sort: AssetSort) -> String {
     match sort {
-        AssetSort::Name => asset.original_name.to_lowercase(),
+        AssetSort::Name => asset.original_name.to_ascii_lowercase(),
         AssetSort::Created => asset.created_at.to_string(),
         AssetSort::Size => asset.byte_size.to_string(),
     }

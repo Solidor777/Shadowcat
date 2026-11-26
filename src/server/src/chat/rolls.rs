@@ -31,7 +31,7 @@ use crate::data::document::Document;
 use crate::dice::notation::{self, ParseContext, ParseError};
 use crate::dice::outcome::RollOutcome;
 use crate::dice::rng::NoiseRng;
-use crate::dice::spec::{DiceGroup, DieKind, Expr, Mode, RollSpec};
+use crate::dice::spec::{DiceGroup, DieKind, Expr, GroupModifier, Mode, RollSpec};
 use crate::dice::{eval, roll};
 use crate::formula::resolver::{NoHostResolver, SystemLeafResolver};
 
@@ -59,6 +59,11 @@ pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
 /// Cap on non-text chunks (`Inline`/`Button`/`DocLink`/`Image`) `scan_body_capped` may extract
 /// from one message body.
 pub(crate) const MAX_INLINE_ROLLS: usize = 8;
+/// Deepest `[[secret:...]]` nesting a body may carry: a secret inside a secret inside a secret,
+/// counted from the outermost span as depth 1. A deeper span is refused
+/// (`RollError::SecretTooDeep`), bounding the composer's recursion the way
+/// `tables::MAX_DRAW_DEPTH` bounds a table draw's.
+pub(crate) const MAX_SECRET_DEPTH: usize = 8;
 
 /// One scanned chunk of a message body: literal text between spans, an
 /// inline roll to execute, a button to validate-and-store, or a doc/token
@@ -73,19 +78,22 @@ pub(crate) enum BodyChunk<'a> {
     Button {
         /// The formula inside the span.
         formula: &'a str,
-        /// Optional label after the `|` separator.
+        /// Optional label after the first `|` separator.
         label: Option<&'a str>,
+        /// Optional flavor after the second `|` separator.
+        flavor: Option<&'a str>,
     },
-    /// A `[[doc:<uuid>[/<embedded_path>]|<label>]]` or `[[token:<uuid>|<label>]]` span: a
-    /// free-form author-inserted link, captured with its target and display label fully
+    /// A `[[doc:<uuid>[/<embedded_path>][|<label>]]]` or `[[token:<uuid>[|<label>]]]` span: a
+    /// free-form author-inserted link, captured with its target and optional display label fully
     /// parsed — `handle_send_message`'s ingest arm does no further parsing (see
     /// `Segment::DocLink`'s own doc comment).
     DocLink {
         /// What the link points at.
         target: DocLinkTarget,
-        /// Display text captured at authoring time (the composer's `|<label>` suffix); never
-        /// empty (an empty/absent label is a `RollError::MalformedDocLink`).
-        label: &'a str,
+        /// Display text captured at authoring time (the composer's `|<label>` suffix); `None`
+        /// when the span has no `|`, never empty (a `|` followed by nothing is a
+        /// `RollError::MalformedDocLink`).
+        label: Option<&'a str>,
     },
     /// A `[[asset:<uuid>[|<alt>]]]` span: an author-inserted image reference.
     /// `alt` is `None` when the span carries no `|<alt>` suffix, or when the
@@ -97,6 +105,45 @@ pub(crate) enum BodyChunk<'a> {
         /// Trimmed alt text, or `None`.
         alt: Option<&'a str>,
     },
+    /// A `[[secret:<spec>|<inner>]]` span: `inner` is itself a body, composed recursively and
+    /// stored under the visibility `spec` names. `spec` is the trimmed text before the first `|`
+    /// (see `parse_secret_spec`); `inner` is everything after it, untrimmed.
+    Secret {
+        /// Who may read `inner`: `gm` or a list of `@username` words.
+        spec: &'a str,
+        /// The body the span hides, scanned again by the composer.
+        inner: &'a str,
+    },
+}
+
+/// Who a `[[secret:...]]` span's spec names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SecretSpec<'a> {
+    /// Every current GM (`Visibility::GmOnly`).
+    Gm,
+    /// The listed usernames, without their `@` (`Visibility::Recipients`).
+    Users(Vec<&'a str>),
+}
+
+/// Parses a secret span's audience selector: the word `gm`, or one or more whitespace-separated `@username`
+/// words (the same raw-username grammar `/w` uses). Anything else, including an empty spec or a
+/// bare `@`, is `RollError::MalformedSecret`.
+pub(crate) fn parse_secret_spec(spec: &str) -> Result<SecretSpec<'_>, RollError> {
+    let spec = spec.trim();
+    if spec == "gm" {
+        return Ok(SecretSpec::Gm);
+    }
+    let mut names = Vec::new();
+    for word in spec.split_whitespace() {
+        match word.strip_prefix('@') {
+            Some(name) if !name.is_empty() => names.push(name),
+            _ => return Err(RollError::MalformedSecret),
+        }
+    }
+    if names.is_empty() {
+        return Err(RollError::MalformedSecret);
+    }
+    Ok(SecretSpec::Users(names))
 }
 
 /// Balanced span scanner. A span opens at `[[` and closes at the first `]]`
@@ -113,11 +160,11 @@ pub(crate) enum BodyChunk<'a> {
 /// after trim => `None`). Every other span is an `Inline`. Errors: a span
 /// opened but never closed by a balanced `]]` (`RollError::Unterminated`);
 /// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`);
-/// a `doc:`/`token:`-prefixed span with an unparseable id or a missing/empty
-/// `|<label>` suffix (`RollError::MalformedDocLink`). Parameterized on the
-/// non-text-chunk cap so a caller other than the ordinary ingest path
-/// (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`) could
-/// apply a different bound.
+/// a `doc:`/`token:`-prefixed span with an unparseable id or an empty `|<label>` suffix
+/// (`RollError::MalformedDocLink`); a span with no `|` is a link without a label.
+/// Parameterized on the non-text-chunk cap so a caller other than the ordinary
+/// ingest path (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`)
+/// could apply a different bound.
 pub(crate) fn scan_body_capped(
     body: &str,
     max_spans: usize,
@@ -179,14 +226,12 @@ pub(crate) fn scan_body_capped(
             Err(e) => return Err(e),
             Ok(None) => {
                 if let Some(rest) = content.strip_prefix("roll:") {
-                    let (formula, label) = match rest.split_once('|') {
-                        Some((f, l)) => {
-                            let l = l.trim();
-                            (f, if l.is_empty() { None } else { Some(l) })
-                        }
-                        None => (rest, None),
-                    };
-                    chunks.push(BodyChunk::Button { formula, label });
+                    let (formula, label, flavor) = split_button_span(rest);
+                    chunks.push(BodyChunk::Button {
+                        formula,
+                        label,
+                        flavor,
+                    });
                 } else {
                     chunks.push(BodyChunk::Inline(content));
                 }
@@ -200,25 +245,76 @@ pub(crate) fn scan_body_capped(
     Ok(chunks)
 }
 
+/// Splits the content of a `[[roll:...]]` span (after the `roll:` prefix) on `|` into
+/// `(formula, label, flavor)`. The first `|` ends the formula; the second ends the label.
+/// Label and flavor are trimmed and are `None` when absent or empty after trimming. This is the
+/// same `|` convention `split_roll_flavor` applies to a `/roll` body: the first `|` separates
+/// the formula from the text that follows.
+fn split_button_span(rest: &str) -> (&str, Option<&str>, Option<&str>) {
+    match rest.split_once('|') {
+        None => (rest, None, None),
+        Some((formula, tail)) => match tail.split_once('|') {
+            None => (formula, non_empty_trimmed(tail), None),
+            Some((label, flavor)) => (formula, non_empty_trimmed(label), non_empty_trimmed(flavor)),
+        },
+    }
+}
+
+/// `s` trimmed, or `None` when nothing remains.
+fn non_empty_trimmed(s: &str) -> Option<&str> {
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Splits a `/roll` body on its FIRST `|` into `(formula, flavor)`. The dice grammar has no `|`
+/// token, so the first `|` always ends the formula. The formula loses the whitespace before the
+/// `|`, because it is stored and shown as the roll's formula text. The flavor is trimmed and is
+/// `None` when the body has no `|` or the text after it is empty. The body reaches this function
+/// straight from `parse_command`, never through `scan_body_capped`, so no bracket nesting is
+/// involved.
+pub(crate) fn split_roll_flavor(body: &str) -> (&str, Option<&str>) {
+    match body.split_once('|') {
+        None => (body, None),
+        Some((formula, flavor)) => (formula.trim_end(), non_empty_trimmed(flavor)),
+    }
+}
+
+/// Splits a `doc:`/`token:` span's remainder at the first `|` into `(id_part, label)`. No `|`
+/// gives `label: None`; a `|` whose trimmed tail is empty is `RollError::MalformedDocLink`.
+fn split_link_label(rest: &str) -> Result<(&str, Option<&str>), RollError> {
+    match rest.split_once('|') {
+        None => Ok((rest, None)),
+        Some((id_part, label)) => {
+            let label = label.trim();
+            if label.is_empty() {
+                Err(RollError::MalformedDocLink)
+            } else {
+                Ok((id_part, Some(label)))
+            }
+        }
+    }
+}
+
 /// Parses `content` as a `doc:`/`token:`/`asset:`-prefixed span. `Ok(None)` when `content`
 /// carries none of the three prefixes (the caller falls through to `roll:`/`Inline` handling);
 /// `Err(RollError::MalformedDocLink)`/`Err(RollError::MalformedAssetSpan)` when a recognized
 /// prefix's id/label grammar is malformed; `Ok(Some(chunk))` on success. Grammar:
-/// `doc:<uuid>[/<embedded_path>]|<label>`, `token:<uuid>|<label>`, or
+/// `doc:<uuid>[/<embedded_path>][|<label>]`, `token:<uuid>[|<label>]`, or
 /// `asset:<uuid>[|<alt>]` — for `doc:`/`token:`, the id/path is everything before the FIRST
 /// `|`, split from an optional `/<embedded_path>` at the first `/` after the `doc:`/`token:`
-/// prefix, and the label is everything after that `|`, trimmed, required non-empty
-/// (`Segment::DocLink.label` is a required field, unlike `Button`'s optional label); for
-/// `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
+/// prefix, and the label is everything after that `|`, trimmed. A span with no `|` yields
+/// `label: None`; a `|` followed by nothing (or only whitespace) is
+/// `RollError::MalformedDocLink`, because the author typed the separator and meant a label.
+/// For `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
 /// (`Segment::Image.alt` renders as an empty string either way — see
 /// `chat::body::compose_message`'s `Image` arm).
 fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
     if let Some(rest) = content.strip_prefix("doc:") {
-        let (id_and_path, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(RollError::MalformedDocLink);
-        }
+        let (id_and_path, label) = split_link_label(rest)?;
         let (id_part, embedded_path) = match id_and_path.split_once('/') {
             Some((id, p)) => (id, Some(format!("/{p}"))),
             None => (id_and_path, None),
@@ -233,11 +329,7 @@ fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
         }));
     }
     if let Some(rest) = content.strip_prefix("token:") {
-        let (id_part, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(RollError::MalformedDocLink);
-        }
+        let (id_part, label) = split_link_label(rest)?;
         let token_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Token { token_id },
@@ -254,6 +346,13 @@ fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
         };
         let asset_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedAssetSpan)?;
         return Ok(Some(BodyChunk::Image { asset_id, alt }));
+    }
+    if let Some(rest) = content.strip_prefix("secret:") {
+        let (spec, inner) = rest.split_once('|').ok_or(RollError::MalformedSecret)?;
+        return Ok(Some(BodyChunk::Secret {
+            spec: spec.trim(),
+            inner,
+        }));
     }
     Ok(None)
 }
@@ -296,7 +395,7 @@ pub enum RollError {
     /// ladder is unambiguous (`dice::eval::classify`'s doc comment documents the tie).
     DuplicateTierOffset(i32),
     /// A `[[doc:...]]`/`[[token:...]]` span recognized by its prefix but malformed: an
-    /// unparseable id, or a missing/empty `|<label>` suffix.
+    /// unparseable id, or a `|` with an empty label after it.
     MalformedDocLink,
     /// A template reference could not be resolved — an unknown path, a
     /// non-integer value, or a scan error from the template grammar itself.
@@ -321,6 +420,28 @@ pub enum RollError {
     /// -- a table needs a single Total value to range-match against, not a
     /// success count.
     TableNeedsTotal,
+    /// A `best(...)` call appears in a roll that resolved to `Mode::SuccessCount`, which pools
+    /// dice across the whole roll and ignores the arithmetic a best total is chosen from.
+    BestOfRequiresTotal,
+    /// A dice group's `mn<N>` floor is above its `mx<N>` ceiling, so no value satisfies both.
+    InvalidClamp {
+        /// The group's floor.
+        min: i32,
+        /// The group's ceiling.
+        max: i32,
+    },
+    /// A `[[secret:...]]` span has no `|`, or its spec is neither `gm` nor a list of `@username`
+    /// words.
+    MalformedSecret,
+    /// `[[secret:...]]` spans nest deeper than `MAX_SECRET_DEPTH`.
+    SecretTooDeep,
+    /// A body with no sender and no member lookup (a note) carries a `[[secret:@user ...|...]]`
+    /// span; only `[[secret:gm|...]]` can be resolved there.
+    SecretRequiresGm,
+    /// A `[[secret:@user ...|...]]` span names a username that is not a member of the world.
+    UnknownSecretRecipient,
+    /// A `[[secret:@user ...|...]]` span names more than `super::MAX_WHISPER_RECIPIENTS` users.
+    TooManySecretRecipients,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -383,6 +504,35 @@ impl std::fmt::Display for RollError {
                     "a table's formula must resolve to a single total, not a success count"
                 )
             }
+            RollError::BestOfRequiresTotal => write!(
+                f,
+                "best(...) needs a total, so it cannot be combined with counting successes"
+            ),
+            RollError::InvalidClamp { min, max } => write!(
+                f,
+                "that die's floor (mn{min}) is above its ceiling (mx{max})"
+            ),
+            RollError::MalformedSecret => write!(
+                f,
+                "a secret must read [[secret:gm|text]] or [[secret:@name|text]]"
+            ),
+            RollError::SecretTooDeep => {
+                write!(f, "secrets are nested more than {MAX_SECRET_DEPTH} deep")
+            }
+            RollError::SecretRequiresGm => {
+                write!(
+                    f,
+                    "a secret here can only be addressed to the GM ([[secret:gm|...]])"
+                )
+            }
+            RollError::UnknownSecretRecipient => {
+                write!(f, "a secret names someone who is not in this world")
+            }
+            RollError::TooManySecretRecipients => write!(
+                f,
+                "a secret names more than {} people",
+                super::MAX_WHISPER_RECIPIENTS
+            ),
         }
     }
 }
@@ -395,22 +545,34 @@ impl std::error::Error for RollError {}
 /// checks below. Recurses into `Expr::Call`'s `args` too, so a dice
 /// group nested inside a math-function argument still counts toward `MAX_ROLL_DICE` and is validated
 /// by the per-group cap checks below — a `Call` node is not a way to smuggle dice groups past this
-/// walk.
-fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGroup>) {
+/// walk. Every `Expr::BestOf` branch is counted as well, because every branch really rolls, and
+/// `has_best_of` is set when the tree holds any `BestOf` node.
+fn walk_groups<'a>(
+    expr: &'a Expr,
+    total: &mut u64,
+    groups: &mut Vec<&'a DiceGroup>,
+    has_best_of: &mut bool,
+) {
     match expr {
         Expr::Dice(group) => {
             *total += group.count as u64;
             groups.push(group);
         }
         Expr::Const(_) => {}
-        Expr::Neg(inner) => walk_groups(inner, total, groups),
+        Expr::Neg(inner) => walk_groups(inner, total, groups, has_best_of),
         Expr::Bin { lhs, rhs, .. } => {
-            walk_groups(lhs, total, groups);
-            walk_groups(rhs, total, groups);
+            walk_groups(lhs, total, groups, has_best_of);
+            walk_groups(rhs, total, groups, has_best_of);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                walk_groups(arg, total, groups);
+                walk_groups(arg, total, groups, has_best_of);
+            }
+        }
+        Expr::BestOf(args) => {
+            *has_best_of = true;
+            for arg in args {
+                walk_groups(arg, total, groups, has_best_of);
             }
         }
     }
@@ -423,21 +585,18 @@ fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGro
 fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
     let mut total: u64 = 0;
     let mut groups: Vec<&DiceGroup> = Vec::new();
-    walk_groups(&spec.expr, &mut total, &mut groups);
+    let mut has_best_of = false;
+    walk_groups(&spec.expr, &mut total, &mut groups, &mut has_best_of);
     if total > MAX_ROLL_DICE as u64 {
         return Err(RollError::TooManyDice(total.min(u32::MAX as u64) as u32));
     }
 
     for group in &groups {
-        // `DieKind::validate()` rejects an empty `Faces{faces:[]}`. No notation
-        // path constructs `Faces` today, so this arm is unreachable via
-        // `execute_roll`/`validate_formula`'s only caller (the notation parser);
-        // called anyway as defense-in-depth against a future notation extension.
-        // `RollError`'s variant set is fixed by this module's interface contract
-        // (no dedicated `Faces` variant), so an `EmptyFaces` failure maps onto
-        // `SidesTooLarge(0)` -- the closest existing "the die's face space is
-        // degenerate" variant. Revisit this mapping if a future change gives
-        // `Faces` a real notation constructor.
+        // `DieKind::validate()` rejects an empty `Faces{faces:[]}`. The notation parser
+        // builds only `Numeric` dice, so this arm is unreachable for a parsed formula; it
+        // runs as defense-in-depth for any `DieKind` the parser does not construct.
+        // `RollError` has no dedicated `Faces` variant, so an `EmptyFaces` failure maps onto
+        // `SidesTooLarge(0)`, the closest "the die's face space is degenerate" variant.
         if group.kind.validate().is_err() {
             return Err(RollError::SidesTooLarge(0));
         }
@@ -447,11 +606,28 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
                 return Err(RollError::SidesTooLarge(faces));
             }
         }
+        for modifier in &group.modifiers {
+            if let GroupModifier::Clamp {
+                min: Some(min),
+                max: Some(max),
+            } = modifier
+            {
+                if min > max {
+                    return Err(RollError::InvalidClamp {
+                        min: *min,
+                        max: *max,
+                    });
+                }
+            }
+        }
     }
 
     match &spec.mode {
         Mode::Total(cfg) => validate_tiers(&cfg.tiers)?,
         Mode::SuccessCount(cfg) => {
+            if has_best_of {
+                return Err(RollError::BestOfRequiresTotal);
+            }
             validate_tiers(&cfg.tiers)?;
             if cfg.expertise > MAX_EXPERTISE {
                 return Err(RollError::ExpertiseTooLarge(cfg.expertise));
@@ -496,9 +672,10 @@ fn resolve_roll_notation(formula: &str, host: Option<&Document>) -> Result<Strin
 /// validate a `[[roll:...]]` button at ingest so a stored button is never
 /// structurally broken. A button is a template by nature — its references are
 /// per-clicker — so validation substitutes a placeholder zero for every
-/// identifier (a substituted reference is always a labeled constant factor,
-/// never a dice count, so the placeholder cannot change the shape being
-/// checked); value-dependent failures surface per clicker at click time.
+/// identifier (a reference in a dice count position becomes a bare zero count,
+/// so the dice cap cannot be checked against its real value here);
+/// value-dependent failures, including a count past `MAX_ROLL_DICE`, surface
+/// per clicker at click time.
 pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), RollError> {
     let notation = crate::formula::resolve_notation_template(formula, &|_: &[String]| Ok(0.0))
         .map_err(RollError::Reference)?;

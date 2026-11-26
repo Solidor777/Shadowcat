@@ -36,6 +36,17 @@ describe("resolveNotationTemplate", () => {
     expect(resolveNotationTemplate("2d6[kh fire] + str", env({ str: 1 })))
       .toEqual({ notation: "2d6[kh fire] + 1[str]" });
   });
+  it("an identifier before the dice operator is a bare count; the operator gains no '1'", () => {
+    expect(resolveNotationTemplate("prof d6", env({ prof: 3 }))).toEqual({ notation: "3 d6" });
+  });
+  it("an integer count carries across blanks to the dice operator, and a non-blank claim ends the carry", () => {
+    expect(resolveNotationTemplate("3 d6 + 2\t d8", env({}))).toEqual({ notation: "3 d6 + 2\t d8" });
+    expect(resolveNotationTemplate("3 + d6", env({}))).toEqual({ notation: "3 + 1d6" });
+  });
+  it("an identifier that is the last claim, with or without trailing blanks, never peeks past the end", () => {
+    expect(resolveNotationTemplate("1d20 + str", env({ str: 3 }))).toEqual({ notation: "1d20 + 3[str]" });
+    expect(resolveNotationTemplate("1d20 + str \t", env({ str: 3 }))).toEqual({ notation: "1d20 + 3[str] \t" });
+  });
   it("negative values emit a labeled unary-minus form (same shape as positive, sign-prefixed)", () => {
     expect(resolveNotationTemplate("d20 + mod", env({ mod: -2 })))
       .toEqual({ notation: "1d20 + -2[mod]" });

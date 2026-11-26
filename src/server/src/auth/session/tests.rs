@@ -186,10 +186,10 @@ async fn session_load_does_not_queue_behind_an_open_write_transaction() {
     };
     store.create(&mut record).await.unwrap();
 
-    // Hold the write pool's single connection open in an uncommitted
-    // transaction. Before this fix, `load()` shared this exact pool
-    // (max_connections(1)), so it would have zero free connections to
-    // acquire and block until this transaction ends.
+    // Hold the write pool's single connection open in an uncommitted transaction.
+    // `load()` reads through the separate read pool, so it must not wait on this
+    // transaction (a load on the write pool, max_connections(1), would have zero free
+    // connections to acquire and block until the transaction ends).
     let tx = repo.pool().begin().await.unwrap();
 
     let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), store.load(&record.id))

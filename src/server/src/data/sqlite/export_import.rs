@@ -1,6 +1,7 @@
-//! World bundle export/import: the `WorldExportData` / `WorldImportData` half
-//! of `SqliteRepository`, in a sibling `impl` block so `sqlite.rs` stays under
-//! the file-size limit.
+//! This module holds the world bundle export and import of `SqliteRepository`, in a sibling `impl`
+//! block.
+//!
+//! `export_world_rows` returns `WorldExportData` and `import_world` takes `WorldImportData`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -155,21 +156,33 @@ impl SqliteRepository {
             });
         }
 
+        // LEFT JOIN, never JOIN: a Shared-mode pool row's `user_id` is the reserved
+        // `Uuid::nil()` sentinel, which never appears in `users`, so an INNER JOIN would drop
+        // every pooled scene's memory from the export silently. `user_id` itself is selected so
+        // the loop below can classify each row from the ACTUAL id — nil vs. non-nil — never from
+        // whether `username` resolved, which also comes back NULL for a genuine orphan row (see
+        // `ExportedFogRow`'s own doc for why conflating the two is unsafe).
         let fog_rows = sqlx::query(
-            "SELECT explored_fog.scene_id AS scene_id, explored_fog.cells AS cells, \
+            "SELECT explored_fog.scene_id AS scene_id, explored_fog.level_id AS level_id, \
+             explored_fog.user_id AS user_id, explored_fog.cells AS cells, \
              users.username AS username \
-             FROM explored_fog JOIN users ON users.id = explored_fog.user_id \
-             WHERE explored_fog.world_id = ? ORDER BY explored_fog.scene_id, users.username",
+             FROM explored_fog LEFT JOIN users ON users.id = explored_fog.user_id \
+             WHERE explored_fog.world_id = ? \
+             ORDER BY explored_fog.scene_id, explored_fog.level_id, explored_fog.user_id",
         )
         .bind(world.to_string())
         .fetch_all(&self.pool)
         .await?;
         let mut fog = Vec::with_capacity(fog_rows.len());
         for r in fog_rows {
+            let user_id = Uuid::parse_str(r.get::<String, _>("user_id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?;
             fog.push(ExportedFogRow {
                 scene_id: Uuid::parse_str(r.get::<String, _>("scene_id").as_str())
                     .map_err(|e| DataError::OpFailed(e.to_string()))?,
-                username: r.get("username"),
+                level_id: r.get("level_id"),
+                pool: user_id == Uuid::nil(),
+                username: r.get::<Option<String>, _>("username"),
                 cells: r.get("cells"),
             });
         }
@@ -246,10 +259,8 @@ impl SqliteRepository {
     /// `reindex_document_fts` with `upsert_document` (search state is
     /// rebuilt from `doc`'s content, never carried across servers —
     /// `documents_fts_public`/`documents_fts_gm` are never exported/imported
-    /// directly, see `data::world_bundle`'s module doc; the same is true of
-    /// `assets_fts`, whose triggers rebuild it from the imported `assets`/
-    /// `asset_tags` rows as `insert_asset`/`set_asset_tags` write them). A
-    /// plain `INSERT`
+    /// directly, see `data::world_bundle`'s module doc; `assets_fts` rows come from
+    /// the SQL triggers on the `assets` and `asset_tags` inserts). A plain `INSERT`
     /// (not `upsert_document`'s `ON CONFLICT(id) DO UPDATE`): a document id
     /// colliding with an existing row anywhere on the target server (a
     /// separate axis from the already-gated world-id collision) is a
@@ -327,7 +338,8 @@ impl SqliteRepository {
     /// writer connection for the entire call, including the asset-rename
     /// loop — every other server write (chat, moves, document edits) blocks
     /// for the whole import, the same trade-off `POST /api/admin/backup`
-    /// already accepts for its snapshot.
+    /// already accepts for its snapshot. Staged files left by a failed rename
+    /// move into `trash`.
     ///
     /// # Examples
     ///
@@ -360,13 +372,21 @@ impl SqliteRepository {
     ///     staged_assets: vec![],
     ///     staged_siblings: vec![],
     /// };
-    /// let summary = repo.import_world(data).await?;
+    /// let trash = shadowcat::trash::Trash::new(
+    ///     std::path::PathBuf::from("trash"),
+    ///     shadowcat::trash::TrashRetention::Disabled,
+    /// );
+    /// let summary = repo.import_world(data, &trash).await?;
     /// assert_eq!(summary.world_id, world_id);
     /// assert!(repo.get_world(world_id).await?.is_some());
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn import_world(&self, data: WorldImportData) -> Result<ImportSummary, DataError> {
+    pub async fn import_world(
+        &self,
+        data: WorldImportData,
+        trash: &crate::trash::Trash,
+    ) -> Result<ImportSummary, DataError> {
         let mut tx = self.pool.begin().await?;
         let world = data.manifest.world_id;
 
@@ -407,7 +427,7 @@ impl SqliteRepository {
         .execute(&mut *tx)
         .await?;
 
-        // The tier-2 structural schema registry `validate_system_schema_tree`
+        // The structural schema registry `validate_system_schema_tree`
         // needs, read from the BUNDLE's own imported `settings` rows rather
         // than `self.world_schema_declarations(world)` — that method queries
         // `self.pool` via a fresh connection, which would deadlock against
@@ -659,9 +679,9 @@ impl SqliteRepository {
         // load_document` inside `check_parent_placement` itself, not
         // through a batch map. No general multi-hop cycle walk runs here:
         // `documents.parent_id`'s foreign key is enforced immediately (no
-        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` in `db.rs`), so a ≥2-node
-        // `parent_id` cycle's first `INSERT` above already fails before this
-        // pass is reached.
+        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` set by `db::connect_pool_with_options`), so a
+        // ≥2-node `parent_id` cycle's first `INSERT` above already fails before this pass is
+        // reached.
         for document in &inserted_documents {
             validation::validate_containment(document)?;
             Self::check_parent_placement(
@@ -822,14 +842,25 @@ impl SqliteRepository {
 
         let mut skipped_fog = 0usize;
         for row in &data.fog {
-            match Self::resolve_username_tx(&mut tx, Some(row.username.as_str())).await? {
+            // A `pool` row inserts under the reserved nil sentinel directly — it carries no
+            // username to resolve and must NEVER be routed through `resolve_username_tx` (a
+            // `None` username there would otherwise be indistinguishable from a genuine
+            // unresolvable orphan and get skipped, silently dropping every Shared-mode scene's
+            // pooled memory on import).
+            let resolved = if row.pool {
+                Some(Uuid::nil())
+            } else {
+                Self::resolve_username_tx(&mut tx, row.username.as_deref()).await?
+            };
+            match resolved {
                 Some(user_id) => {
                     sqlx::query(
-                        "INSERT INTO explored_fog (world_id, scene_id, user_id, cells) \
-                         VALUES (?, ?, ?, ?)",
+                        "INSERT INTO explored_fog (world_id, scene_id, level_id, user_id, cells) \
+                         VALUES (?, ?, ?, ?, ?)",
                     )
                     .bind(world.to_string())
                     .bind(row.scene_id.to_string())
+                    .bind(&row.level_id)
                     .bind(user_id.to_string())
                     .bind(row.cells.as_slice())
                     .execute(&mut *tx)
@@ -895,10 +926,10 @@ impl SqliteRepository {
                 .join(name);
             if let Err(e) = tokio::fs::rename(staged, &dest).await {
                 for done in &finalized {
-                    let _ = tokio::fs::remove_file(done).await;
+                    let _ = trash.discard(done).await;
                 }
                 for (_, remaining) in &moves {
-                    let _ = tokio::fs::remove_file(remaining).await;
+                    let _ = trash.discard(remaining).await;
                 }
                 return Err(DataError::OpFailed(format!(
                     "failed to finalize imported asset file {name}: {e}"

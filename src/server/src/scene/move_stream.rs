@@ -1,8 +1,8 @@
 //! Position trajectory sampler for `MoveStream` broadcast.
 //!
-//! Pure, no I/O. Converts a legal render-path and duration into time-tagged
-//! position samples for client playback. Consumed by `Room::execute_move`,
-//! which extends `MoveExecution` to carry `samples`.
+//! This module is pure and does no I/O. It converts a legal render-path and duration into
+//! time-tagged position samples for client playback. `Room::execute_move` consumes the samples
+//! and puts them on the `MoveStream` frame.
 //!
 //! Algorithm: arc-length parameterisation — compute cumulative segment lengths,
 //! place `n` samples at equal arc-length steps, map each onto the polyline via
@@ -67,6 +67,10 @@ pub(crate) struct LightSamplePt {
     pub falloff: crate::scene::lighting::Falloff,
     /// Packed `0xRRGGBB` light color.
     pub color: u32,
+    /// Cone width in degrees; `None` for a radial light.
+    pub angle: Option<f64>,
+    /// Effective cone direction in degrees at this instant; `Some` exactly when `angle` is.
+    pub rotation: Option<f64>,
     /// Illumination polygon(s) at this instant, scene coords.
     pub polygons: Vec<Vec<crate::scene::vision::P>>,
 }

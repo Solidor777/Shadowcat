@@ -22,6 +22,7 @@
  *     entry_url: "/modules/dnd5e/index.js".into(),
  *     has_validators: false,
  *     validator_load_error: None,
+ *     engine_compat_ok: true,
  * };
  * let value = serde_json::to_value(&info).unwrap();
  * assert_eq!(value["id"], "dnd5e");
@@ -34,7 +35,7 @@ export type InstalledModuleInfo = {
  */
 id: string, 
 /**
- * The raw module.json, byte-for-byte (the client's Zod schema reads it).
+ * The module manifest (the client's Zod schema reads it).
  */
 manifest: unknown, 
 /**
@@ -50,4 +51,11 @@ has_validators: boolean,
  * to load (`sandbox::registry::ValidatorRegistry::load_error_for`) — shown beside the
  * "Run sandboxed validators" toggle.
  */
-validator_load_error: string | null, };
+validator_load_error: string | null, 
+/**
+ * The server's own `crate::modules::engine_compat_ok` verdict for this install, computed at
+ * scan time (fail-closed: no `engines.shadowcat` declaration is `false`). The client reads
+ * this and never re-derives it from `engines.shadowcat`: a second semver matcher could
+ * disagree with the one `set_world_enabled_modules` enforces on every save.
+ */
+engine_compat_ok: boolean, };

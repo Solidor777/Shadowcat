@@ -990,7 +990,12 @@ are observations awaiting triage, not committed work.
   reruns of the same commit pass at one worker; at two workers the same commit
   gave one pass and one failure (the movement-budget gate spec consuming its
   whole 360s budget), which is a threshold being crossed rather than a defect in
-  that spec; before either change, four consecutive runs failed. Two samples is
+  that spec; before either change, four consecutive runs failed. CORRECTION: a
+  later, separate failure mode of that spec (the commit's outcome never arriving,
+  a 20s assertion timeout rather than a 360s hang) was not load at all: a move
+  committed by double-click was silently dropped when the tool was swapped before
+  the commit's route reply arrived (see the dropped-commit entry at the end of
+  this file). The 360s hangs were not shown to share that cause. Two samples is
   what supports this, not a characterization of long-run stability.
   The underlying cost is untouched: the renderer still redraws the full canvas
   every tick whether or not the scene changed, and the fixes buy headroom under
@@ -1065,3 +1070,226 @@ are observations awaiting triage, not committed work.
   so. The directory is now in the include, verified by a positive control rather
   than by a clean result: a deliberate type error is reported, and its removal
   returns the check to clean. Status: Resolved.
+
+- Title: A committed move was silently dropped when the tool was swapped.
+  Summary: The movement-budget gate browser spec failed intermittently with the
+  move outcome never arriving, and was read as load sensitivity. Trace forensics
+  showed the cause was a product defect: the measure tool's double-click commit
+  issues a fresh route request, and swapping tools before its reply arrived ran
+  the tool's deactivation, which invalidated the in-flight commit, so no move
+  request was ever sent. A player who double-clicks a goal and immediately picks
+  another tool lost the move with no message. The commit is now owned separately
+  from previews: deactivation detaches it and the request still runs. Every
+  rejection now reaches the player through one consumer of the move-outcome
+  signal in the stage (a warning notice), and a route request that fails or is
+  cut to nothing raises its own notice. Unit tests reproduce the original
+  sequence and were mutation-checked (removing each ownership guard turns a named
+  test red). Status: Resolved.
+
+- Title: A Windows/Chromium network error stalls the browser suite at page load.
+  Summary: A same-origin module fetch occasionally fails in the browser with
+  `net::ERR_NO_BUFFER_SPACE` (Winsock WSAENOBUFS), so the app never mounts and the
+  login step burned its whole test budget. Measured on the development host: it is
+  environmental. It reproduces with plain Chromium page loads (no test runner, no
+  GPU load) against a minimal Node static server as readily as against the
+  Shadowcat server (4 events in 3,000 loads versus 2 in 4,000), occurs at
+  TIME_WAIT counts of 680 to 2,647 of roughly 15,200 usable ports, and genuine
+  ephemeral-port exhaustion on that host surfaces as `EADDRINUSE` at about 15,300
+  sockets instead. The Winsock or Chromium mechanism is not established; candidates
+  not tested are a network filter driver or antivirus. Nothing in the repository
+  can remove it, so `login()` in the browser fixtures races the login form against
+  a failed-asset listener and fails within about a second with the failing URL and
+  net error instead of after the full timeout. No retry or timeout increase was
+  added. Status: Needs Review.
+
+- Title: The VFX spec asserted a value that exists for about 400 ms.
+  Summary: The FX-tool assertion that the stage's effect count reaches 2 after a
+  one-shot fires polled a count that returns to 1 when the four-frame effect ends,
+  so a poll pair could straddle the window. Two retained failing traces show the
+  second sprite drawn and gone between polls. The spec now latches the peak of the
+  attribute in the page before the click and asserts the peak, with a control spec
+  proving the latch records a rise that reverts inside one task. The same hazard
+  was then audited across every shell e2e spec that reads a state which comes and
+  goes by itself. Converted to a latch with a control spec: the dice overlay's
+  `settled` state (held 2.5 s, asserted for two overlays in sequence) now uses
+  `latchAttributeValues`, and its "stays idle after the player turns dice off" assertion
+  (which passed on the first read whether or not the toggle did anything) now compares
+  the ordered `transitions()` history across the second roll against a GM-overlay positive
+  control, and the combat tracker's auto-dismissing "your turn"
+  toast (5 s) now uses `latchTextSeen`. Already an in-page observer log:
+  `light-midwalk.spec.ts` (sweep and lit-bounding-box pairs) and the position
+  log in `hex-movement.spec.ts`. Audited and left polling because the value is
+  held until the test itself changes it or is a last-value attribute that
+  persists: `data-last-ruler` (the sender holds the drag while it is asserted),
+  `data-last-ping`, `data-last-scrolling-text`,
+  `data-last-move-outcome`, `data-measure-label`, `data-audio-playing`,
+  `data-duck-gain` (key held, then released), `data-token-positions`,
+  `data-token-count`, `data-level`, `data-perceived-tokens`, `data-fps-cap` and
+  `data-idle-skip`. Warning and error notices do not auto-dismiss, so the
+  plain-HTTP spec's alert assertion is stable. Status: Resolved.
+
+- Title: The compound-region authoring spec failed once to stage a part.
+  Summary: After arming the compound gesture, one drag staged no part (the hole
+  checkbox count stayed 0) in roughly 800 runs. The retained trace shows the
+  gesture delivered normally (hover, press, one move, release within 40 ms) about
+  200 ms after the stage reported ready, while the session's member hydration was
+  still completing. Not reproduced under page-side instrumentation in about 700
+  further runs; three mechanisms (no active scene at press, the compound flag not
+  armed at release, a hit-target change between the actionability check and the
+  press) remain unseparated. Status: Needs Review.
+
+- Title: `axum` was built without its `http2` feature.
+  Summary: Advertising ALPN `h2` on the built-in HTTPS listener would have made every
+  h2-negotiating browser fail, because `axum::serve` was HTTP/1-only in this workspace. The
+  feature is enabled (server, dev and test-support); an h2 extended-CONNECT WebSocket round trip
+  and the browser `nextHopProtocol` test now pin it. Status: Resolved.
+
+- Title: A fresh database path failed to open on first run.
+  Summary: `SqliteRepository::connect` did not create a missing database file, so the very first
+  start of the binary on a new path exited with "unable to open database file"; reproduced on an
+  older release binary. `connect` now creates it; direct pool opens (backup, read-only) stay
+  non-creating. Status: Resolved.
+
+- Title: A harness-revert mutation was green on one listener branch.
+  Summary: Reverting the TLS-off (`TcpListener`) branch of the shared test harness to
+  `SocketAddr` connect info did not fail any test, because the `ClientIp` test only served the
+  sniffing listener. The test now runs the TLS-off, sniffing-plain and sniffing-TLS listeners and
+  the mutation is red. Status: Resolved.
+
+- Title: `lint:secure-context` and the HTTPS secure-context browser test.
+  Summary: The gate bans naming the `Crypto` UUID member outside its owner-signed allow-list. The
+  HTTPS and plain-HTTP browser specs now share one measured member table
+  (`e2e-support/secure-context.ts`): it includes the second-level microphone entry, is measured
+  through one dynamic-key lookup, and the HTTPS spec asserts the same present set on the HTTPS LAN
+  origin and on the secure `http://127.0.0.1` control, non-empty on Chromium and Firefox. The
+  HTTPS spec is listed in the gate's `allowedFiles` for the `randomUUID` rule alone (no other rule
+  or file), so it can assert that the UUID member is a function on the HTTPS origin, the positive
+  counterpart of its absence on plain HTTP. Status: Resolved (owner ruling).
+
+- Title: HTTPS-First interstitial is browser UI, invisible to DevTools.
+  Summary: After Chromium blocks an upgraded navigation with `ERR_BLOCKED_BY_CLIENT`, the tab's
+  document is an empty `chrome-error://chromewebdata/` page (one accessibility node, blank
+  screenshot) in Playwright's Chromium (headless, headed, over CDP) and in a windowed Chrome for
+  Testing, because the prompt is a browser-UI dialog; DevTools DOM, accessibility tree, mouse and
+  keyboard input cannot reach it, and keyboard or coordinate input through DevTools did not reach
+  the plain-HTTP page. A capture of the browser window shows it, and on Windows UI Automation
+  invokes its "Continue to site" button, which reaches the plain-HTTP app (automated in the
+  Chromium upgrade spec). macOS and Linux have drivers (`e2e-support/invoke-button.jxa`,
+  `invoke-button.py`) that the `ui-e2e-https` CI job runs on its macOS and Linux legs; that job
+  passed on all three OS legs in two consecutive CI runs. Status: Resolved.
+
+- Title: An h2 debug assertion trips under the shutdown IO kill.
+  Summary: At the drain deadline `serve_router` fails the IO of every connection still open, which
+  ends the h2 connection through its own error path. With a WebSocket tunnel whose peer has
+  stopped reading, told to close and then cut at the deadline, the `h2` crate's
+  `debug_assert!(!self.has_streams())` in `impl Drop for Counts` still fires in a debug build
+  (`tests/h2_drain_kill.rs`, `DrainReport { killed: 1, aborted: 0, panicked: 1 }`), exactly as it
+  does when the connection task is aborted. Release builds compile the assertion out. The other
+  stalled cases (live tunnel, zero-window peer, peer that stops reading the socket) end cleanly.
+  Mechanism (read from an `h2=trace` run of the reproducer): the session ends while the tunnel
+  stream has unsent DATA (Welcome and Close, flow-control window 0), so dropping its handles
+  schedules an implicit reset (`Closed(ScheduledLibraryReset)`) that queues behind that DATA and
+  is never written; when the connection then dies, `Counts::transition_after` does not release a
+  stream in that state, so `Counts` drops with a counted stream. Any connection end with such a
+  stream alive trips it (h2 0.4.19 is the newest release). Status: Open; the reproducing test is
+  red and needs an owner decision on the connection-ownership design.
+
+- Title: Stray `*.tmp` files after a cancelled or crashed asset write.
+  Summary: Asset upload staging and replace write to `<id>.<uuid>.tmp` beside the asset; a request
+  cut at shutdown (or a crash) leaves the file, and nothing removes it. The state is otherwise
+  consistent (the replace commits its row before the swap). Read, not executed. Status: Needs Review.
+
+- Title: Route and session could disagree in the shell.
+  Summary: A `hashchange` to another world's route, or Back after leaving a world, left the old
+  session running under a route that no longer named its world, and a world route without an
+  identity showed "Connecting..." forever. One effect in `App.svelte` now owns the session from
+  the route's world id. Reproduced first by `App.session.test.ts`. Status: Resolved.
+
+- Title: `git checkout --theirs` dropped a lane's clean hunks during a merge.
+  Summary: Merging the region-follow lane, two files had one conflict each on a long import line.
+  `git checkout --theirs` takes the whole file from one side, so it discarded the other lane's
+  non-conflicting edits in the scene-tools rail (its frozen-session uses). A grep for that lane's
+  symbol came back short, the conflict was recreated with `git checkout -m`, only the marker block
+  was edited, and typecheck and the package tests passed afterwards. Status: Resolved (caught and
+  redone before the merge was committed). A conflict is resolved by editing the region between the
+  markers, then searching for a symbol each side introduced.
+
+- Title: several lane commits do not build alone.
+  Summary: `git commit -- <paths>` commits only files git already tracks, so a lane that added new
+  files and did not `git add` them first committed a tree that fails to compile on its own: the
+  token-art lane's server commit, the render-reveal commit of the chat-bubbles lane, the
+  anchored-region lane's first commit and the facing-vision lane's first commit are each
+  incoherent without the next commit in their lane. The merged
+  branch builds and tests green. Bisecting inside such a range fails at the first commit. Status:
+  Resolved on the merged tree (the common lane brief now states the `git add` step).
+
+- Title: a lane's commit lacks the co-author trailer.
+  Summary: The light-cone lane's server commit (`1c8607d4`) has no `Co-Authored-By` trailer. History
+  is immutable, so it is not amended. Status: Resolved (accepted).
+
+- Title: two plan claims about the code were false.
+  Summary: The facing-token design named `/engine/faction` and `/engine/disposition` as token
+  pointers; the token has no such fields, so the identity-hidden gate uses the six real pointers.
+  The recipient-tier design said `can_see` is the single visibility decider; the GM short-circuits
+  in `filter_properties` and `filter_command` are a second decider, so they were skipped when a
+  `Recipients` tier is held and the search index gained a GM partition that excludes
+  recipient-only text. Status: Resolved (code is right; the design notes were wrong).
+
+- Title: security-relevant permission changes the final review must read.
+  Summary: (1) `ServerMessageRevision` admission was widened to `/permissions/default`, `gm_role`,
+  `users` and `property_overrides` so a GM can revise a message's audience in one update; every
+  other writer is unchanged. (2) `filter_properties` and `filter_command` changed so recipient id
+  lists are emptied per viewer and a secret segment's visibility is withheld with its content;
+  override-map keys still show where a secret sits, not who can read it or what it says. (3)
+  `/engine/lock_rotation` and `/engine/facing_vision` are GM-write-only, and the template-merge
+  path now applies the same GM-only field gate to the carried light and `identity_hidden` as to
+  the new fields. (4) A token's effective owner gains `core:delete` on that token only
+  (`holds_token_owner_floor`; the embedded-actor, wall and manage-embedded capabilities stay
+  outside the floor). (5) Token bars stay owner-writable, bounded by redaction (owner ruling).
+  Status: Needs Review.
+
+- Title: lane checks that were inferred, not run.
+  Summary: Several lanes reported mutation or gate checks as not run: the change-password throttle
+  removal, the avatar bomb, `has_avatar` and 403/404 mutations, and every mutation for the
+  facing-vision client lane; about twenty end-to-end specs were written and not run; and docs
+  examples and push-tier clippy did not finish on a few lanes whose runs were killed by low
+  memory. Status: Needs Review
+  (the final push gate and the end-to-end owner lane are the places these run).
+
+- Title: low-memory kills and a hung trash helper interrupted gates.
+  Summary: A gate run and a commit hook were killed by the host's low-memory reaper; the cause was
+  an unrelated program. The killed hook left the route-prefix lint commit staged and a stale
+  `index.lock`, which was recycled and the commit finished. `windows-trash.exe` hung for 30
+  minutes inside `pnpm clean`. Two agents used a bare `git stash` on the shared stash stack; the
+  stack was checked afterwards and held only the two old entries. Status: Resolved.
+
+- Title: the flake lane was not merged.
+  Summary: The lane for the compound-region and combat-settings Playwright flakes could not run
+  e2e (its brief forbade it), so it added a retry-until-pass to the region helper. That was
+  rejected, because a retry hides which of three mechanisms fails, and the lane's branch was not
+  merged. Both flakes remain open (`OPEN_BUGS.md`). Status: Open.
+
+- Title: the lane brief for the ducking warning had a wrong premise.
+  Summary: The brief said a ducking-settings warning made `pnpm -r typecheck` fail. The warning
+  does not fail the gate (it prints and exits 0); the real failure was a TypeScript error in the shell
+  package (`launchOptions` in the playwright config test), fixed in the same pass by reading
+  `use.launchOptions` from the project. The warning was
+  still real (a replaced controller prop left a stale subscription) and is fixed. Other Svelte
+  warnings remain in the tree and do not fail any gate: `ThemeEditor` (`state_referenced_locally`
+  twice) and `Stage` (`non_reactive_update`). Status: Needs Review (owner's call whether the
+  "ban and fix all" ruling covers warnings that are not suppressions).
+
+- Title: the commit gate reads the live skills corpus, so a skill edit in progress fails an unrelated commit.
+  Summary: `pnpm run test:scripts` ran `check-comment-refs.test.mjs` over the plugin checkout; a
+  server-ops skill reference carried an unrecognised candidate token ("moved") and failed this
+  lane's second commit although no file of the lane was involved. Status: Open (the skill owner
+  fixes the line; the commit is retried after).
+
+- Title: lane checks that were inferred or partial.
+  Summary: Lane `fe` did not sabotage-check the GM recalculation, fragment-link and flaky-test
+  tests; lane `fh2` ran Chromium only (Firefox for one probe); no lane ran `pnpm gate:push`
+  (lane rule: one CI pass at the end). The flaky `client_authored_message_create_is_rejected`
+  was the connection's own presence frame, a test defect fixed by waiting for the welcome and
+  using `next_non_presence_frame`, not a product bug. A helper script from lane `fc` was left in the
+  campaign folder because it could not be confirmed safe to trash. Status: Needs Review (the final
+  push gate and the owner's end-to-end lane are where these run).

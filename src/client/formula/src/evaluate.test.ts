@@ -39,6 +39,13 @@ describe("evaluate", () => {
     expect(evaluate(ast("max(1, dex, 2)"), env({ dex: 9 }))).toBe(9);
   });
 
+  it("a hand-built non-finite literal is gated to a non-finite error", () => {
+    expect(evaluate({ kind: "num", value: Infinity }, env({}))).toEqual({
+      error: "non-finite",
+      detail: "arithmetic result is not finite (Infinity)",
+    });
+    expect(evaluate({ kind: "num", value: NaN }, env({}))).toMatchObject({ error: "non-finite" });
+  });
   it("round ties toward +Infinity (JS-native Math.round behavior)", () => {
     expect(evaluate(ast("round(-2.5)"), env({}))).toBe(-2);
   });

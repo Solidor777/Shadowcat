@@ -1,5 +1,7 @@
-//! Tests for `scene::audibility` — the falloff/pan/occlusion primitives, overlay resolution,
-//! carried-emission precedence, listener selection, and the resolved per-scene slice.
+//! These tests cover `scene::audibility`.
+//!
+//! They exercise the falloff/pan/occlusion primitives, overlay resolution, carried-emission
+//! precedence, listener selection, and the resolved per-scene slice.
 
 use super::*;
 use crate::data::command::Operation;
@@ -99,28 +101,34 @@ fn pan_for_truth_table() {
 }
 
 #[test]
-fn segment_occluded_agrees_with_the_sight_primitive() {
+fn segment_occluded_agrees_with_segments_cross() {
     // Anti-drift parity: audibility's occlusion IS `segments_cross` over the caller-filtered
-    // wall set, so a crossing and a non-crossing case must agree with the primitive the sight
-    // raycaster and the movement gate both use, verbatim.
+    // wall set, so a crossing and a non-crossing case must agree with the primitive the movement
+    // gate also uses, verbatim.
     let crossing = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
     };
     let clear = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, -1.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
     };
     for (listener, emitter, wall) in [
         ((0.0, 0.0), (10.0, 0.0), crossing),
         ((0.0, 0.0), (3.0, 0.0), crossing),
         ((0.0, 0.0), (10.0, 0.0), clear),
-        // A touching endpoint counts as blocked (the conservative reading both gates share).
+        // A touching endpoint counts as blocked (`segments_cross` reads a touching endpoint as crossing).
         ((0.0, 0.0), (5.0, 5.0), crossing),
     ] {
         assert_eq!(
             segment_occluded(listener, emitter, &[wall]),
-            segments_cross(listener, emitter, wall.a, wall.b),
+            (segments_cross(listener, emitter, wall.a, wall.b), 1.0),
             "segment_occluded must agree with segments_cross for {listener:?} -> {emitter:?}"
         );
     }
@@ -461,6 +469,202 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
         em.gain > 0.0,
         "occlusion attenuates, never silences outright"
     );
+    assert!(
+        em.muffled,
+        "the same occluded branch that reduces gain flags the emitter muffled"
+    );
+}
+
+#[test]
+fn a_sound_occluding_region_silences_an_emitter_across_its_edge() {
+    // Mutation: dropping the `silencers` crossing test in `compute_audibility` leaves the wall
+    // attenuation (0.25 of the open gain) and fails the zero-gain assertion.
+    let user = crate::test_ids::test_uuid(7);
+    let region = |occludes: serde_json::Value| {
+        entity_doc_eng(
+            50,
+            10,
+            "region",
+            json!({
+                "shape": { "kind": "rect", "points": [100.0, -100.0, 200.0, 200.0] },
+                "behavior": "terrain", "cost": 1.0, "enabled": true,
+                "occludes": occludes,
+            }),
+        )
+    };
+    let gain_of = |occludes: serde_json::Value| {
+        let mut ecs = listener_and_emitter(user, 12);
+        ecs.apply_op(&Operation::Create {
+            doc: region(occludes),
+        });
+        only_emitter(&ecs, user)
+    };
+    let silenced = gain_of(json!({ "sight": false, "light": false, "sound": true }));
+    assert!(
+        silenced.muffled,
+        "the region boundary occludes the sound path"
+    );
+    assert_eq!(
+        silenced.gain, 0.0,
+        "a silence region mutes the emitter outright, unlike a wall's through-wall gain"
+    );
+    let sight_only = gain_of(json!({ "sight": true, "light": true, "sound": false }));
+    assert!(
+        !sight_only.muffled,
+        "a region that does not flag sound leaves the emitter clear"
+    );
+}
+
+/// The shared fixture plus a vertical wall between the listener (50, 50) and the emitter
+/// (250, 50), 100 units (one cell) from the listener, carrying the given `proximity` body.
+fn fixture_with_proximity_wall(user: Uuid, proximity: serde_json::Value) -> SceneEcs {
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({
+                "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                "blocksSight": true,
+                "proximity": proximity,
+            }),
+        ),
+    });
+    ecs
+}
+
+/// The single emitter of the fixture's slice for `user`.
+fn only_emitter(ecs: &SceneEcs, user: Uuid) -> AudibleEmitter {
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    slice.emitters[0].clone()
+}
+
+#[test]
+fn a_listener_within_a_sound_tier_wall_hears_at_the_sound_gain_unmuffled() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(
+        user,
+        json!({ "within": 1.5, "senses": ["sound"], "soundGain": 0.5 }),
+    );
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.5).abs() < 1e-9,
+        "an open wall scales by soundGain only: {}",
+        em.gain
+    );
+    assert!(!em.muffled, "an open wall is not an occluded path");
+}
+
+#[test]
+fn an_absent_sound_gain_passes_the_sound_at_full_volume() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(user, json!({ "within": 1.5, "senses": ["sound"] }));
+    let em = only_emitter(&ecs, user);
+    assert!((em.gain - 0.8 * 8.0 / 9.0).abs() < 1e-9, "{}", em.gain);
+    assert!(!em.muffled);
+}
+
+#[test]
+fn a_listener_beyond_the_tier_distance_hears_the_wall_as_ordinary() {
+    // The listener stands 1 cell from the wall; a 0.5-cell tier leaves it closed.
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(
+        user,
+        json!({ "within": 0.5, "senses": ["sound"], "soundGain": 0.5 }),
+    );
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "{}",
+        em.gain
+    );
+    assert!(em.muffled);
+}
+
+#[test]
+fn a_tier_that_omits_the_sound_sense_leaves_the_wall_closed_to_sound() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs =
+        fixture_with_proximity_wall(user, json!({ "within": 1.5, "senses": ["sight", "light"] }));
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "{}",
+        em.gain
+    );
+    assert!(em.muffled);
+}
+
+#[test]
+fn segment_occluded_multiplies_open_wall_gains_and_still_blocks_on_a_closed_one() {
+    let open = |x: f64, gain: f64| vision::Seg {
+        a: (x, -5.0),
+        b: (x, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: Some(vision::OpenWithin {
+            distance: 100.0,
+            gain,
+        }),
+    };
+    let closed = vision::Seg {
+        a: (9.0, -5.0),
+        b: (9.0, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
+    };
+    let (blocked, gain) =
+        segment_occluded((0.0, 0.0), (10.0, 0.0), &[open(3.0, 0.5), open(6.0, 0.5)]);
+    assert!(!blocked);
+    assert!((gain - 0.25).abs() < 1e-12);
+    let (blocked, gain) = segment_occluded((0.0, 0.0), (10.0, 0.0), &[open(3.0, 0.5), closed]);
+    assert!(blocked, "one closed crossing blocks");
+    assert!((gain - 0.5).abs() < 1e-12);
+}
+
+#[test]
+fn compute_audibility_unoccluded_emitter_is_not_muffled() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = listener_and_emitter(user, 12);
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(!slice.emitters[0].muffled, "no wall between: not muffled");
+}
+
+#[test]
+fn compute_audibility_spatial_false_never_muffles_despite_a_wall() {
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150}, "blocksSight": true }),
+        ),
+    });
+    ecs.set_world_settings_for_test(ws_body(&[("/audio/spatial", json!(false))]));
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        !slice.emitters[0].muffled,
+        "flat mixing runs no occlusion test, so nothing is muffled"
+    );
 }
 
 #[test]
@@ -485,6 +689,78 @@ fn compute_audibility_occlusion_none_ignores_walls() {
     assert!(
         (slice.emitters[0].gain - 0.8 * 8.0 / 9.0).abs() < 1e-9,
         "Occlusion::None: the wall between listener and emitter changes nothing"
+    );
+    assert!(
+        !slice.emitters[0].muffled,
+        "Occlusion::None turns occlusion off, so a geometrically intervening wall never muffles"
+    );
+}
+
+#[test]
+fn compute_audibility_blocks_sound_false_wall_never_occludes_despite_blocking_sight() {
+    // The de-aliasing pin: `blocksSight: true, blocksSound: false` keeps the wall in the
+    // SIGHT set (the document parses and occludes vision) while excluding it from the SOUND
+    // set — the emitter's gain is the bare falloff, untouched by `throughWallGain`.
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                    "blocksSight": true, "blocksSound": false }),
+        ),
+    });
+    assert_eq!(
+        ecs.sight_wall_entries(crate::test_ids::test_uuid(10)).len(),
+        1,
+        "the wall still parses and blocks sight — only the sound set drops it"
+    );
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        (slice.emitters[0].gain - 0.8 * 8.0 / 9.0).abs() < 1e-9,
+        "a sound-transparent wall between listener and emitter changes nothing: {}",
+        slice.emitters[0].gain
+    );
+    assert!(!slice.emitters[0].muffled);
+}
+
+#[test]
+fn compute_audibility_blocks_sound_true_wall_occludes_despite_transparent_sight() {
+    // The other half of the de-aliasing pin: `blocksSight: false, blocksSound: true`
+    // occludes sound while leaving vision untouched — a window that blocks noise.
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                    "blocksSight": false, "blocksSound": true }),
+        ),
+    });
+    assert!(
+        ecs.sight_wall_entries(crate::test_ids::test_uuid(10))
+            .is_empty(),
+        "the wall stays out of the sight set"
+    );
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        (slice.emitters[0].gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "a sound-blocking wall attenuates to volume * falloff * throughWallGain: {}",
+        slice.emitters[0].gain
     );
 }
 

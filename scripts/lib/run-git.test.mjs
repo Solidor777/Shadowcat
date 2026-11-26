@@ -6,7 +6,8 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { runGit, scrubGitEnv } from "./run-git.mjs";
-import { norm } from "./gate-corpus.mjs";
+import { norm, repoFiles } from "./gate-corpus.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -111,16 +112,17 @@ test("scrubGitEnv returns a scrubbed copy and leaves its input untouched", () =>
 // Source-scanning regression test, same precedent as run-gate-tier.test.mjs's GIT-CALL-BUDGET
 // check: an unguarded `execFileSync` git call is a per-entry-point mistake, not a property of any
 // one file, so fixing the call at one entry point proves nothing about a further one recurring
-// at another — the check enumerates every tracked entry point instead of re-verifying named ones.
+// at another — the check enumerates every entry point of the repository corpus instead of
+// re-verifying named ones.
 //
-// Enumerates via `git ls-files` rather than walking a named directory tree: a directory-walk scan
-// root is itself an include-list one level up from the file-level exclude-list below it — it sees
-// every file under `scripts/`, but a git-invoking entry point living anywhere else in the tracked
-// tree (a Claude Code hook under `.claude/hooks/`, or any future location) is invisible to it
-// until someone remembers to widen the root. Tracked-file enumeration has no location to omit:
-// every JavaScript/TypeScript file git tracks, anywhere in the repository, is in scope by
-// construction, and ignored directories (`node_modules`, `dist`, build output) and untracked
-// scratch content are already excluded because they were never tracked.
+// Enumerates the shared corpus (`repoFiles`) rather than walking a named directory tree: a
+// directory-walk scan root is itself an include-list one level up from the file-level exclude-list
+// below it — it sees every file under `scripts/`, but a git-invoking entry point living anywhere
+// else in the repository (a Claude Code hook under `.claude/hooks/`, or any future location) is
+// invisible to it until someone remembers to widen the root. Corpus enumeration has no location to
+// omit: every JavaScript/TypeScript file git lists as tracked or untracked-and-not-ignored,
+// anywhere in the repository, is in scope by construction, so a stray file is seen before `git
+// add`; ignored directories (`node_modules`, `dist`, build output) are never read.
 //
 // Every scanned file lands in exactly ONE of two checks, decided by name: a test file (`.test.` or
 // `.spec.` before its extension) answers to the FIXTURE invariant, every other file to the
@@ -135,9 +137,14 @@ test("scrubGitEnv returns a scrubbed copy and leaves its input untouched", () =>
 // because the test process runs inside `git commit`'s hook environment. A test HELPER module (not
 // itself named as a test) is routed to the production check, which is the stricter of the two —
 // `runGit` satisfies both invariants at once — so a misrouted helper fails loudly rather than
-// silently. RESIDUAL: the fixture check verifies an `env` property is PRESENT, not that its value
-// is scrubbed — `env: process.env` satisfies it and re-opens the leak; the value is a review
-// obligation.
+// silently. RESIDUAL: the fixture check verifies an `env` property is PRESENT and is not the bare
+// `process.env`; any other value (a variable holding an unscrubbed copy) is a review obligation.
+//
+// "Direct git call" covers every child-process spawn form (`execFileSync`, `execFile`, `spawnSync`,
+// `spawn`, `execSync`, `exec`), a `const` bound to `"git"`, and a helper wrapper around any of them
+// (the spawn inside the wrapper is the call). A fixture that creates a repository in a linked
+// worktree's hook environment with an inherited `GIT_DIR` re-initialises that worktree's real git
+// directory and flips the shared `core.bare` to true; the env requirement exists to prevent that.
 //
 // Calls are found by PARSING, not by pattern matching the source text: a string literal or a
 // comment that spells the call out (this file's own specimens below) is not a call, so this file is
@@ -149,56 +156,97 @@ const TEST_FILE = /\.(test|spec)\.[cm]?[jt]s$/;
 // Per-file exceptions, each named with its reason — never a pattern, so every entry is reviewable
 // and the stale-entry test below reports one whose file stops calling git or stops existing.
 //
-// The three production files below are pre-existing doc/lint checkers unrelated to git hooks,
-// explicitly out of scope for this check and left for the owner to address separately.
-const EXCLUDED_FILES = new Set([
-  "scripts/check-aria-label-keys.mjs",
-  "scripts/check-file-lines.mjs",
-  "scripts/check-inline-tests.mjs",
-]);
+// `runGit` is the one place that may spawn git directly: it scrubs the environment itself, and
+// every other production file reaches git through it.
+const EXCLUDED_FILES = new Set(["scripts/lib/run-git.mjs"]);
 // Every test file in the tree satisfies the explicit-`env` invariant; a file that genuinely cannot
 // is named here with its reason, the same shape as `EXCLUDED_FILES`.
 const EXCLUDED_TEST_FILES = new Set([]);
 
-/** Whether `node` is a call to `execFileSync`, bare or as a property access (`cp.execFileSync`). */
-function isExecFileSyncCall(node) {
-  if (!ts.isCallExpression(node)) return false;
+// The child-process functions that can start git. The first group takes `(file, args, options)`;
+// the shell group takes `(command, options)`, so its command string starts with `git `.
+const FILE_SPAWNERS = new Set(["execFileSync", "execFile", "spawnSync", "spawn"]);
+const SHELL_SPAWNERS = new Set(["execSync", "exec"]);
+
+/** The function name `node` calls, bare (`spawnSync`) or as a property access (`cp.spawnSync`), else null. */
+function calleeName(node) {
+  if (!ts.isCallExpression(node)) return null;
   const callee = node.expression;
-  if (ts.isIdentifier(callee)) return callee.text === "execFileSync";
-  if (ts.isPropertyAccessExpression(callee)) return callee.name.text === "execFileSync";
-  return false;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  return null;
 }
 
-/** Whether `options` (a call's third argument) is an object literal with an `env` property, assigned or shorthand. */
+/** Names bound by `const x = "git"` in `source`, so a call through such a name counts as a git call. */
+function gitNameAliases(source) {
+  const aliases = new Set();
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isStringLiteralLike(node.initializer) &&
+      node.initializer.text === "git"
+    ) {
+      aliases.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return aliases;
+}
+
+/** Whether `target` (a spawn call's first argument) names git: the literal, an alias of it, or a shell string starting with it. */
+function namesGit(target, shell, aliases) {
+  if (target === undefined) return false;
+  if (ts.isIdentifier(target)) return !shell && aliases.has(target.text);
+  const text = ts.isStringLiteralLike(target)
+    ? target.text
+    : ts.isTemplateExpression(target)
+      ? target.head.text
+      : null;
+  if (text === null) return false;
+  return shell ? /^git(\s|$)/.test(text) : text === "git";
+}
+
+/**
+ * Whether `options` is an object literal with an `env` property, assigned or shorthand, whose value
+ * is not the bare `process.env` (the inherited environment is the leak this property exists to cut).
+ */
 function carriesExplicitEnv(options) {
   return (
     options !== undefined &&
     ts.isObjectLiteralExpression(options) &&
     options.properties.some(
       (p) =>
-        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-        ts.isIdentifier(p.name) &&
-        p.name.text === "env",
+        ts.isIdentifier(p.name ?? p) &&
+        (p.name ?? p).text === "env" &&
+        (ts.isShorthandPropertyAssignment(p) ||
+          (ts.isPropertyAssignment(p) && p.initializer.getText() !== "process.env")),
     )
   );
 }
 
 /**
- * Every direct git call in `text` — a call to `execFileSync` whose first argument is the string
- * literal `"git"` — as `{ line, explicitEnv }`, `explicitEnv` being whether the call's options
- * object carries an `env` property. Parsed as `scriptKind`, so text spelling the call out inside a
- * string or comment yields nothing.
+ * Every direct git spawn in `text` — a call to `execFileSync`, `execFile`, `spawnSync` or `spawn`
+ * whose first argument is `"git"` (or a `const` bound to it), or to `execSync`/`exec` whose command
+ * string starts with `git` — as `{ line, explicitEnv }`, `explicitEnv` being whether the call's
+ * options object carries an `env` property that is not the bare `process.env`. A helper wrapper
+ * (`const git = (...args) => spawnSync("git", args, opts)`) is found through the spawn inside it.
+ * Parsed as `scriptKind`, so text spelling the call out inside a string or comment yields nothing.
  */
 export function directGitCalls(text, scriptKind = ts.ScriptKind.JS) {
   const source = ts.createSourceFile("scan", text, ts.ScriptTarget.Latest, true, scriptKind);
+  const aliases = gitNameAliases(source);
   const calls = [];
   const visit = (node) => {
-    if (isExecFileSyncCall(node)) {
-      const [target, , options] = node.arguments;
-      if (target !== undefined && ts.isStringLiteralLike(target) && target.text === "git") {
+    const name = calleeName(node);
+    if (name !== null && (FILE_SPAWNERS.has(name) || SHELL_SPAWNERS.has(name))) {
+      const shell = SHELL_SPAWNERS.has(name);
+      if (namesGit(node.arguments[0], shell, aliases)) {
         calls.push({
           line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
-          explicitEnv: carriesExplicitEnv(options),
+          explicitEnv: carriesExplicitEnv(node.arguments[shell ? 1 : 2]),
         });
       }
     }
@@ -213,45 +261,47 @@ function scriptKindOf(rel) {
   return /\.[cm]?ts$/.test(rel) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
-/** True when `text` (a file's full contents) contains a direct `execFileSync("git", ...)` call. */
+/** True when `text` (a file's full contents) contains a direct git spawn (see `directGitCalls`). */
 function callsGitUnguarded(text) {
   return directGitCalls(text).length > 0;
 }
 
-/** Every path `git ls-files` reports under `repoRoot`, NUL-separated and unfiltered. */
-function listTrackedFiles(repoRoot) {
-  const execFile = (cmd, args, opts) =>
-    execFileSync(cmd, args, { ...opts, cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 });
-  const result = runGit(["ls-files", "-z"], "the tracked file list", { execFile });
-  if (!result.ok) throw new Error(result.message);
-  return result.stdout.split("\0").filter(Boolean);
+/**
+ * Every path in the shared repository corpus (`repoFiles`, minus files deleted in the working
+ * tree), unfiltered. `include: "all"` adds untracked, non-ignored files, which a ban scan reads so a
+ * bare git call is caught before `git add`; `include: "tracked"` reads the index only, which an
+ * existence check reads so a file CI will not have cannot satisfy it.
+ */
+function listCorpusFiles(repoRoot, include = "all") {
+  return repoFiles({ cwd: repoRoot, include, log: () => {} });
 }
 
 /**
- * Every git-tracked file under `repoRoot` with a scanned extension that can name git at all, as
- * `{ rel, text, scriptKind }`. A file with no `git` string literal cannot contain a call whose
- * first argument is that literal, so it is dropped before the parse rather than parsed and found
- * empty — the parse is what makes a full-tree scan cost seconds rather than milliseconds.
+ * Every file of the corpus under `repoRoot` (see `listCorpusFiles` for `include`) with a scanned
+ * extension that can name git at all, as `{ rel, text, scriptKind }`. A file with no `git` string
+ * literal cannot contain a call whose first argument is that literal, so it is dropped before the
+ * parse rather than parsed and found empty — the parse is what makes a full-tree scan cost seconds
+ * rather than milliseconds.
  */
-function trackedSources(repoRoot) {
+function corpusSources(repoRoot, include = "all") {
   const out = [];
-  for (const entry of listTrackedFiles(repoRoot)) {
+  for (const entry of listCorpusFiles(repoRoot, include)) {
     const rel = norm(entry);
     if (!SCANNED_EXTENSIONS.some((ext) => rel.endsWith(ext))) continue;
     const text = readFileSync(join(repoRoot, entry), "utf8");
-    if (!/["'`]git["'`]/.test(text)) continue;
+    if (!/["'`]git[\s"'`]/.test(text)) continue;
     out.push({ rel, text, scriptKind: scriptKindOf(rel) });
   }
   return out;
 }
 
 /**
- * Every tracked non-test source file under `repoRoot` (paths relative to `repoRoot`) that calls
+ * Every non-test corpus source file under `repoRoot` (paths relative to `repoRoot`) that calls
  * git directly instead of through `runGit`, minus `EXCLUDED_FILES`.
  */
 function findUnguardedGitCallers(repoRoot) {
   const offenders = [];
-  for (const { rel, text, scriptKind } of trackedSources(repoRoot)) {
+  for (const { rel, text, scriptKind } of corpusSources(repoRoot)) {
     if (TEST_FILE.test(rel) || EXCLUDED_FILES.has(rel)) continue;
     if (directGitCalls(text, scriptKind).length > 0) offenders.push(rel);
   }
@@ -259,12 +309,12 @@ function findUnguardedGitCallers(repoRoot) {
 }
 
 /**
- * Every direct git call in a tracked test file under `repoRoot` whose options carry no explicit
+ * Every direct git call in a corpus test file under `repoRoot` whose options carry no explicit
  * `env`, as `path:line`, minus `EXCLUDED_TEST_FILES`.
  */
 function findFixtureGitCallsWithoutEnv(repoRoot) {
   const offenders = [];
-  for (const { rel, text, scriptKind } of trackedSources(repoRoot)) {
+  for (const { rel, text, scriptKind } of corpusSources(repoRoot)) {
     if (!TEST_FILE.test(rel) || EXCLUDED_TEST_FILES.has(rel)) continue;
     for (const call of directGitCalls(text, scriptKind)) {
       if (!call.explicitEnv) offenders.push(`${rel}:${call.line}`);
@@ -305,28 +355,68 @@ test("directGitCalls reports the line and whether the call carries an explicit e
   ]);
 });
 
-test("no tracked non-test source file calls git unguarded outside the shared runner or the documented exceptions", () => {
+test("directGitCalls finds every spawn form, helper wrappers and aliases of the git name, and rejects a bare process.env", () => {
+  const text = [
+    'const a = spawnSync("git", ["init"], { cwd });',
+    'const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });',
+    'cp.spawn("git", ["status"], { env: scrubGitEnv() });',
+    'execFile("git", ["status"], { env: process.env });',
+    'execSync("git status", { env: scrubGitEnv() });',
+    "execSync(`git ${sub}`);",
+    'const GIT = "git"; spawnSync(GIT, ["add"], { env });',
+    'spawnSync("npm", ["install"]);',
+    'execSync("gitk");',
+  ].join("\n");
+  expect(directGitCalls(text).map((c) => [c.line, c.explicitEnv])).toEqual([
+    [1, false],
+    [2, false],
+    [3, true],
+    [4, false],
+    [5, true],
+    [6, false],
+    [7, true],
+  ]);
+});
+
+test("no non-test source file in the repository corpus calls git unguarded outside the shared runner or the documented exceptions", () => {
   const offenders = findUnguardedGitCallers(REPO_ROOT);
   expect(offenders).toEqual([]);
 });
 
-test("every direct git call in a tracked test file passes an explicit env", () => {
+test("every direct git call in a test file of the repository corpus passes an explicit env", () => {
   const offenders = findFixtureGitCallsWithoutEnv(REPO_ROOT);
   expect(offenders).toEqual([]);
 });
 
+/**
+ * The members of `excluded` that no longer justify an exemption: a path that is not a TRACKED
+ * source naming git, or one whose file makes no direct git call. It reads the index only, so an
+ * untracked file cannot satisfy an exemption that CI would not see.
+ */
+function staleExclusions(repoRoot, excluded) {
+  const byPath = new Map(corpusSources(repoRoot, "tracked").map((s) => [s.rel, s]));
+  const stale = [];
+  for (const rel of excluded) {
+    const source = byPath.get(rel);
+    if (source === undefined) stale.push(`${rel} is excluded but is not a tracked source naming git`);
+    else if (directGitCalls(source.text, source.scriptKind).length === 0) {
+      stale.push(`${rel} is excluded but calls git through no direct call`);
+    }
+  }
+  return stale;
+}
+
 test("every named exclusion still names a tracked file that calls git directly", () => {
   // An exclusion whose file stops calling git, or stops existing, is a stale exemption that
   // reads as a documented exception while exempting nothing — surfaced here rather than kept.
-  const byPath = new Map(trackedSources(REPO_ROOT).map((s) => [s.rel, s]));
-  for (const rel of [...EXCLUDED_FILES, ...EXCLUDED_TEST_FILES]) {
-    const source = byPath.get(rel);
-    expect(source, `${rel} is excluded but is not a tracked source naming git`).toBeDefined();
-    expect(
-      directGitCalls(source.text, source.scriptKind).length,
-      `${rel} is excluded but calls git through no direct call`,
-    ).toBeGreaterThan(0);
-  }
+  expect(staleExclusions(REPO_ROOT, [...EXCLUDED_FILES, ...EXCLUDED_TEST_FILES])).toEqual([]);
+});
+
+test("an untracked file cannot satisfy a named exclusion", () => {
+  const bare = 'execFileSync("git", ["status"], { encoding: "utf8" });\n';
+  const dir = makeRepo({ "kept.mjs": bare, "stray.mjs": bare }, ["kept.mjs"]);
+  expect(staleExclusions(dir, ["kept.mjs"])).toEqual([]);
+  expect(staleExclusions(dir, ["stray.mjs"])).toEqual(["stray.mjs is excluded but is not a tracked source naming git"]);
 });
 
 test("both checks catch a NEW file regardless of which directory it lives in, without it being named anywhere first", () => {
@@ -364,6 +454,12 @@ test("both checks catch a NEW file regardless of which directory it lives in, wi
     join(hooksDir, "scrubbed-fixture.test.mjs"),
     'execFileSync("git", ["init", "-q"], { cwd: dir, env: scrubGitEnv() });\n',
   );
+  // Positive control for the helper-wrapper shape: a test file whose scratch repository is created
+  // through a `spawnSync` wrapper with no `env` must be reported.
+  writeFileSync(
+    join(hooksDir, "wrapper-fixture.test.mjs"),
+    'const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });\ngit("init");\n',
+  );
   execFileSync("git", ["add", "-A"], { cwd: scratchRepoRoot, env: scrubGitEnv() });
   expect(findUnguardedGitCallers(scratchRepoRoot)).toEqual([
     "some/other/location/brand-new-entry-point.mjs",
@@ -371,5 +467,15 @@ test("both checks catch a NEW file regardless of which directory it lives in, wi
   ]);
   expect(findFixtureGitCallsWithoutEnv(scratchRepoRoot)).toEqual([
     "some/other/location/raw-fixture.test.mjs:3",
+    "some/other/location/wrapper-fixture.test.mjs:1",
   ]);
+});
+
+test("a bare git call in an untracked file is seen, and one in an ignored file is not", () => {
+  const bare = 'execFileSync("git", ["status"], { encoding: "utf8" });\n';
+  const dir = makeRepo(
+    { ".gitignore": "ignored.mjs\n", "tracked.mjs": "export const a = 1;\n", "stray.mjs": bare, "ignored.mjs": bare },
+    [".gitignore", "tracked.mjs"],
+  );
+  expect(findUnguardedGitCallers(dir)).toEqual(["stray.mjs"]);
 });

@@ -1,5 +1,6 @@
 //! `SceneEcs` hydration/apply-op, movement-collision geometry, the `footprints` derived channel, and the vision/lighting config-doc resolvers.
 use super::*;
+use crate::data::engine::RenderHint;
 use crate::scene::pathfinding::MoveTraits;
 
 #[test]
@@ -232,12 +233,15 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
 }
 
 /// Anti-drift check: `blocks_move` (the reference implementation) must agree with the
-/// production traversal path (`move_walls(scene, None, mover_elevation)` filtered by
-/// `segments_cross`, as used by `move_exec`'s per-cell wall gate) on every segment tried here,
-/// evaluated against BOTH scenes in the fixture and at BOTH an elevation inside the banded
-/// wall's band and one outside it — including the case where a segment would cross a wall that
-/// belongs to the OTHER scene. A mutation of either `blocks_move`'s or `move_walls`'s wall
-/// filter is expected to fail this test.
+/// production traversal path (`move_walls(scene, None, mover_elevation)`, filtered against the
+/// segment's START by `vision::Seg::transparent_from` — a one-way wall whose transparent side
+/// faces the mover is absent for the step — then tested by `segments_cross`, exactly as
+/// `move_exec`'s per-cell wall gate composes them) on every segment tried here, evaluated
+/// against BOTH scenes in the fixture, at BOTH an elevation inside the banded wall's band and
+/// one outside it, and in BOTH directions across the one-way wall — including the case where a
+/// segment would cross a wall that belongs to the OTHER scene. A mutation of either
+/// `blocks_move`'s or `move_walls`'s wall filter — including dropping the one-way filter from
+/// exactly one side of this pair — is expected to fail this test.
 #[test]
 fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     let scene = crate::test_ids::test_uuid(10);
@@ -249,6 +253,13 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         "elevation": { "bottom": 10.0, "top": 20.0 },
     });
     let other_scene_wall = json!({ "seg": {"x1":20,"y1":30,"x2":30,"y2":20}, "blocksMove": true });
+    // A one-way wall on y=10 spanning x∈[30,40]: `(b - a) × (p - a)` = `10 * (p.y - 10)`, so
+    // `blockingSide: 1.0` makes the y>10 side the solid one — a segment crossing it upward
+    // (starting below, y<10) is unblocked, the same segment starting above is stopped.
+    let one_way_blocking = json!({
+        "seg": {"x1":30,"y1":10,"x2":40,"y2":10}, "blocksMove": true,
+        "direction": { "blockingSide": 1.0 },
+    });
 
     let ecs = SceneEcs::from_documents(
         vec![
@@ -257,6 +268,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
             entity_doc_eng(12, 10, "wall", blocking),
             entity_doc_eng(13, 10, "wall", non_blocking),
             entity_doc_eng(14, 10, "wall", banded_blocking),
+            entity_doc_eng(15, 10, "wall", one_way_blocking),
             entity_doc_eng(24, 20, "wall", other_scene_wall),
         ],
         0,
@@ -268,6 +280,8 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         ((0.0, 5.0), (5.0, 5.0)),     // crosses the scene-10 non-blocking wall only
         ((20.0, 20.0), (30.0, 30.0)), // would cross the OTHER scene's wall, not scene 10's
         ((0.0, 20.0), (20.0, 0.0)),   // crosses the scene-10 banded wall only
+        ((35.0, 5.0), (35.0, 15.0)),  // crosses the one-way wall from its transparent side
+        ((35.0, 15.0), (35.0, 5.0)),  // crosses the one-way wall from its blocking side
     ];
     // `elevation::GROUND` is outside the banded wall's `[10, 20]` band; `15.0` is inside it.
     for mover_elevation in [elevation::GROUND, 15.0] {
@@ -276,7 +290,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
                 let production = ecs
                     .move_walls(s, None, mover_elevation)
                     .iter()
-                    .any(|w| segments_cross(a0, a1, w.a, w.b));
+                    .any(|w| !w.transparent_from(a0) && segments_cross(a0, a1, w.a, w.b));
                 assert_eq!(
                     ecs.blocks_move(s, a0, a1, mover_elevation),
                     production,
@@ -288,6 +302,11 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     // The band itself decides: the banded wall blocks only inside its band.
     assert!(ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), 15.0));
     assert!(!ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), elevation::GROUND));
+    // The one-way wall's direction decides: open from the transparent side, stopped from the
+    // blocking side. These absolute pins keep the pair honest — an agreement-only check would
+    // still pass with the filter missing from BOTH sides.
+    assert!(!ecs.blocks_move(scene, (35.0, 5.0), (35.0, 15.0), elevation::GROUND));
+    assert!(ecs.blocks_move(scene, (35.0, 15.0), (35.0, 5.0), elevation::GROUND));
 }
 
 #[test]
@@ -492,14 +511,59 @@ fn vision_payload_resolves_render_hint_index() {
     };
     let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     let hints = pv["renderHints"].as_array().unwrap();
-    assert!(hints.iter().any(|h| h == "desaturate"));
+    assert!(hints.iter().any(|h| *h == json!({ "kind": "desaturate" })));
     let cells = pv["lit"][0]["cells"].as_array().unwrap();
     let hint_idx = cells[4].as_i64().unwrap(); // 5th int of the first cell
     assert!(
         hint_idx >= 0,
         "first cell must have a resolved hint, not -1"
     );
-    assert_eq!(pv["renderHints"][hint_idx as usize], json!("desaturate"));
+    assert_eq!(
+        pv["renderHints"][hint_idx as usize],
+        json!({ "kind": "desaturate" })
+    );
+}
+
+/// A `Custom` hint (opaque `params`) travels through the masked vision payload as its own tagged
+/// wire object, and every cell it governs shares ONE table entry.
+#[test]
+fn vision_payload_carries_a_custom_hint_once() {
+    use crate::data::document::WorldRole;
+    use serde_json::json;
+    let player = crate::test_ids::test_uuid(7);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(player);
+    tok.embedded.insert(
+        "actor".into(),
+        vec![{
+            let mut a = doc(99, None, "actor");
+            a.engine = Some(actor_body(json!([{ "mode": "echo", "range": 6 }])));
+            a
+        }],
+    );
+    let mut vm = entity_doc_eng(30, 10, "vision-modes", json!({}));
+    vm.parent_id = None;
+    let custom = json!({ "kind": "custom", "treatment": "echo", "params": { "ring": 3 } });
+    vm.engine = Some(json!({ "modes": { "echo": {
+        "id": "echo", "name": "Echo", "illuminationFloor": "dark", "defaultRange": 6,
+        "renderHint": custom
+    } } }));
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
+    let pl = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
+    assert_eq!(pv["renderHints"], json!([custom]));
+    let cells = pv["lit"][0]["cells"].as_array().unwrap();
+    assert!(cells.len() > 5, "several cells, so sharing is observable");
+    assert!(cells.chunks(5).all(|c| c[4] == json!(0)));
 }
 
 #[test]
@@ -600,6 +664,7 @@ fn pathfind_refuses_a_scene_with_no_document() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -713,7 +778,7 @@ fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new()
     }];
 
     // What the AUTHORITATIVE store reaches. Calls the hoisted rule
-    // (`command::apply_field_change`) that `apply_intent` Phase 2 itself calls, so
+    // (`command::apply_field_change`) that `apply_intent`'s apply pass itself calls, so
     // this oracle cannot drift from the store — hand-copying the remove/set branch
     // here would silently go stale the moment `apply_intent` changed. NOT tautological
     // with respect to what this test pins: reverting the ECS mirror to an
@@ -1211,7 +1276,10 @@ fn token_vision_floors_resolve_through_actor_join() {
     );
     let floors = ecs.token_vision_floors(&linked);
     assert_eq!(floors.len(), 1);
-    assert_eq!(floors[0], (0.0, 6.0, Some("desaturate".to_string()))); // dark floor, 6-cell range, darkvision hint
+    assert_eq!(
+        floors[0],
+        (0.0, 6.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))
+    ); // dark floor, 6-cell range, darkvision hint
 
     // A per-token override REPLACES the actor's vision entirely.
     linked.engine.as_mut().unwrap()["overrides"] =
@@ -1256,7 +1324,7 @@ fn token_vision_floors_resolve_through_actor_join() {
     // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
     assert_eq!(
         ecs.token_vision_floors(&linked_empty),
-        vec![(0.0, 6.0, Some("desaturate".to_string()))]
+        vec![(0.0, 6.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))]
     );
 
     // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
@@ -2185,7 +2253,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         mask[0]
             .cells
             .iter()
-            .all(|(_, _, _, _, h)| h.as_deref() == Some("desaturate")),
+            .all(|(_, _, _, _, h)| h.as_deref() == Some(&RenderHint::Desaturate)),
         "dark cells perceived only via darkvision carry the desaturate hint"
     );
 
@@ -2297,7 +2365,7 @@ fn vision_modes_carry_render_hint() {
     let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let m = seeded.resolved_vision_modes();
     assert_eq!(m["normal"].render_hint, None);
-    assert_eq!(m["darkvision"].render_hint.as_deref(), Some("desaturate"));
+    assert_eq!(m["darkvision"].render_hint, Some(RenderHint::Desaturate));
 
     // Present doc → renderHint parsed; absent field → None.
     let mut vm = entity_doc_eng(30, 10, "vision-modes", json!({}));
@@ -2305,14 +2373,20 @@ fn vision_modes_carry_render_hint() {
     vm.parent_id = None;
     vm.engine = Some(json!({ "modes": {
         "truesight": { "id": "truesight", "name": "Truesight",
-                       "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
+                       "illuminationFloor": "dark", "defaultRange": 8,
+                       "renderHint": { "kind": "outline", "color": "#ffffff" } },
         "plain":     { "id": "plain", "name": "Plain",
                        "illuminationFloor": "dim",  "defaultRange": 0 }
     }}));
     let mut ecs = SceneEcs::new();
     ecs.set_world_config(None, None, Some(vm), None, None, None);
     let m = ecs.resolved_vision_modes();
-    assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
+    assert_eq!(
+        m["truesight"].render_hint,
+        Some(RenderHint::Outline {
+            color: "#ffffff".to_string()
+        })
+    );
     assert_eq!(m["plain"].render_hint, None);
 }
 
@@ -2342,7 +2416,7 @@ fn token_vision_floors_include_render_hint() {
     // darkvision entry carries the desaturate hint; normal carries none.
     assert!(floors
         .iter()
-        .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
+        .any(|(_, _, h)| h.as_deref() == Some(&RenderHint::Desaturate)));
     assert!(floors.iter().any(|(_, _, h)| h.is_none()));
 }
 
@@ -2368,7 +2442,10 @@ fn token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_ra
     let floors = ecs.token_vision_floors(&tok);
     // No vision-modes doc set -> `resolved_vision_modes`'s built-in fallback seed, whose
     // darkvision entry carries `default_range: 12.0`.
-    assert_eq!(floors, vec![(0.0, 12.0, Some("desaturate".to_string()))]);
+    assert_eq!(
+        floors,
+        vec![(0.0, 12.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))]
+    );
 }
 
 #[test]
@@ -2419,13 +2496,13 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     let s10 = crate::test_ids::test_uuid(10);
     let s11 = crate::test_ids::test_uuid(11);
     assert!(ecs
-        .region_field(s10, None, elevation::GROUND)
+        .region_field(s10, None, elevation::GROUND, None)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(!ecs
-        .region_field(s11, None, elevation::GROUND)
+        .region_field(s11, None, elevation::GROUND, None)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 
     ecs.apply_op(&Operation::Move {
         doc_id: crate::test_ids::test_uuid(20),
@@ -2434,13 +2511,13 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     });
 
     assert!(!ecs
-        .region_field(s10, None, elevation::GROUND)
+        .region_field(s10, None, elevation::GROUND, None)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(ecs
-        .region_field(s11, None, elevation::GROUND)
+        .region_field(s11, None, elevation::GROUND, None)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 }
 
 #[test]

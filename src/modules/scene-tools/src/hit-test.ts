@@ -1,5 +1,5 @@
 import type { WireDocument, ReadableDocuments, FootprintLookup } from "@shadowcat/core";
-import { resolveTokenBox } from "@shadowcat/core";
+import { resolveTokenBox, tokenBoxContains, resolveRegionGeometry } from "@shadowcat/core";
 import type { Point, ShapeNodeSpec } from "@shadowcat/render";
 import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat/render";
 
@@ -31,17 +31,7 @@ import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat
 export function topTokenAt(tokens: WireDocument[], p: Point, store: ReadableDocuments, footprints: FootprintLookup): string | null {
   let hit: string | null = null;
   for (const t of tokens) {
-    const box = resolveTokenBox(t, store, footprints);
-    if (box.w <= 0 || box.h <= 0) continue;
-    const dx = p.x - box.x;
-    const dy = p.y - box.y;
-    const hw = box.w / 2;
-    const hh = box.h / 2;
-    const inside =
-      box.shape === "circle"
-        ? (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1
-        : Math.abs(dx) <= hw && Math.abs(dy) <= hh;
-    if (inside) hit = t.id;
+    if (tokenBoxContains(resolveTokenBox(t, store, footprints), p)) hit = t.id;
   }
   return hit;
 }
@@ -101,7 +91,7 @@ const WALL_PICK_TOLERANCE = 8;
  * pointSegDistance({ x: 5, y: 5 }, { x: 0, y: 0 }, { x: 10, y: 0 }); // 5
  * ```
  */
-function pointSegDistance(p: Point, a: Point, b: Point): number {
+export function pointSegDistance(p: Point, a: Point, b: Point): number {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
   const len2 = abx * abx + aby * aby;
@@ -241,7 +231,13 @@ function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) 
     const spec = toSpec(doc);
     if (!spec) continue;
     if (spec.closed) {
-      if (pointInPolygon(spec.points, p)) closedHit = doc.id;
+      // Compound containment: inside the additive union (the primary ring or any extra
+      // part) and NOT inside any hole ring — a click in a region's hole hits whatever
+      // lies beneath the region, matching the server's post-hole coverage read.
+      const inAdditive =
+        pointInPolygon(spec.points, p) || (spec.extraParts ?? []).some((ring) => pointInPolygon(ring, p));
+      const inHole = (spec.holes ?? []).some((ring) => pointInPolygon(ring, p));
+      if (inAdditive && !inHole) closedHit = doc.id;
     } else {
       const d = distanceToPolyline(spec.points, p);
       if (d <= openBest) {
@@ -259,16 +255,18 @@ function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) 
  * `parent_id`-filtered docs).
  * @param regions The candidate region documents (typically `store.query("region")`, scene-scoped).
  * @param p The point to test (scene coords).
+ * @param store Resolves an anchored region's carrier (`resolveRegionGeometry`), so a following
+ * region is picked where it is drawn and a dormant one is never picked.
  * @returns The picked region's id, or `null` when none matches.
  * @example
  * ```
  * declare const store: ReadableDocuments;
  * declare const p: Point;
- * const id = topRegionAt(store.query("region"), p);
+ * const id = topRegionAt(store.query("region"), p, store);
  * ```
  */
-export function topRegionAt(regions: WireDocument[], p: Point): string | null {
-  return topShapeAt(regions, p, regionShapeSpec);
+export function topRegionAt(regions: WireDocument[], p: Point, store: ReadableDocuments): string | null {
+  return topShapeAt(regions, p, (doc) => regionShapeSpec(doc, resolveRegionGeometry(doc, store)));
 }
 
 /** The id of the topmost drawing whose geometry contains `p` (closed `rect`/`ellipse`/`polygon`),

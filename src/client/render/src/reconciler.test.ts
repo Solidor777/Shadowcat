@@ -48,3 +48,15 @@ test("reconcile with no scene doc clears the background", () => {
   new SceneReconciler(new DocumentStore(), new AssetResolver(), backend).reconcile();
   expect(backend.background).toBeNull();
 });
+
+test("reconcile with no host resolver draws the OLDEST scene's background, whatever the store order", () => {
+  const store = new DocumentStore();
+  // The store holds the newer scene first, so a `query("scene")[0]` fallback would pick it.
+  const newer = { ...sceneDoc("newer-bg"), id: "a-newer", created_at: 200 };
+  const older = { ...sceneDoc("older-bg"), id: "z-older", created_at: 100 };
+  store.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: newer }, { op: "create", doc: older }] });
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  new SceneReconciler(store, assets, backend).reconcile();
+  expect(backend.background).toEqual({ url: assets.url("older-bg") });
+});

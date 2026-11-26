@@ -7,10 +7,13 @@ mod base_ownership;
 mod combat_batches;
 mod commands_and_intents;
 mod invites_and_ownership;
+mod module_settings;
 mod moves;
 mod rows_and_validation;
 mod sandbox_validators;
 mod search_and_worlds;
+mod table_folders;
+mod token_art;
 
 pub(super) use super::*;
 pub(super) use crate::data::command::FieldChange;
@@ -180,6 +183,34 @@ pub(super) fn note_doc(id: u128, world: Uuid, source: &str, parent: Option<Uuid>
     d.doc_type = "note".into();
     d.parent_id = parent;
     d.engine = Some(serde_json::json!({ "source": source, "body": [], "sort": 0 }));
+    d
+}
+
+/// A `table_folder` document named `name` under `parent`.
+pub(super) fn table_folder_doc(
+    id: u128,
+    world: Uuid,
+    name: &str,
+    parent: Option<Uuid>,
+) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "table_folder".into();
+    d.name = Some(name.into());
+    d.parent_id = parent;
+    d.engine = Some(serde_json::json!({ "sort": 0 }));
+    d
+}
+
+/// A `table` document under `parent`, with no rows.
+pub(super) fn table_doc(id: u128, world: Uuid, parent: Option<Uuid>) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "table".into();
+    d.parent_id = parent;
+    d.engine = Some(serde_json::json!({
+        "draw": { "kind": "weighted" },
+        "rows": [],
+        "description": ""
+    }));
     d
 }
 

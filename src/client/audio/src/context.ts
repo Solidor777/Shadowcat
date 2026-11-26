@@ -35,6 +35,20 @@ export interface PannerNodeLike {
   disconnect(): void;
 }
 
+/** The subset of `BiquadFilterNode` a muffled emitter needs: one lowpass stage. */
+export interface BiquadFilterNodeLike {
+  /** The filter response shape; an emitter sets `"lowpass"`. */
+  type: BiquadFilterType;
+  /** The cutoff frequency parameter, Hz. */
+  readonly frequency: AudioParamLike;
+  /** Connect this node's output to `dest`.
+   * @param dest The downstream node.
+   * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
+  connect(dest: AudioNodeLike): unknown;
+  /** Detach this node from the graph. */
+  disconnect(): void;
+}
+
 /** The graph's terminal node: the real `AudioDestinationNode` in production, or a stub's
  * branded object in tests (the brand is what a spy distinguishes it by). */
 export type AudioDestinationLike =
@@ -48,7 +62,12 @@ export type AudioDestinationLike =
  * leaf type every node's `connect` accepts. Includes the DOM `AudioNode` itself so the REAL
  * Web Audio classes satisfy the `*Like` interfaces structurally (their `connect` takes an
  * `AudioNode`; method-parameter bivariance then admits both the stubs and the real nodes). */
-export type AudioNodeLike = GainNodeLike | PannerNodeLike | AudioDestinationLike | AudioNode;
+export type AudioNodeLike =
+  | GainNodeLike
+  | PannerNodeLike
+  | BiquadFilterNodeLike
+  | AudioDestinationLike
+  | AudioNode;
 
 /** The subset of `AudioBuffer` the players need: the decoded-PCM container a
  * `BufferSourceNode` plays. A real `AudioBuffer` satisfies this verbatim (`duration`/
@@ -111,6 +130,10 @@ export interface MediaElementLike {
   currentTime: number;
   /** Playback-rate multiplier (the small-drift nudge). */
   playbackRate: number;
+  /** Whether playback is paused (the DOM's own `HTMLMediaElement.paused`: `true` before the
+   * first `play()` and after a `pause()` or a refused `play()`). `PlaybackGate` starts an
+   * element only while this is `true`. */
+  readonly paused: boolean;
   /** Output volume, 0..=1 — only meaningful to `FallbackTrackPlayer`, whose bare element has
    * no mixer graph to route through (the channel/master buses land on this one knob). */
   volume: number;
@@ -177,8 +200,12 @@ export interface WasmOpusDecoderLike {
 export interface AudioContextLike {
   /** The context's running state. */
   readonly state: "suspended" | "running" | "closed" | "interrupted";
-  /** The context's audio-thread clock, seconds. */
+  /** The context's audio-thread clock, seconds. It stops while the context is not `"running"`
+   * (suspended or interrupted), which is how a stall becomes observable as drift. */
   readonly currentTime: number;
+  /** The DOM `statechange` handler property: called after every change of `state` (a
+   * suspension, a WebKit interruption, a resume). The engine installs one handler. */
+  onstatechange: ((ev: Event) => void) | null;
   /** The graph's terminal node. */
   readonly destination: AudioDestinationLike;
   /** Create a gain node.
@@ -187,6 +214,9 @@ export interface AudioContextLike {
   /** Create a stereo panner node.
    * @returns The new node. */
   createStereoPanner(): PannerNodeLike;
+  /** Create a biquad filter node.
+   * @returns The new node. */
+  createBiquadFilter(): BiquadFilterNodeLike;
   /** Create a buffer source node.
    * @returns The new node. */
   createBufferSource(): BufferSourceNodeLike;

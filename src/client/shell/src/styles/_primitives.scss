@@ -1,6 +1,6 @@
-// Tier 1 — raw primitives. Palette sampled from assets/icon-256.png (cool
+// Raw primitive tokens. Palette sampled from assets/icon-256.png (cool
 // slate-violet charcoal + brand blue), PROVISIONAL. Components must not reference
-// these directly — use the tier-2 semantic tokens.
+// these directly — use the semantic tokens.
 :root {
   // Slate (surface) ramp
   --slate-950: #16161f;
@@ -44,4 +44,5 @@
   // reads shell's :root custom properties this way (--space-*, --accent, etc.)
   // without a Sass `@use` dependency, so this follows the same convention.
   --input-height-coarse: 44px;
+  --statusbar-height: 2rem; // the layout's status bar row; the tour offer sits above it
 }

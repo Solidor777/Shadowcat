@@ -1,13 +1,15 @@
 import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Spritesheet, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
 import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource, VfxNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource, ResolvedArtVisual, VfxNodeSpec } from "./types";
 import { computeAnimatedFrame, computeVfxFrame } from "./token-animation";
 import { vfxAnchorZIndex } from "./vfx-view";
 import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 import { TextureCacheManager } from "./texture-cache";
+import { dashPath } from "./dash";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -48,6 +50,13 @@ interface TokenNode {
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
   badgeKey: string;
+  /** The large centered overlay-condition glyph, drawn by `updateTokenOverlay` as a `container`
+   * child ordered directly above `visualContainer` (the badge chips stay on top), or `null` while
+   * the last-applied spec had no `overlayIcon`. */
+  overlay: Text | null;
+  /** `tokenSpec.overlayIcon` plus the token size of the last-applied spec (`updateTokenOverlay`'s
+   * memo): an unchanged key short-circuits the rebuild. */
+  overlayKey: string;
   /** The aura disc, drawn by `updateTokenAura` as a `container` child ordered BELOW
    * `visualContainer` (the art draws over it; badges stay on top), or `null` while the last-applied
    * spec had no aura. */
@@ -55,6 +64,12 @@ interface TokenNode {
   /** Identity key of the last-applied `tokenSpec.aura` (`updateTokenAura`'s memo, same discipline
    * as `badgeKey`/`sourceKey`): an unchanged key short-circuits the redraw. */
   auraKey: string;
+  /** The facing-vision wedge, drawn by `updateTokenFacing` as a child of the rotating
+   * `visualContainer` (it turns with the token), or `null` while the last-applied spec had none. */
+  facing: Graphics | null;
+  /** Identity key of the last-applied `tokenSpec.facing` (`updateTokenFacing`'s memo): an
+   * unchanged key short-circuits the redraw. */
+  facingKey: string;
   /** The composed art-effects filter, assigned to `visualContainer.filters` by `updateTokenFx`
    * (the fx rotate with the art; the badge chips on `container` stay clean), or `null` while the
    * last-applied spec had no fx. */
@@ -62,6 +77,14 @@ interface TokenNode {
   /** Identity key of the last-applied `tokenSpec.fx` (`updateTokenFx`'s memo, same discipline as
    * `auraKey`): an unchanged key short-circuits the filter rebuild. */
   fxKey: string;
+  /** The nameplate text and attribute bars, drawn by `updateTokenPlate` as an upright child of
+   * the non-rotating `container` ordered above the art (nameplate over the token's top edge, bars
+   * stacked under its bottom edge), or `null` while the last-applied spec had neither. */
+  plate: Container | null;
+  /** The last-applied `tokenSpec.nameplate`/`bars` plus the token size (`updateTokenPlate`'s
+   * memo), or `null` while the last-applied spec had neither: inputs equal to it short-circuit
+   * the rebuild. */
+  plateInputs: Pick<TokenNodeSpec, "nameplate" | "bars" | "w" | "h"> | null;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -196,6 +219,30 @@ const TEXTURE_SWEEP_INTERVAL_MS = 5_000;
  * plenty of budget remains). */
 const TEXTURE_TTL_MS = 5 * 60_000;
 
+/** Font size (world units) for a `"glyph"`-kind emote overlay (a player's 1-4-emoji emote):
+ * large and DELIBERATELY single-line — never wrapped, per `EmoteKind`'s own doc. Unchanged
+ * from this overlay's original size. */
+const GLYPH_FONT_SIZE = 48;
+
+/** Font size (world units) for a `"caption"`-kind emote overlay (server-authored prose, e.g. a
+ * region trigger's `ScrollingText`) — much smaller than `GLYPH_FONT_SIZE`: a caption is
+ * expected to wrap to several lines, and a 48-unit line height would make even a short
+ * sentence many token-heights tall. `20` is chosen together with `EMOTE_WRAP_WIDTH` and
+ * `MAX_OVERLAY_DISPLAY_CHARS` (`@shadowcat/render`'s `emote-view` module) to keep a
+ * display-truncated caption on the order of one token tall — see that constant's own doc for
+ * the exact arithmetic. */
+const CAPTION_FONT_SIZE = 20;
+
+/** Wrap width for a `"caption"`-kind emote overlay's `Text` node, in the SAME scene (world)
+ * units its `x`/`y` anchor is already drawn in — `emoteLayer` sits under the camera-scaled
+ * `world` container (`setCameraTransform` scales the whole subtree), so this is a world-unit
+ * width, not a screen-pixel one, and stays proportionate under zoom. `70` world units/cell is
+ * this codebase's own canonical example cell size (see every `new Grid({ kind: "square", size:
+ * 70 })` doc example); 4 cells wide is a legible caption width independent of font size — see
+ * `MAX_OVERLAY_DISPLAY_CHARS`'s doc for how this combines with `CAPTION_FONT_SIZE` to bound the
+ * caption block's height. Never applied to a `"glyph"`-kind overlay, which is never wrapped. */
+const EMOTE_WRAP_WIDTH = 4 * 70;
+
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
  * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
@@ -212,7 +259,27 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   if (v.kind === "animated") return `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
   // A generated visual's identity is its frame (crop/border/background) plus its art's own key
   // (one recursion level — `art` is never itself `"generated"`).
-  return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+  return `generated:${v.art ? visualSourceKey(v.art) : "frame-only"}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+}
+
+/** Whether two plate inputs would draw the same nameplate and bars: `updateTokenPlate`'s memo
+ * comparison, field by field so an unchanged re-push allocates nothing.
+ * @param a The inputs the node currently shows, or `null` for no plate.
+ * @param b The inputs about to be applied, or `null` for no plate.
+ * @returns `true` when both are `null`, or when text, size and every bar (fraction, color, label)
+ * match in order.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * samePlateInputs(null, null); // true
+ * ```
+ */
+function samePlateInputs(a: TokenNode["plateInputs"], b: TokenNode["plateInputs"]): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.nameplate !== b.nameplate || a.w !== b.w || a.h !== b.h) return false;
+  if (a.bars === undefined || b.bars === undefined) return a.bars === b.bars;
+  const nextBars = b.bars;
+  return a.bars.length === nextBars.length && a.bars.every((bar, i) => bar.fraction === nextBars[i].fraction && bar.color === nextBars[i].color && bar.label === nextBars[i].label);
 }
 
 /** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
@@ -285,6 +352,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   /** The `grid`-layer line strokes, redrawn wholesale by `drawGrid`. */
   private readonly grid = new Graphics();
+  /** The scene-bounds outline strokes, a second child of the `grid` layer so `drawGrid`'s clear
+   * never touches it; redrawn wholesale by `drawBoundsOutline`. */
+  private readonly boundsOutline = new Graphics();
   /** Three-state fog: two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
    * shows only on UNEXPLORED area — inverse-masked by `exploredHoles` (explored ∪ visible).
    * `fogDim` (semi-transparent) shows on unexplored + explored — inverse-masked by `visibleHoles`.
@@ -330,6 +400,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The remote shared-ruler overlay, redrawn wholesale by `drawRulers`. */
+  private readonly rulerGraphics = new Graphics();
   /** The darkness sheet: `LightingFrame.darkness` filled at `MAX_DARK_ALPHA`, inverse-masked
    * by `litHoles` so every lit cell shows through. Parented under the `lighting` container
    * beneath `lightingGraphics`. */
@@ -344,6 +416,12 @@ export class PixiBackend implements DisplayBackend {
   private readonly lightingGraphics = new Graphics();
   /** Shape document id → its Graphics, populated by `setShape`. */
   private readonly shapes = new Map<string, Graphics>();
+  /** Shape document id → the inverse-mask Graphics subtracting that shape's hole rings
+   * (`ShapeNodeSpec.holes`), populated by `setShape` only for shapes that carry holes and
+   * destroyed on `removeShape`/when the holes go away. Mirrors the fog sheets' own
+   * `setMask({ inverse: true })` mechanism, per shape — Pixi's per-subpath tessellation
+   * honors no winding rule, so a hole must be masked, not counter-wound. */
+  private readonly shapeMasks = new Map<string, Graphics>();
   /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
   /** VFX node id → its render node, populated by `setVfx`. */
@@ -490,7 +568,7 @@ export class PixiBackend implements DisplayBackend {
       c.label = id;
       this.layers.set(id, c);
       this.world.addChild(c);
-      if (id === "grid") c.addChild(this.grid);
+      if (id === "grid") c.addChild(this.grid, this.boundsOutline);
       if (id === "vfx") {
         // VFX nodes carry a per-node zIndex (`vfxAnchorZIndex`'s 0/1/2), so this layer —
         // alone among the core layers — must actually sort its children.
@@ -519,6 +597,7 @@ export class PixiBackend implements DisplayBackend {
         this.measureText.anchor.set(0.5);
         this.measureText.visible = false;
         c.addChild(this.measureText);
+        c.addChild(this.rulerGraphics);
         c.addChild(this.pingGraphics);
         c.addChild(this.emoteLayer);
       }
@@ -624,6 +703,26 @@ export class PixiBackend implements DisplayBackend {
     if (lines.length === 0) return; // nothing to stroke (e.g. a 0×0 viewport)
     for (const l of lines) this.grid.moveTo(l.x1, l.y1).lineTo(l.x2, l.y2);
     this.grid.stroke({ width: 1, color, alpha: 0.5 });
+  }
+
+  /** `DisplayBackend.drawBoundsOutline`: replace the scene-bounds outline. Clears its Graphics
+   * first, then strokes each segment at 2px width, 90% alpha. An empty `lines` array leaves it
+   * blank.
+   * @param lines The outline segments to stroke, in scene coordinates.
+   * @param color The stroke color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawBoundsOutline([{ x1: 0, y1: 0, x2: 100, y2: 0 }], 0xd9a441);
+   * ```
+   */
+  drawBoundsOutline(lines: LineSeg[], color: number): void {
+    this.boundsOutline.clear();
+    if (lines.length === 0) return;
+    for (const l of lines) this.boundsOutline.moveTo(l.x1, l.y1).lineTo(l.x2, l.y2);
+    this.boundsOutline.stroke({ width: 2, color, alpha: 0.9 });
   }
 
   /** `DisplayBackend.setCameraTransform`: apply the camera transform to the `world` container —
@@ -830,8 +929,11 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenGeneratedFrame(node, tokenSpec);
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
+    this.updateTokenOverlay(node, tokenSpec);
     this.updateTokenAura(node, tokenSpec);
+    this.updateTokenFacing(node, tokenSpec);
     this.updateTokenFx(node, tokenSpec);
+    this.updateTokenPlate(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -856,7 +958,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "", textureUrls: [] };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", overlay: null, overlayKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateInputs: null, textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -890,13 +992,23 @@ export class PixiBackend implements DisplayBackend {
    */
   private updateTokenVisual(id: string, node: TokenNode, tokenSpec: TokenNodeSpec): void {
     const key = visualSourceKey(tokenSpec.visual);
-    node.visual.width = tokenSpec.w;
-    node.visual.height = tokenSpec.h;
-    if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
-    node.sourceKey = key;
     // A generated visual's drawable payload is its `art`; the frame around it is
     // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
     const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    if (art === undefined) {
+      // Frame-only composition: no texture to load. The sprite is emptied so a prior image or
+      // animation does not show through the frame, and its cache references are released.
+      if (node.sourceKey === key) return;
+      node.sourceKey = key;
+      if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
+      node.anim = null;
+      node.visual.texture = Texture.EMPTY;
+      this.applyNodeTextures(node, []);
+      return;
+    }
+    this.frameTokenArt(node, art, tokenSpec);
+    if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
+    node.sourceKey = key;
     if (art.kind === "image") {
       if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
       node.anim = null;
@@ -935,8 +1047,39 @@ export class PixiBackend implements DisplayBackend {
         // load completion, so each is already evictable — nothing further to do here.
       });
     }
-    node.visual.width = tokenSpec.w;
-    node.visual.height = tokenSpec.h;
+    // The branch above may have swapped `node.visual` for a fresh sprite, which starts at the
+    // default framing.
+    this.frameTokenArt(node, art, tokenSpec);
+  }
+
+  /** Apply a token's art framing to `node.visual`: the sprite is sized to the token extent times
+   * the authored `transform.scale`, anchored at `(transform.anchorX, transform.anchorY)`, and
+   * multiply-tinted by `transform.tint`. An art without a transform gets the default centered
+   * anchor, unit scale and white (identity) tint. Uses Pixi's native `anchor`/`width`/`height`/
+   * `tint` sprite properties, and turned by `-transform.facing` degrees so the art points along the
+   * token's rotation (`visualContainer` already applies the rotation itself); the static tint composes independently of the dynamic `TokenFx`
+   * filter chain, which applies on top.
+   * @param node The token render node whose `visual` sprite to frame.
+   * @param art The resolved art (`tokenSpec.visual`, or a generated visual's `art`).
+   * @param tokenSpec The resolved token spec; only `.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.frameTokenArt(node, { kind: "image", url: "https://example.test/token.png" }, tokenSpec);
+   * ```
+   */
+  private frameTokenArt(node: TokenNode, art: ResolvedArtVisual, tokenSpec: TokenNodeSpec): void {
+    const transform = art.transform;
+    node.visual.anchor.set(transform?.anchorX ?? 0.5, transform?.anchorY ?? 0.5);
+    node.visual.width = tokenSpec.w * (transform?.scale ?? 1);
+    node.visual.height = tokenSpec.h * (transform?.scale ?? 1);
+    node.visual.tint = transform?.tint ?? 0xffffff;
+    // `visualContainer.angle` carries the token's rotation, so the art sprite's own angle is the
+    // negated facing: net art angle = rotation - facing. Art-only, so the border and generated
+    // frame keep the token's rotation.
+    node.visual.angle = -(transform?.facing ?? 0);
   }
 
   /** Create a node's generated-visual frame (`TokenNode.generated`) on first use: the
@@ -1194,6 +1337,36 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** Redraw (or remove) `node`'s overlay-condition glyph: one `Text` centered on the token's
+   * origin, sized to 60% of the smaller token side. A direct child of the non-rotating outer
+   * `container`, inserted directly above `visualContainer`: it draws over the art and under every
+   * badge chip, so the condition list stays legible. Guarded by `overlayKey` (glyph + size); an
+   * absent `overlayIcon` destroys the `Text` and drops the reference.
+   * @param node The token render node whose overlay glyph to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.overlayIcon`/`.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenOverlay(node, tokenSpec);
+   * ```
+   */
+  private updateTokenOverlay(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const glyph = tokenSpec.overlayIcon;
+    const size = Math.min(tokenSpec.w, tokenSpec.h) * 0.6;
+    const key = glyph ? `${glyph}:${size}` : "";
+    if (node.overlayKey === key) return;
+    node.overlayKey = key;
+    node.overlay?.destroy();
+    node.overlay = null;
+    if (!glyph) return;
+    const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
+    txt.anchor.set(0.5);
+    node.container.addChildAt(txt, node.container.getChildIndex(node.visualContainer) + 1);
+    node.overlay = txt;
+  }
+
   /** Redraw (or remove) `node`'s aura disc: a filled ellipse of `tokenSpec.aura.radius` scene
    * units centered on the token's origin, filled with `aura.color` at `aura.opacity`. The disc
    * Graphics is a direct child of the non-rotating outer `container` inserted at index 0 — BELOW
@@ -1227,6 +1400,87 @@ export class PixiBackend implements DisplayBackend {
       node.container.addChildAt(node.aura, 0); // below visualContainer: art draws over the aura
     }
     node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
+  }
+
+  /** Redraw (or remove) `node`'s nameplate and attribute bars. The nameplate is centered over the
+   * token's top edge; the bars stack under its bottom edge, each a dark track with a fill of
+   * `fraction` of the token's width in the bar's color and its label centered on it. Everything
+   * is a child of one `Container` on the non-rotating `container`, so it stays upright, and is
+   * sized from `tokenSpec.w`/`h` only (no grid math). Memoized by `plateInputs`; an absent
+   * nameplate and bars destroy the container.
+   * @param node The token render node whose plate to redraw.
+   * @param tokenSpec The resolved token spec; `.nameplate`, `.bars`, `.w` and `.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenPlate(node, tokenSpec);
+   * ```
+   */
+  private updateTokenPlate(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const { nameplate, bars, w, h } = tokenSpec;
+    const next = nameplate === undefined && bars === undefined ? null : { nameplate, bars, w, h };
+    if (samePlateInputs(node.plateInputs, next)) return;
+    node.plateInputs = next;
+    node.plate?.destroy({ children: true });
+    node.plate = null;
+    if (next === null) return;
+    const plate = new Container();
+    const barHeight = Math.max(6, Math.min(w, h) * 0.12);
+    if (nameplate !== undefined) {
+      const text = new Text({ text: nameplate, style: { fontSize: Math.max(12, barHeight * 1.6), fontFamily: "sans-serif", fill: 0xffffff, stroke: { color: 0x000000, width: 3 } } });
+      text.anchor.set(0.5, 1);
+      text.position.set(0, -h / 2 - 2);
+      plate.addChild(text);
+    }
+    (bars ?? []).forEach((bar, i) => {
+      const y = h / 2 + 2 + i * (barHeight + 2);
+      const track = new Graphics();
+      track.rect(-w / 2, y, w, barHeight).fill({ color: 0x000000, alpha: 0.6 });
+      if (bar.fraction > 0) track.rect(-w / 2, y, w * bar.fraction, barHeight).fill({ color: bar.color });
+      const label = new Text({ text: bar.label, style: { fontSize: barHeight, fontFamily: "sans-serif", fill: 0xffffff, stroke: { color: 0x000000, width: 2 } } });
+      label.anchor.set(0.5);
+      label.position.set(0, y + barHeight / 2);
+      plate.addChild(track, label);
+    });
+    node.container.addChild(plate);
+    node.plate = plate;
+  }
+
+  /** Redraw (or remove) `node`'s facing wedge: a translucent pie slice of `facing.arc` degrees
+   * and `facing.radius` scene units centered on +x in the rotating `visualContainer`'s local
+   * frame (so the container's `angle` turns it to the token's facing; rotation 0 = +x, clockwise
+   * on the y-down canvas), plus an outline ring of `facing.near` units when positive. A child of
+   * `visualContainer` ordered above the art. Memoized by `facingKey`; an absent spec destroys the
+   * Graphics.
+   * @param node The token render node whose wedge to redraw.
+   * @param tokenSpec The resolved token spec; only `.facing` is read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenFacing(node, tokenSpec);
+   * ```
+   */
+  private updateTokenFacing(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const facing = tokenSpec.facing;
+    const key = facing ? `${facing.arc}:${facing.near}:${facing.radius}` : "";
+    if (node.facingKey === key) return;
+    node.facingKey = key;
+    if (!facing) {
+      node.facing?.destroy();
+      node.facing = null;
+      return;
+    }
+    if (!node.facing) {
+      node.facing = new Graphics();
+      node.visualContainer.addChild(node.facing);
+    }
+    const half = (facing.arc * Math.PI) / 360;
+    node.facing.clear().moveTo(0, 0).arc(0, 0, facing.radius, -half, half).closePath().fill({ color: 0xffd400, alpha: 0.25 });
+    if (facing.near > 0) node.facing.circle(0, 0, facing.near).stroke({ color: 0xffd400, alpha: 0.5, width: 2 });
   }
 
   /** Rebuild (or remove) `node`'s art-effects filter: `tokenSpec.fx` composed into ONE
@@ -1584,6 +1838,36 @@ export class PixiBackend implements DisplayBackend {
     if (layer && g.parent !== layer) layer.addChild(g);
     g.clear();
     paintShape(g, tokenSpec);
+    // Hole rings subtract through a per-shape inverse mask (the fog sheets' mechanism):
+    // rebuilt with the shape so an edited hole list tracks the document, and dropped
+    // entirely when the shape carries no holes. The mask is PARENTED into the shape's own
+    // layer (the fog `litHoles`/`exploredHoles` precedent) so it shares the layer's camera
+    // transform chain with the masked shape — a parentless mask keeps an identity world
+    // transform and the holes would misalign under pan/zoom. It is never drawn itself:
+    // `StencilMask.init` sets `includeInBuild = false` on the mask object (restored by
+    // `reset` when the mask detaches). No transform copy is needed — unlike the fog
+    // cross-fade capture (which renders a DETACHED container and must replicate `world`'s
+    // transform manually), the mask sits in the same subtree as the shape it masks.
+    const holes = tokenSpec.holes ?? [];
+    let mask = this.shapeMasks.get(id);
+    if (holes.length > 0) {
+      if (!mask) {
+        mask = new Graphics();
+        this.shapeMasks.set(id, mask);
+      }
+      if (layer && mask.parent !== layer) layer.addChild(mask);
+      mask.clear();
+      for (const ring of holes) {
+        if (ring.length >= 6) mask.poly(ring).fill({ color: 0xffffff });
+      }
+      g.setMask({ mask, inverse: true });
+    } else {
+      g.mask = null;
+      if (mask) {
+        mask.destroy();
+        this.shapeMasks.delete(id);
+      }
+    }
   }
 
   /** `DisplayBackend.removeShape`: destroy a drawn shape node and drop it from `this.shapes`. A
@@ -1602,6 +1886,11 @@ export class PixiBackend implements DisplayBackend {
     if (g) {
       g.destroy();
       this.shapes.delete(id);
+    }
+    const mask = this.shapeMasks.get(id);
+    if (mask) {
+      mask.destroy();
+      this.shapeMasks.delete(id);
     }
   }
 
@@ -1688,26 +1977,77 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
-  /** `DisplayBackend.drawEmotes`: redraw the emote-glyph overlay — destroys the previous
-   * frame's `Text` children, then adds one centered glyph per emote (fontSize 48,
-   * `sans-serif`, at the glyph's own `alpha`).
-   * @param glyphs The current emote glyphs to draw (anchor, glyph(s), alpha), in draw order.
+  /** `DisplayBackend.drawEmotes`: redraw the emote overlay — destroys the previous frame's
+   * `Text` children, then adds one node per overlay, styled by its own `kind` (`EmoteKind`'s
+   * own doc): `"glyph"` (a player's 1-4-emoji emote) draws at `GLYPH_FONT_SIZE`, single-line,
+   * never wrapped;
+   * `"caption"` (server-authored prose, e.g. a region trigger's `ScrollingText`) draws smaller,
+   * at `CAPTION_FONT_SIZE`, word-wrapped to `EMOTE_WRAP_WIDTH` and centered — bounded to a
+   * roughly-one-token-tall block because the text it receives is ALREADY display-truncated by
+   * `EmoteView.add` (`MAX_OVERLAY_DISPLAY_CHARS`). Anchored bottom-center (`(0.5, 1)`): `g.y`
+   * is the token's TOP edge (`RenderEngine.addEmote`'s own doc), so the block's bottom sits
+   * there and it grows UPWARD as its height varies with wrapped line count — a center anchor
+   * would instead render half of any multi-line caption down over the token.
+   * @param glyphs The current emote overlays to draw (anchor, text, kind, alpha), in draw order.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 0.8 }]);
    * ```
    */
   drawEmotes(glyphs: EmoteGlyph[]): void {
     for (const child of this.emoteLayer.removeChildren()) child.destroy();
     for (const g of glyphs) {
-      const t = new Text({ text: g.emote, style: { fontSize: 48, fontFamily: "sans-serif" } });
-      t.anchor.set(0.5);
+      const t = new Text({
+        text: g.emote,
+        style:
+          g.kind === "caption"
+            ? {
+                fontSize: CAPTION_FONT_SIZE,
+                fontFamily: "sans-serif",
+                wordWrap: true,
+                wordWrapWidth: EMOTE_WRAP_WIDTH,
+                // Wraps inside a word too: word-boundary-only wrapping leaves an unbroken run
+                // (a pasted token, a space-free language) on one line whose width grows past
+                // `EMOTE_WRAP_WIDTH` unbounded by it.
+                breakWords: true,
+                align: "center",
+              }
+            : { fontSize: GLYPH_FONT_SIZE, fontFamily: "sans-serif" },
+      });
+      // Bottom-center: g.y is the token's top edge, so the block grows upward from it.
+      t.anchor.set(0.5, 1);
       t.position.set(g.x, g.y);
       t.alpha = g.alpha;
       this.emoteLayer.addChild(t);
+    }
+  }
+  /** `DisplayBackend.drawRulers`: redraw the remote shared-ruler overlay — clears it, then per
+   * ruler strokes the polyline (3px, the ruler's own `color`) and marks its last vertex with a
+   * filled dot; a single-vertex ruler draws as the dot alone.
+   * @param rulers The live remote rulers to draw (sender, vertices, color), in draw order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawRulers([{ user: "u1", origin: "conn-1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 }]);
+   * ```
+   */
+  drawRulers(rulers: RemoteRulerPath[]): void {
+    this.rulerGraphics.clear();
+    for (const r of rulers) {
+      const [first, ...rest] = r.points;
+      if (!first) continue;
+      if (rest.length > 0) {
+        this.rulerGraphics.moveTo(first[0], first[1]);
+        for (const p of rest) this.rulerGraphics.lineTo(p[0], p[1]);
+        this.rulerGraphics.stroke({ width: 3, color: r.color, alpha: 0.9 });
+      }
+      const last = r.points[r.points.length - 1];
+      this.rulerGraphics.circle(last[0], last[1], 5).fill({ color: r.color, alpha: 0.9 });
     }
   }
   /** `DisplayBackend.setLighting`: repaint the lighting overlay. First the darkness sheet:
@@ -1723,7 +2063,8 @@ export class PixiBackend implements DisplayBackend {
    * and performs no grid-kind math of its own): a black darkening fill (`c.alpha`, skipped when
    * `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and — when
    * `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
-   * desaturation for a darkvision-only cell. Empty `darkness` and `cells` clear the overlay
+   * desaturation for a darkvision-only cell. A cell's `colorWash` adds one more tinted fill and
+   * its `outline` a stroke-only polygon over the same corners. Empty `darkness` and `cells` clear the overlay
    * entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
    * geometry, nothing to fill), as is a darkness polygon with fewer than 3 vertices.
    * @param frame The resolved per-cell lighting to paint.
@@ -1762,6 +2103,10 @@ export class PixiBackend implements DisplayBackend {
       // buys a fill that needs no filter, mask, or extra render target.
       // TODO: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
       if (c.desaturate) this.lightingGraphics.poly(poly).fill({ color: 0x808080, alpha: 0.18 });
+      // A treatment composes on top of the band darkening: a wash is one more tinted fill, an
+      // outline a stroke-only polygon. Only cells whose hint names them draw anything extra.
+      if (c.colorWash) this.lightingGraphics.poly(poly).fill({ color: c.colorWash.color, alpha: c.colorWash.opacity });
+      if (c.outline) this.lightingGraphics.poly(poly).stroke({ color: c.outline.color, width: 2 });
     }
   }
 
@@ -1948,13 +2293,41 @@ export class PixiBackend implements DisplayBackend {
  * ```
  */
 function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void {
-  const p = tokenSpec.points;
+  paintRing(g, tokenSpec.points, tokenSpec.closed);
+  // Compound additive rings are always closed fills (a region is always an area).
+  for (const ring of tokenSpec.extraParts ?? []) paintRing(g, ring, true);
+  if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
+  const stroke = tokenSpec.stroke;
+  const dash = stroke?.dash;
+  if (stroke && dash) {
+    // Pixi has no dash style: stroke each dash polyline as its own subpath of a fresh path.
+    g.beginPath();
+    const rings = [tokenSpec.points, ...(tokenSpec.extraParts ?? [])];
+    rings.forEach((ring, i) => {
+      for (const d of dashPath(ring, i > 0 || tokenSpec.closed, dash.on, dash.off)) paintRing(g, d, false);
+    });
+    g.stroke({ width: stroke.width, color: stroke.color });
+  } else if (stroke) g.stroke({ width: stroke.width, color: stroke.color });
+}
+
+/** Trace one ring onto `g` without filling or stroking — one shape primitive per ring, so a
+ * compound shape's additive rings share the caller's single fill/stroke.
+ * @param g The graphics context to trace into.
+ * @param p The ring's flat point list (`[x0, y0, x1, y1, ...]`); fewer than two points traces nothing.
+ * @param closed Whether the ring is closed back to its first point.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * import { Graphics } from "pixi.js";
+ * const g = new Graphics();
+ * paintRing(g, [0, 0, 10, 0, 10, 10], false);
+ * ```
+ */
+function paintRing(g: Graphics, p: number[], closed: boolean): void {
   if (p.length < 4) return; // need at least two points
   g.moveTo(p[0], p[1]);
   for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
-  if (tokenSpec.closed) g.closePath();
-  if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
-  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
+  if (closed) g.closePath();
 }
 
 /** Paint the three-state fog (unexplored darkest / explored dimmed / visible clear) onto the

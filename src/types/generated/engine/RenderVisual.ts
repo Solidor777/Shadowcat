@@ -3,6 +3,7 @@ import type { AnimatedSource } from "./AnimatedSource";
 import type { GeneratedBackground } from "./GeneratedBackground";
 import type { GeneratedBorder } from "./GeneratedBorder";
 import type { GeneratedCrop } from "./GeneratedCrop";
+import type { VisualTransform } from "./VisualTransform";
 
 /**
  * The kinds the render layer actually draws — the render/resolution
@@ -14,7 +15,7 @@ import type { GeneratedCrop } from "./GeneratedCrop";
  * ```
  * use shadowcat::data::engine::RenderVisual;
  *
- * let visual = RenderVisual::Image { asset: "token-goblin.png".to_string() };
+ * let visual = RenderVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
  * let json = serde_json::to_value(&visual).unwrap();
  * assert_eq!(json["kind"], "image");
  * // A face's visual is a leaf kind: the `faces` discriminant is refused here.
@@ -26,7 +27,12 @@ export type RenderVisual = { "kind": "image",
 /**
  * Asset id of the image.
  */
-asset: string, } | { "kind": "animated", 
+asset: string, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "animated", 
 /**
  * Where the frames come from.
  */
@@ -38,7 +44,12 @@ fps: number,
 /**
  * Loop playback; false = play once and hold the last frame.
  */
-loop: boolean, } | { "kind": "generated", 
+loop: boolean, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "generated", 
 /**
  * The art being framed — an `Image` or `Animated` visual only; a
  * nested `Generated` (or anything else) fails closed to no visual at

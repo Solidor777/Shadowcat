@@ -1,11 +1,14 @@
-//! Server-side world-config seeding: the ops-builder that creates absent
-//! config singletons with their engine-defined default bodies and keeps the
-//! `system-defaults` singleton mirroring the enabled system package's
-//! manifest declaration. The DECISION of what to seed lives here alone;
-//! callers commit the returned ops under `WriteOrigin::ConfigSeed` through
-//! their own channel — `Repository::apply_intent` where no room exists,
-//! `Room::publish` where one does (publish wraps the same `apply_intent`
-//! plus broadcast, so the transport split is not a forked decision).
+//! This module builds the ops that seed a world's config singletons.
+//!
+//! `missing_config_ops` creates the absent config singletons with their engine-defined default
+//! bodies and keeps the `system-defaults` singleton mirroring the enabled system package's manifest
+//! declaration. `enabled_system_defaults` reads that declaration, and `seed_author` returns the
+//! world's lowest-id GM as a `PermissionContext`, or `None`.
+//!
+//! Callers commit the returned ops under `WriteOrigin::ConfigSeed` through their own channel:
+//! `Repository::apply_intent` where no room exists, `Room::publish` where one does (`Room::publish`
+//! commits through the same `apply_intent` and then broadcasts, so the transport split is not a
+//! forked decision).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -16,11 +19,12 @@ use crate::data::command::{FieldChange, Operation};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::engine::{
     AudioStateEngine, ChannelRegistryEngine, ChatSettingsEngine, ConditionRegistryEngine,
-    DiceSettingsEngine, FactionRegistryEngine, LightGradationEngine, ResourceRegistryEngine,
-    SystemDefaultsEngine, VisionModesEngine, WorldSettingsEngine, AUDIO_STATE_DOC_TYPE,
-    CHANNEL_REGISTRY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
-    LIGHT_GRADATION_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
-    VISION_MODES_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    DiceSettingsEngine, FactionRegistryEngine, LightGradationEngine, ModuleSettingsEngine,
+    ResourceRegistryEngine, SystemDefaultsEngine, VisionModesEngine, WorldSettingsEngine,
+    AUDIO_STATE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
+    FACTION_REGISTRY_DOC_TYPE, LIGHT_GRADATION_DOC_TYPE, MODULE_SETTINGS_DOC_TYPE,
+    RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE, VISION_MODES_DOC_TYPE,
+    WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -30,8 +34,10 @@ use crate::modules::scan_installed_modules;
 
 /// Every world-config singleton doc_type the seed pass owns, in seed order.
 /// One list, read by the ops-builder and by callers querying a world's
-/// current config set — never re-enumerated elsewhere.
-pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 11] = [
+/// current config set. It is also the set of doc_types capped at one document per world:
+/// `data::sqlite`'s create gate reads this same list, so seeding and the duplicate-create gate
+/// cannot disagree on which doc_types are singletons.
+pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 12] = [
     WORLD_SETTINGS_DOC_TYPE,
     VISION_MODES_DOC_TYPE,
     LIGHT_GRADATION_DOC_TYPE,
@@ -43,6 +49,7 @@ pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 11] = [
     RESOURCE_REGISTRY_DOC_TYPE,
     SYSTEM_DEFAULTS_DOC_TYPE,
     AUDIO_STATE_DOC_TYPE,
+    MODULE_SETTINGS_DOC_TYPE,
 ];
 
 /// Build the ops that bring a world's config-singleton set current: a
@@ -60,7 +67,7 @@ pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 11] = [
 /// use shadowcat::data::world_seed::missing_config_ops;
 ///
 /// let ops = missing_config_ops(&[], uuid::Uuid::nil(), None, 0);
-/// assert_eq!(ops.len(), 11);
+/// assert_eq!(ops.len(), 12);
 /// ```
 pub fn missing_config_ops(
     existing: &[Document],
@@ -122,6 +129,7 @@ fn seed_engine_body(
         crate::chat::CHAT_SETTINGS_DOC_TYPE => serde_json::to_value(ChatSettingsEngine::default()),
         crate::chat::DICE_SETTINGS_DOC_TYPE => serde_json::to_value(DiceSettingsEngine::default()),
         AUDIO_STATE_DOC_TYPE => serde_json::to_value(AudioStateEngine::default()),
+        MODULE_SETTINGS_DOC_TYPE => serde_json::to_value(ModuleSettingsEngine::default()),
         other => unreachable!("not a config singleton doc_type: {other}"),
     };
     v.expect("engine seed bodies serialize")
@@ -266,8 +274,8 @@ pub async fn seed_author(repo: &dyn Repository, world_id: Uuid) -> Option<Permis
     };
     members
         .into_iter()
-        .filter(|(_, _, role)| *role == WorldRole::Gm)
-        .map(|(id, _, _)| id)
+        .filter(|m| m.role == WorldRole::Gm)
+        .map(|m| m.user)
         .min()
         .map(|user_id| PermissionContext {
             user_id,

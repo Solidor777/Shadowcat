@@ -12,6 +12,7 @@ internals (the contract-only element boundary).
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `scene-tools:toolrail` | `shadowcat.surface:toolrail` | `ToolRail` | — |
+| `scene-tools:tour` | `shadowcat.tour` | none | tour `scene-tools.intro`, first use (anchors `scene-tools.rail` and one per tool) |
 
 ## Components
 
@@ -46,12 +47,27 @@ internals (the contract-only element boundary).
   elevation-band editor. Shape/fill/stroke/color/behavior/cost/secrecy/triggers
   remain create-only for all four kinds (region/drawing/template/wall) — a GM
   re-authors those by delete+recreate.
+- **Sense-blocking regions**: the region tool carries three checkboxes
+  (`ToolController.regionOccludesSight`/`regionOccludesLight`/
+  `regionOccludesSound`) that persist as `RegionEngine.occludes` on the next
+  region (none ticked persists `null`; the server rejects an all-false block).
+  The region editor edits the same three flags on an existing region through
+  `/engine/occludes`, writing `null` when the last one is cleared. The region
+  layer draws each sense on its own channel (`regionShapeSpec`): sight swaps
+  the fill for a pale haze, light darkens and thickens the rim, sound dashes
+  the ring (`ShapeNodeSpec.stroke.dash`, painted by `PixiBackend` as one
+  subpath per dash from `dashPath`). The server turns the covered-cell outline
+  into walls for the blocked senses; movement is unaffected.
 - **`Teleport` region trigger**: `ToolController.beginPickPortalTarget`/
   `endPickPortalTarget` capture one stage click as the trigger's destination
   x/y, temporarily roaming the viewed scene (`ToolContext.setGmViewedScene`,
   sourced from `AppContext.setGmViewedScene`) to the authored destination
   scene while picking, then restore both the original scene and the
   previously active tool.
+
+- **Client copies of server bounds**: `scene-tools/src/__fixtures__/server-bounds.json` is the
+  shared fixture both sides test against (`server-bounds.test.ts` here and the server's
+  `client_bounds_parity` test), so a bound changed on one side fails the other.
 
 ## Pointers
 

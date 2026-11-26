@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { tick } from "svelte";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, buildActorDoc, buildTokenDoc, buildConditionRegistryDoc, type CombatantEngine, type ActorEngine, type TokenEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
+import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, buildActorDoc, buildEffectDoc, buildTokenDoc, buildConditionRegistryDoc, type CombatantEngine, type ActorEngine, type TokenEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
 import CombatantRow from "./CombatantRow.svelte";
 import { fakeCombatApi } from "./__fixtures__/fakeCombatApi";
 import type { Row } from "./model";
@@ -14,21 +14,22 @@ const FULL_CAN: CombatAffordances = {
   roll: () => true, resource: () => true,
 };
 
-function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: number; owner?: string | null; hidden?: boolean; view?: Row["view"] } = {}): Row {
+function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: number; owner?: string | null; hidden?: boolean; defeated?: boolean; view?: Row["view"] } = {}): Row {
   const engine: CombatantEngine = {
     kind: { type: "actor", token_id: null, actor_id: null },
     initiative: opts.initiative ?? null,
-    tiebreak: opts.tiebreak ?? 0,
+    tiebreak: opts.tiebreak ?? 0, defeated: opts.defeated ?? false,
+    group: null,
     resources: {},
   };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, owner: opts.owner, hidden: opts.hidden, name: id });
-  return { doc, kind: "actor", view: opts.view ?? null, name: id, art: {} };
+  return { doc, kind: "actor", view: opts.view ?? null, name: id, group: null, art: {} };
 }
 
 function eventRow(id: string, lifespan: number | null, message: string | null): Row {
-  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, name: "An event" });
-  return { doc, kind: "event", view: null, name: "An event", art: {} };
+  return { doc, kind: "event", view: null, name: "An event", group: null, art: {} };
 }
 
 function renderRow(row: Row, opts: { can?: Partial<CombatAffordances>; registry?: [string, Resource][]; isTurn?: boolean; busy?: boolean; onDragStart?: (i: number, e: PointerEvent) => void; openDocument?: (ref: unknown) => void } = {}) {
@@ -112,9 +113,9 @@ describe("CombatantRow", () => {
       light: null, movement: [],
     };
     const actor = buildActorDoc("w1", "Goblin", actorEngine, "actor-1");
-    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null, elevation: null };
+    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
     const token = buildTokenDoc("w1", "scene-1", tokenEngine, "token-1");
-    const registry = buildConditionRegistryDoc("w1", { prone: { name: "Prone", icon: "🔻" } });
+    const registry = buildConditionRegistryDoc("w1", { prone: { name: "Prone", icon: "🔻", overlay: false } });
     const store = new DocumentStore();
     store.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [actor, token, registry].map((doc) => ({ op: "create", doc })) });
     const combat = fakeCombatApi(store);
@@ -206,6 +207,34 @@ describe("CombatantRow", () => {
     expect(combat.calls.setHidden).toEqual([["a", false]]);
   });
 
+  it("a grouped row carries the group accent color and name, an ungrouped row neither", () => {
+    const grouped = { ...actorRow("a"), group: { id: "g1", name: "Wolves", color: "#112233" } };
+    const withGroup = renderRow(grouped).getByTestId("combat-tracker:row-a");
+    expect(withGroup.classList.contains("grouped")).toBe(true);
+    expect(withGroup.style.getPropertyValue("--group-color")).toBe("#112233");
+    expect(withGroup.getAttribute("title")).toBe("Wolves");
+    cleanup();
+    const plain = renderRow(actorRow("a")).getByTestId("combat-tracker:row-a");
+    expect(plain.classList.contains("grouped")).toBe(false);
+  });
+
+  it("defeated toggle dispatches setDefeated(true) on a live row and setDefeated(false) on a defeated one", async () => {
+    const live = renderRow(actorRow("a"));
+    await fireEvent.click(live.getByText("combatTracker.defeated"));
+    expect(live.combat.calls.setDefeated).toEqual([["a", true]]);
+    cleanup();
+    const down = renderRow(actorRow("a", { defeated: true }));
+    expect(down.getByTestId("combat-tracker:row-a").classList.contains("defeated")).toBe(true);
+    await fireEvent.click(down.getByText("combatTracker.revive"));
+    expect(down.combat.calls.setDefeated).toEqual([["a", false]]);
+  });
+
+  it("a live row carries no defeated styling, and a player without edit or resource rights gets no toggle", () => {
+    const { getByTestId, queryByText } = renderRow(actorRow("a"), { can: { edit: false, resource: () => false } });
+    expect(getByTestId("combat-tracker:row-a").classList.contains("defeated")).toBe(false);
+    expect(queryByText("combatTracker.defeated")).toBeNull();
+  });
+
   it("remove dispatches removeCombatant, and is disabled with a hint on the current turn", async () => {
     const { getByText, combat } = renderRow(actorRow("a"));
     await fireEvent.click(getByText("combatTracker.remove"));
@@ -229,5 +258,20 @@ describe("CombatantRow", () => {
   it("renders the drag handle only when can.edit", () => {
     const { getByLabelText } = renderRow(actorRow("a"), { can: { edit: true } });
     expect(getByLabelText("combatTracker.dragHandle")).toBeTruthy();
+  });
+
+  it("lists the host actor's effects with their origin", () => {
+    const row = actorRow("a");
+    row.art = { actorId: "actor-1" };
+    const store = new DocumentStore();
+    const actor = buildActorDoc("w1", "Goblin", { displayName: null } as unknown as ActorEngine, "actor-1");
+    const effect = buildEffectDoc("w1", { active: true, transfer: false, duration: null, origin: { label: "Spider Queen" } }, {}, "eff-1", "Poison");
+    actor.embedded = { effect: [effect] };
+    store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: actor }] });
+    const { getByTestId } = render(CombatantRow, {
+      props: { row, combatId: "combat-1", registry: [], isTurn: false, can: FULL_CAN, busy: false, run: async (fn: () => Promise<void>) => fn(), notation: "1d20", onDragStart: () => {}, index: 0 },
+      context: setAppContextForTest({ store, documents: store, combat: fakeCombatApi(store), t: (k, p) => (p ? k + ":" + p.origin : k) }),
+    });
+    expect(getByTestId("effects-list:eff-1").textContent).toContain("effects.origin:Spider Queen");
   });
 });

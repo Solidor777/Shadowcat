@@ -134,7 +134,7 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 // A non-GM's move is request-only and server-authoritative (`SceneEcs::pathfind` then
 // `Room::execute_move`; `Room::publish` runs no traversal/wall/mask geometry for a
 // non-GM at all). A rejection can therefore come from EITHER the presence/
-// ownership gate (`handle_pathfind`'s Step 0) or the router genuinely finding no route
+// ownership gate (`handle_pathfind`'s presence gate) or the router genuinely finding no route
 // (`PathFail::Unreachable`) or the executor refusing the resulting request — all indistinguishable
 // generic failures from the client. "The move never committed" alone would therefore also be
 // produced by an ownership regression, proving nothing about the wall specifically.

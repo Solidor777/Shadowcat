@@ -1,28 +1,20 @@
-//! Linux backend: enumerates PipeWire output-audio stream nodes and reads each one's peak
-//! level. PipeWire's API is event-loop driven, so this backend runs its own
-//! dedicated OS thread owning a `pipewire::main_loop::MainLoop` for its entire lifetime and
-//! publishes the latest per-node peak into shared state; `poll` only reads that state, so it
-//! stays synchronous and non-blocking like every other backend (`SessionMonitor`'s doc).
+//! The Linux backend enumerates PipeWire output-audio stream nodes and reads each one's peak level.
 //!
-//! Node discovery: nodes whose `media.class` property is `"Stream/Output/Audio"` are
-//! considered, named from their `application.process.binary` property (reduced to a basename
-//! defensively — PipeWire already reports a bare binary name, but `filter_for_watch_list`
-//! re-derives it regardless). Peak measurement links a passive capture stream to each node's
-//! monitor port and tracks the maximum absolute sample seen since the last publish.
+//! PipeWire's API is event-loop driven, so this backend runs its own dedicated OS thread owning a
+//! `pipewire::main_loop::MainLoop` for its entire lifetime and publishes the latest per-node peak
+//! into shared state. `poll` reads that state and resets each node's peak window, so it stays
+//! synchronous and non-blocking like every other backend (`SessionMonitor`'s doc).
 //!
-//! Verification note: every `pipewire`/`libspa` 0.8 symbol this file uses — `pipewire::init`,
-//! `main_loop::MainLoop::new`/`run`/`quit`/`loop_`, `context::Context::new`/`connect`,
-//! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`),
-//! `GlobalObject`'s `props`, `spa::utils::dict::DictRef::get`,
-//! `stream::Stream::new`/`connect`/`add_local_listener`, `StreamListener`,
-//! `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`, `Stream::state`,
-//! `StreamState`, `Buffer::datas_mut`,
-//! `Data::data`/`Data::chunk`, `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`,
-//! `TimerSource::update_timer`, `spa::param::audio::AudioInfoRaw`,
-//! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
-//! the resolved crate's own vendored source (`~/.cargo/registry/src/…/pipewire-0.8.0` and
-//! `libspa-0.8.0`) and its `examples/audio-capture.rs`/`src/channel.rs`, not merely against
-//! documentation.
+//! Node discovery considers nodes whose `media.class` property is `"Stream/Output/Audio"` and names
+//! each from its `application.process.binary` property. The name is reduced to a basename
+//! defensively: PipeWire already reports a bare binary name, but `filter_for_watch_list` re-derives
+//! it regardless. Peak measurement connects an input stream (media category `Monitor`) to each
+//! node by id (`attach_monitor_stream`) and tracks the maximum absolute sample seen since the last
+//! `poll`.
+//!
+//! The backend binds the `pipewire` 0.8 and `libspa` 0.8 APIs. The `audio-capture` example in the
+//! `pipewire` 0.8.0 crate creates its stream with `Stream::new`, registers a local listener and
+//! calls `connect`, the same sequence `attach_monitor_stream` uses.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -129,20 +121,17 @@ impl SessionMonitor for LinuxMonitor {
     }
 }
 
-/// One capture stream's live PipeWire resources. Field order is load-bearing: struct fields
-/// drop in declaration order, and `StreamListener::drop` (`spa::utils::hook::remove`) patches
-/// pointers within the stream's own internal listener list — it must run before `Stream::drop`
-/// (`pw_stream_destroy`) can free that memory. Source: `pipewire-0.8.0/examples/audio-capture.rs`
-/// binds its `stream` variable before its `_listener` variable for the same reason (reverse-drop
-/// order at scope exit tears the listener down first).
+/// One capture stream's live PipeWire resources.
+///
+/// `StreamListener::drop` (`spa::utils::hook::remove`) patches pointers within the stream's own
+/// internal listener list, so it must run before `Stream::drop` (`pw_stream_destroy`) can free
+/// that memory. Rust drops fields in declaration order, so `_listener` is declared before
+/// `stream`; reordering the two fields breaks that guarantee.
 struct CaptureStream {
-    /// Dropped FIRST — unregisters the `process` callback from the stream's listener list.
-    /// Held only for its `Drop` side effect (`StreamListener` exposes no other API over its
-    /// opaque internal hook); leading underscore is rustc's own recognized idiom for a binding
-    /// kept solely for drop-order, exempting it from `dead_code` without a suppression attribute.
+    /// Removes the `process` callback from the stream's listener list when dropped.
     _listener: pw::stream::StreamListener<()>,
-    /// Dropped SECOND — destroys the underlying `pw_stream`, safe only once no listener still
-    /// points into it.
+    /// Destroys the underlying `pw_stream` when dropped, which is safe only once no listener
+    /// still points into it.
     stream: pw::stream::Stream,
 }
 
@@ -289,7 +278,7 @@ fn run_pipewire_loop(
     main_loop.run();
 }
 
-/// Creates a `Stream::Input` connected directly to node `node_id`'s own ports
+/// Creates a `Stream` with `Direction::Input` connected directly to node `node_id`'s own ports
 /// (`StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS`), whose `process` callback folds each
 /// buffer's interleaved `F32LE` samples into that node's `peak` field via
 /// `max-abs-sample`. Returns `None` on any negotiation failure (logged by discarding — a

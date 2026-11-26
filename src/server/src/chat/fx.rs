@@ -1,8 +1,10 @@
-//! The `/fx` chat command: intercepted in `handle_send_message` BEFORE `parse_command` runs
-//! (`parse_command` stays a pure three-kind classifier that can never produce
-//! `MessageKind::System` — see its own exhaustive test). A successful `/fx` authors no
-//! message document; a failure authors a whispered `MessageKind::System` notice, the SAME
-//! shape `build_system_error_notice` already establishes for `/roll`.
+//! This module implements the `/fx` chat command.
+//!
+//! The command is intercepted in `handle_send_message` BEFORE `parse_command` runs, because
+//! `parse_command` stays a pure three-kind classifier that can never produce `MessageKind::System`
+//! (see its own exhaustive test). A successful `/fx` authors no message document; a failure authors
+//! a whispered `MessageKind::System` notice, the SAME shape `build_system_error_notice` already
+//! establishes for `/roll`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -242,7 +244,7 @@ async fn run_fx(
     };
     // One rate decision per VFX play regardless of entry path: the chat front door charges
     // the same bucket at the same budget the raw `PlayVfx` frame does.
-    if !vfx_rate.check(ctx.user_id, now, 30)
+    if !vfx_rate.check(ctx.user_id, now, crate::ws::VFX_RATE_PER_MIN)
         || !validate_bounds(&req)
         || !vfx_permitted(scene, ctx, world_id, repo).await
     {

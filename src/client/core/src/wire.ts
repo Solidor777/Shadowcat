@@ -31,16 +31,35 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
-import type { CombatsPayload } from "@shadowcat/types";
+import type {
+  CombatsPayload,
+  DoorState,
+  PortalOfferOption,
+  RegionShape,
+  ServerConfig,
+  TlsStatus,
+} from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
 const int = z.number().int();
 
 export const DocRoleSchema = z.enum(["owner", "observer", "none"]);
-export const VisibilitySchema = z.enum(["all", "gm_only", "owner_or_gm"]);
+/** Property-tier visibility: three bare-string tiers, or an exact user-id list (`recipients`) that never grants by role. */
+export const VisibilitySchema = z.union([
+  z.enum(["all", "gm_only", "owner_or_gm"]),
+  z.object({ recipients: z.array(z.string()) }),
+]);
 export const WorldRoleSchema = z.enum(["gm", "player", "spectator"]);
-export const RejectReasonSchema = z.enum(["forbidden", "conflict", "invalid"]);
+export const RejectReasonSchema = z.enum([
+  "forbidden",
+  "conflict",
+  "invalid",
+  "paused",
+]);
+export const PathErrorReasonSchema = z.enum(["unreachable", "invalid", "exceeded"]);
+/** Why a pathfind failed, as the server reports it on a `path_error` frame. */
+export type WirePathErrorReason = z.infer<typeof PathErrorReasonSchema>;
 export const ResyncSourceSchema = z.enum(["buffer", "log"]);
 export const WsErrorCodeSchema = z.enum([
   "world_not_found",
@@ -93,6 +112,12 @@ export type WireAudience =
       /** Only whoever currently holds the GM role (plus the sender) may read — resolved
        * dynamically, not a frozen roster at send time. */
       kind: "gm_only";
+    }
+  | {
+      /** Every member holds the message, but each roll in it carries its formula and result
+       * only for the GM; any other reader (the roller included) gets the roll with both
+       * keys absent. */
+      kind: "blind";
     };
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -100,6 +125,7 @@ export const audienceSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public") }),
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
+  z.object({ kind: z.literal("blind") }),
 ]);
 /** Validator for a `WireAudience`. */
 export const AudienceSchema: z.ZodType<WireAudience> = audienceSchemaImpl;
@@ -234,7 +260,7 @@ export const SchemaTypeSchema = z.enum([
   "null",
 ]);
 
-/** Recursive structural type-tree (tier-2). Absent fields are optional (the server
+/** Recursive structural type-tree. Absent fields are optional (the server
  * omits a `None` via `skip_serializing_if`). Shape only — never a value rule; the grammar
  * has no `enum`, numeric/string bounds, `pattern`, or `anyOf`/`oneOf` combinator. */
 export type WireSchema = {
@@ -271,7 +297,7 @@ export const SchemaSchema: z.ZodType<WireSchema> = z.lazy(() =>
   }),
 );
 
-/** A world's structural schema declaration (tier-2): the `system`-band shape constraint a
+/** A world's structural schema declaration: the `system`-band shape constraint a
  * module attaches to a doc_type's `system` subtree, GM-set and enforced server-side.
  * `schema_format` is the engine-owned vocabulary version; `version` is the module's content
  * version (provenance only). Mirrors `crate::data::document::SchemaDeclaration`. */
@@ -385,7 +411,7 @@ export type WireDocument = {
    * property, so an absent/non-engine doc_type's `engine` key is simply undefined. */
   engine?: unknown;
   /** Opaque `system` body; `z.unknown()` infers an optional property. The server enforces
-   * only structural rules on it (size cap, JSON validity, optional tier-2 shape schema) —
+   * only structural rules on it (size cap, JSON validity, optional structural shape schema) —
    * it never interprets the value semantically. */
   system?: unknown;
   /** Server-set creation timestamp (ms since epoch). */
@@ -623,6 +649,12 @@ export type WireMoveStreamLightSample = {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
   falloff: "linear" | "quadratic" | "none";
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this instant (`0` = +x, growing toward +y);
+   * present exactly when `angle` is. A token-following cone already holds the bearer's
+   * rotation plus the authored offset. */
+  rotation?: number;
   /** The light's illumination polygon(s) at this instant, each an ordered list of [x, y]
    * scene-coord vertices. */
   polygons: [number, number][][];
@@ -840,13 +872,16 @@ export type WireWelcome = {
   /** The world's UI contract declarations, so the client can validate its loaded module
    * set against the world's declared topology. */
   contract_declarations: WireContractDeclaration[];
-  /** The world's structural schema declarations (tier-2), so the client can mirror
-   * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
+  /** The world's structural schema declarations, so the client can mirror
+   * expectations. Informational/parity only — the client Zod gate validates client-side; this is
    * NOT a client enforcement gate. */
   schema_declarations: WireSchemaDeclaration[];
   /** The connecting user's own world-level capabilities — the `core:create` policy
    * `apply_intent` consults — projected for their role. Advisory mirror. */
   role_capabilities: WireRoleCapabilities;
+  /** The members with at least one live connection in this world at send time, the receiving
+   * user included. Seeds the presence map; later `presence` frames carry the transitions. */
+  online_users: string[];
 };
 
 /** Every frame the server sends, discriminated by `type`. Mirrors
@@ -1006,6 +1041,87 @@ export type ServerMsg =
       emote: string;
     }
   | {
+      /** A relayed shared ruler: one user's live measured route preview. Out-of-band (no seq,
+       * never buffered/resynced), mirroring `scene_ping`. The server relays `points`
+       * unclipped to every connection in the room, the sender's own included. */
+      type: "ruler";
+      /** The measuring user (server-stamped, not client-asserted). */
+      from: string;
+      /** Scene the ruler is measured on. */
+      scene: string;
+      /** The route preview's vertices in scene coordinates, start through goal. */
+      points: [number, number][];
+      /** `false` ends `from`'s ruler for this recipient (`points` is then empty). */
+      active: boolean;
+      /** The sending connection's token, relayed unchanged from `ruler_update`. */
+      origin: string;
+    }
+  | {
+      /** A GM's `reset_explored_fog` intent took effect: explored-fog memory for `scene`
+       * (scoped to `user`/`level` exactly as the request was) was deleted server-side.
+       * Out-of-band (no seq, never buffered/resynced), mirroring `scene_ping` — carries only
+       * IDs already known to every room member, no geometry, no explored-cell contents.
+       * Delivered to every connection in the room, including the resetting GM's own. */
+      type: "explored_fog_reset";
+      /** The scene whose explored memory was reset. */
+      scene: string;
+      /** The user the reset was scoped to, or `null` for every user. */
+      user: string | null;
+      /** The level the reset was scoped to, or `null` for every level. */
+      level: string | null;
+    }
+  | {
+      /** A GM changed the world's enabled-module set. Every connection re-runs its own module
+       * reconcile on receipt. Out-of-band (no seq, never buffered/resynced), mirroring
+       * `scene_ping`; carries no payload. */
+      type: "modules_changed";
+    }
+  | {
+      /** A member's live-connection count in this world crossed 0->1 or 1->0. Out-of-band (no
+       * seq, never buffered/resynced), delivered to every connection in the room. Transitions
+       * only: the snapshot a late joiner needs rides on `welcome.online_users`. */
+      type: "presence";
+      /** The member whose presence changed. */
+      user: string;
+      /** `true` when the member's first connection opened, `false` when the last one closed. */
+      online: boolean;
+    }
+  | {
+      /** A member's roster row: sent when they change their account profile and when they are
+       * seated in a world. Out-of-band (no seq, never buffered/resynced), delivered to every
+       * connection in each world the member is seated in. Carries the roster's own projection;
+       * avatar bytes are fetched from the avatar route, never from this frame. */
+      type: "member_profile";
+      /** The member the row describes. */
+      user: string;
+      /** The member's username, the name the roster and chat show. */
+      username: string;
+      /** Colour accent as `#rrggbb`, or `null` when unset. */
+      colour: string | null;
+      /** Pronouns text, or `null` when unset. */
+      pronouns: string | null;
+      /** Whether the member has an avatar. */
+      has_avatar: boolean;
+    }
+  | {
+      /** A region-triggered floating overlay over a token: the server-authored twin of
+       * `emote`, bounded at INGRESS by the server's `chat::MAX_MESSAGE_CHARS` (never
+       * `emote`'s 16-byte player bound, and never a tighter server-side cap of its own).
+       * The client independently display-truncates a long `text` to a much shorter limit
+       * (`@shadowcat/render`'s `MAX_OVERLAY_DISPLAY_CHARS`) — the server accepts more than
+       * the overlay ever shows. Out-of-band (no seq, never buffered/resynced). */
+      type: "scrolling_text";
+      /** Scene the token stands on. */
+      scene: string;
+      /** Token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+      /** True when the firing region is not visible to every world member — the server
+       * delivers this frame only to GM connections. */
+      gm_only: boolean;
+    }
+  | {
       /** The route for the `pathfind` with this `request_id`: ordered cell-center scene
        * points (incl. start + goal) and the total cost in cells (client multiplies
        * `grid.distance.perCell`). `arrested` is true when an arrest region truncated the
@@ -1037,6 +1153,8 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** The typed failure a client chooses its notice from. */
+      reason: z.infer<typeof PathErrorReasonSchema>;
     }
   | {
       /** A `move_request` was rejected (token already moving, caller not owner, malformed
@@ -1046,6 +1164,9 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** `"paused"` when the session pause refused the move; absent or `null` for every
+       * other refusal. DECLARED optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
     }
   | {
       /** A `send_message`/`edit_message`/`delete_message` was rejected. One shared variant
@@ -1071,6 +1192,9 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** `"paused"` when the session pause refused the intent; absent or `null` for every
+       * other refusal. DECLARED optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
     }
   | {
       /** A combat intent was accepted and committed as the sequenced `event` at `seq`.
@@ -1082,6 +1206,65 @@ export type ServerMsg =
       request_id: string;
       /** The committed command's sequence number — matches the broadcast `event`'s `seq`. */
       seq: number;
+    }
+  | {
+      /** A `toggle_door` request was rejected. Addressed to the originating connection only;
+       * never broadcast. For a non-GM caller `message` is ONE uniform wording ("door
+       * rejected") across every refusal reason — a distinguishable wording would disclose
+       * whether the wall exists, is near, is visible, or is locked to a caller with no right
+       * to learn any of it; a GM caller may receive a variant-specific diagnostic instead.
+       * Success is confirmed by the broadcast `event` echo of the wall's update. */
+      type: "door_toggle_error";
+      /** The refused toggle's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+    }
+  | {
+      /** A `place_effect` request was rejected. Addressed to the originating connection only;
+       * never broadcast. For a non-GM caller `message` is ONE uniform wording ("placement
+       * rejected") across every refusal reason, so a refusal never discloses whether a module,
+       * declaration, scene or token exists; a GM caller may receive a variant-specific
+       * diagnostic. Success is confirmed by the broadcast `event` of the region create. */
+      type: "place_effect_error";
+      /** The refused request's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+    }
+  | {
+      /** A portal region offered `token` a choice of destinations. Out-of-band (no seq, never
+       * buffered or resynced) and addressed: only a GM connection and, when `gm_only` is false,
+       * the connection of `owner` receive it. Carries no coordinates and no destination
+       * scene unless the GM marked the option `reveal_scene`. */
+      type: "portal_offer";
+      /** Identifies the offer in `choose_portal`. */
+      offer_id: string;
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token that may take a portal. */
+      token: string;
+      /** The GM-authored heading, if any. */
+      prompt: string | null;
+      /** The destinations in display order. */
+      options: PortalOfferOption[];
+      /** True when only GM connections receive the frame. */
+      gm_only: boolean;
+      /** The token's effective owner, the one non-GM recipient of a public offer. */
+      owner: string | null;
+    }
+  | {
+      /** A `choose_portal` or `open_portal` request was refused. Addressed to the originating
+       * connection only; never broadcast. For a non-GM caller `message` is ONE uniform wording
+       * across every refusal reason; a GM caller may receive a specific diagnostic. */
+      type: "portal_choice_error";
+      /** The refused request's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+      /** `paused` when the session pause refused an accept; omitted or null otherwise. DECLARED
+       * optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
     }
   | {
       /** The outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`.
@@ -1198,6 +1381,15 @@ export type ServerMsg =
       elevation: number | null;
       /** Fresh per-broadcast id — the render layer's one-shot node key. */
       id: string;
+    }
+  | {
+      /** A relayed "the GM is presenting this note" focus signal. Out-of-band (no seq, never
+       * buffered/resynced), mirroring `vfx`; carries no note content. */
+      type: "present_note";
+      /** The `note` document being presented. */
+      note_id: string;
+      /** The GM who presented it (server-stamped). */
+      presented_by: string;
     };
 
 // Unannotated impl const — see the module-level note above the `z` import. This is the
@@ -1219,6 +1411,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     contract_declarations: z.array(ContractDeclarationSchema),
     schema_declarations: z.array(SchemaDeclarationSchema),
     role_capabilities: RoleCapabilitiesSchema.default({ all: [], by_type: {} }),
+    online_users: z.array(z.string()),
   }),
   z.object({
     type: z.literal("event"),
@@ -1298,6 +1491,37 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     emote: z.string(),
   }),
   z.object({
+    type: z.literal("ruler"),
+    from: z.string(),
+    scene: z.string(),
+    points: z.array(z.tuple([z.number(), z.number()])),
+    active: z.boolean(),
+    origin: z.string(),
+  }),
+  z.object({
+    type: z.literal("explored_fog_reset"),
+    scene: z.string(),
+    user: z.string().nullable(),
+    level: z.string().nullable(),
+  }),
+  z.object({ type: z.literal("modules_changed") }),
+  z.object({ type: z.literal("presence"), user: z.string(), online: z.boolean() }),
+  z.object({
+    type: z.literal("member_profile"),
+    user: z.string(),
+    username: z.string(),
+    colour: z.string().nullable(),
+    pronouns: z.string().nullable(),
+    has_avatar: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("scrolling_text"),
+    scene: z.string(),
+    token: z.string(),
+    text: z.string(),
+    gm_only: z.boolean(),
+  }),
+  z.object({
     type: z.literal("path_result"),
     request_id: z.string(),
     path: z.array(z.tuple([z.number(), z.number()])),
@@ -1310,11 +1534,13 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("path_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: PathErrorReasonSchema,
   }),
   z.object({
     type: z.literal("move_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("chat_error"),
@@ -1325,11 +1551,45 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("combat_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("combat_result"),
     request_id: z.string(),
     seq: int,
+  }),
+  z.object({
+    type: z.literal("door_toggle_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
+    type: z.literal("place_effect_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
+    type: z.literal("portal_offer"),
+    offer_id: z.string(),
+    scene: z.string(),
+    token: z.string(),
+    prompt: z.string().nullable(),
+    options: z.array(
+      z.object({
+        index: int,
+        label: z.string(),
+        destination_name: z.string().nullable(),
+        available: z.boolean(),
+      }),
+    ),
+    gm_only: z.boolean(),
+    owner: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("portal_choice_error"),
+    request_id: z.string(),
+    message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("move_stream"),
@@ -1367,6 +1627,8 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
           color: z.number(),
           intensity: z.number(),
           falloff: z.enum(["linear", "quadratic", "none"]),
+          angle: z.number().optional(),
+          rotation: z.number().optional(),
           polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
         }),
       )
@@ -1403,6 +1665,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     elevation: z.number().nullable(),
     id: z.string(),
   }),
+  z.object({ type: z.literal("present_note"), note_id: z.string(), presented_by: z.string() }),
 ]);
 /** Validator for every frame the server sends, discriminated by `type`. */
 export const ServerMsgSchema: z.ZodType<ServerMsg, z.ZodTypeDef, unknown> = serverMsgSchemaImpl;
@@ -1691,6 +1954,42 @@ export type ClientMsg =
       emote: string;
     }
   | {
+      /** A transient shared-ruler update: the sender's measured route preview on `scene`,
+       * relayed out-of-band to the world room with the sender stamped (`ruler`); never
+       * sequenced, logged, or a document (mirrors `scene_ping`). The scene must grant the
+       * sender READ. `points` holds at most `RULER_LIMITS.maxPoints` vertices, every coordinate
+       * finite and within `RULER_LIMITS.maxCoord`. A longer list, or a non-finite coordinate
+       * (JSON carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is
+       * answered with a generic `error` frame to the sender alone; a finite coordinate beyond
+       * the bound, an over-long `origin`, an unreadable scene, or an exhausted per-user budget
+       * is dropped silently. `active: false` (or an empty `points`) ends the sender's ruler for
+       * observers. The server relays the frame to every connection in the room, this one
+       * included; `origin` is what lets the sending client recognize its own frame. */
+      type: "ruler_update";
+      /** Scene the ruler is measured on (must grant the sender READ). */
+      scene: string;
+      /** The route preview's vertices in scene coordinates, start through goal. */
+      points: [number, number][];
+      /** `false` ends the sender's ruler. */
+      active: boolean;
+      /** Opaque token naming this connection (`WsClient.rulerOrigin`), relayed unchanged on the
+       * `ruler` frame; the server bounds its length and drops a longer one silently. */
+      origin: string;
+    }
+  | {
+      /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+       * and/or one `level`. Refused with a generic `error` frame for a non-GM sender or a
+       * scene outside this world. On success the server broadcasts `explored_fog_reset`
+       * out-of-band to the room; there is no dedicated success reply. */
+      type: "reset_explored_fog";
+      /** The scene whose explored memory is reset. */
+      scene: string;
+      /** Limit the reset to one user's memory; omit to clear every user's. */
+      user?: string;
+      /** Limit the reset to one level; omit to clear every level. */
+      level?: string;
+    }
+  | {
       /** A one-shot grid pathfinding request, correlated by `request_id`. When `token` is
        * given, the server derives the footprint from that token's document and IGNORES
        * `footprint_radius` — so a route preview and the authoritative move gate cannot
@@ -1782,6 +2081,17 @@ export type ClientMsg =
       ops: WireRecalcOp[];
     }
   | {
+      /** GM-only reveal or conceal: replaces a stored message's audience and readership
+       * permissions. Same asymmetric reply protocol as `send_message`. */
+      type: "revise_audience";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The message whose audience changes. */
+      message_id: string;
+      /** The replacement readership (public / gm-only / whisper). */
+      audience: WireAudience;
+    }
+  | {
       /** Draw one or more rows from a `table` document, posted as ONE `kind: "roll"` message
        * (a `table_draw` segment, recursive through any nested draws). Same asymmetric reply
        * protocol as `send_message`; a refusal is a correlated `chat_error`. */
@@ -1798,6 +2108,16 @@ export type ClientMsg =
       actor_owner: WireActorOwnerRef | null;
       /** Visibility policy (public / gm-only / whisper). */
       audience: WireAudience;
+    }
+  | {
+      /** GM-only: ask the server to tell every connected client to open a shared note. Authors
+       * no document; a refusal is a correlated `chat_error`, same asymmetric reply protocol as
+       * `send_message`. */
+      type: "present_note";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The `note` document to present. */
+      note_id: string;
     }
   | {
       /** Activate a combat: pauses any other active combat on its scene in the same command;
@@ -1957,6 +2277,66 @@ export type ClientMsg =
       sound?: string;
       /** Elevation the effect plays at. */
       elevation?: number;
+    }
+  | {
+      /** A door-toggle request: flip the named wall's `door` state between `closed` and
+       * `open`. The server authorizes it positionally (a non-GM must effectively control a
+       * token near the door and able to see its cells, and must hold engine-tier visibility
+       * on the wall document); `scene_id` is checked against the wall's derived parent, never
+       * trusted to select. Success is confirmed by the broadcast `event` echo of the wall's
+       * update; a rejection replies `door_toggle_error` correlated by `request_id` (the
+       * asymmetric reply protocol `send_message` established). */
+      type: "toggle_door";
+      /** Correlation token for `door_toggle_error`. */
+      request_id: string;
+      /** Scene the wall is expected to be on; checked, not selected. */
+      scene_id: string;
+      /** The wall whose door state flips. */
+      wall_id: string;
+      /** The target state; a non-GM may name `closed`/`open` only. */
+      to: DoorState;
+    }
+  | {
+      /** A module-placed effect request: place the effect set the named module declared in its
+       * manifest over the area `shape`. The frame carries the area only: behavior, cost and
+       * triggers come from the manifest on the server, never from the client. The server checks
+       * the sender against the declaration's `who`, clamps the area to its limits and creates
+       * one region. Success is confirmed by the broadcast `event` of the create; a rejection
+       * replies `place_effect_error` correlated by `request_id`. */
+      type: "place_effect";
+      /** Correlation token for `place_effect_error`. */
+      request_id: string;
+      /** The installed module's folder id that declares the placement. */
+      module: string;
+      /** The placement declaration id within that module. */
+      placement: string;
+      /** The scene the region is created on. */
+      scene_id: string;
+      /** The area the sender chose, scene units. */
+      shape: RegionShape;
+      /** The caster token, required when the declaration's `who` is `caster_owner`. */
+      caster?: string;
+    }
+  | {
+      /** The answer to a `portal_offer`: pick destination `choice` or decline with `null`. An
+       * offer answers once. A refusal replies `portal_choice_error` correlated by `request_id`;
+       * success is confirmed by the broadcast `event` of the teleport's commit. */
+      type: "choose_portal";
+      /** Correlation token for `portal_choice_error`. */
+      request_id: string;
+      /** The offer being answered (`portal_offer.offer_id`). */
+      offer_id: string;
+      /** The chosen option's `index`, or `null` to decline. */
+      choice: number | null;
+    }
+  | {
+      /** Re-issue the offer for a token standing in a portal-choice region. The offer arrives
+       * as a `portal_offer`; a refusal replies `portal_choice_error`. */
+      type: "open_portal";
+      /** Correlation token for `portal_choice_error`. */
+      request_id: string;
+      /** The token that stands in the portal region. */
+      token: string;
     };
 
 /**
@@ -1972,6 +2352,7 @@ export const SendMessageSchema = z.object({
   content: z.string(),
   actor_owner: ActorOwnerRefSchema.nullable(),
   audience: AudienceSchema.default({ kind: "public" }),
+  system: z.unknown().optional(),
 });
 
 /**
@@ -2132,3 +2513,30 @@ export function parseCombats(payload: unknown, logger?: Logger): CombatsView {
     })),
   };
 }
+
+/** Where the served certificate comes from — the Zod mirror of the generated `TlsSource`. */
+export const tlsSourceSchemaImpl = z.enum(["self-signed", "operator", "acme"]);
+
+/** The public `tls` block of `GET /api/config` — the Zod mirror of the generated `TlsStatus`. The
+ * generated type, the Rust struct and this schema share ONE field list, so a field added on the
+ * server (for example `alpn`) that this schema lacks fails the type-level guard in the test suite
+ * and fails compilation of `TlsStatusSchema`. */
+export const tlsStatusSchemaImpl = z.object({
+  enabled: z.boolean(),
+  source: tlsSourceSchemaImpl.nullable(),
+  https_origins: z.array(z.string()),
+  alpn: z.array(z.string()),
+});
+
+/** The `tls` block schema, typed against the generated `TlsStatus`. */
+export const TlsStatusSchema: z.ZodType<TlsStatus> = tlsStatusSchemaImpl;
+
+/** The `GET /api/config` body — the Zod mirror of the generated `ServerConfig`. */
+export const serverConfigSchemaImpl = z.object({
+  initialized: z.boolean(),
+  tls: tlsStatusSchemaImpl,
+  onboarding_enabled: z.boolean(),
+});
+
+/** The `/api/config` schema, typed against the generated `ServerConfig`. */
+export const ServerConfigSchema: z.ZodType<ServerConfig> = serverConfigSchemaImpl;

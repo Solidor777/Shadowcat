@@ -1,12 +1,37 @@
+//! This module parses a dice notation string into a `RollSpec`.
+//!
+//! It holds `ParseContext`, `ModeKind` and `ParseError`, and the `lexer` and `parser` submodules.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Notation tokenizer.
 pub mod lexer;
-/// Recursive-descent parser: tokens -> `RollSpec`.
 pub mod parser;
 
 pub use parser::parse;
+
+/// Deepest nesting of parentheses, unary `-` and function-call arguments `parse` accepts.
+///
+/// The parser recurses once per nesting level, so the cap bounds its stack use independently of
+/// the input length.
+///
+/// This bounds the parser's recursion only. It does not bound the JSON depth of the parsed
+/// `Expr`, which a flat chain such as `1+1+...` deepens at no nesting level; that is
+/// `MAX_EXPR_JSON_DEPTH`.
+pub const MAX_NESTING_DEPTH: usize = 32;
+
+/// Deepest JSON nesting, counting object and array levels, that the `Expr` of a parsed roll may
+/// serialize to.
+///
+/// Every read of a stored message parses its row with `serde_json`, which refuses past 128 levels,
+/// so a roll that is accepted at send must serialize shallow enough to be read back. A chat
+/// message holds its roll under the document, its engine body, the segment list, up to
+/// `chat::rolls::MAX_SECRET_DEPTH` secrets and the roll's spec; a table draw holds its roll under
+/// up to `tables::MAX_DRAW_DEPTH` nested draws. The cap leaves room for the deepest of those
+/// wrappers and for the event that records an update; `chat::nested_roll_tests` and
+/// `tables::nested_depth_tests` pin it with a roll at the cap in each. `parse` refuses an expression past it
+/// with `ParseError::TooDeeplyNested`.
+pub const MAX_EXPR_JSON_DEPTH: usize = 88;
 
 use crate::dice::spec::Direction;
 
@@ -87,8 +112,8 @@ pub enum ParseError {
     /// constructed with a degenerate (non-positive-span) range; `rng::roll_uniform`
     /// only `debug_assert!`s that invariant, which is a no-op in release builds.
     InvalidDieSides(i32),
-    /// A second `cs`/`cf` modifier appeared anywhere in the expression, OR a
-    /// `t<N>` target and a `cs`/`cf` rule both set the per-die success rule.
+    /// A second `cs`/`cf`/`cse`/`cso` modifier appeared anywhere in the expression, OR a
+    /// `t<N>` target and a `cs`/`cf`/`cse`/`cso` rule both set the per-die success rule.
     /// `success`/`t_target` are shared parser state (one `RollSpec`, not
     /// per-`DiceGroup`), so a silent last-write-wins overwrite would discard
     /// one rule with no error.
@@ -113,6 +138,16 @@ pub enum ParseError {
     /// A second `xf<N>` crit-fail trigger appeared in one roll. Same reasoning as
     /// `DuplicateCritSuccess`.
     DuplicateCritFail,
+    /// Parentheses, unary `-` and function-call arguments nest deeper than `MAX_NESTING_DEPTH`,
+    /// or the parsed expression serializes deeper than `MAX_EXPR_JSON_DEPTH` (a long chain of
+    /// terms does).
+    TooDeeplyNested,
+    /// A second `mn<N>` or `mx<N>` appeared on one dice group. A die has one floor and one
+    /// ceiling, so a repeat would silently discard one bound.
+    DuplicateClamp,
+    /// `best(...)` was called with fewer than two branches; a best-of needs at least two
+    /// candidates to choose between.
+    BestOfRequiresTwoArgs,
 }
 
 /// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
@@ -129,7 +164,10 @@ impl std::fmt::Display for ParseError {
                 write!(f, "a die must have at least 1 side (got {n})")
             }
             ParseError::DuplicateSuccessRule => {
-                write!(f, "a roll can only set one success rule (cs, cf, or t<N>)")
+                write!(
+                    f,
+                    "a roll can only set one success rule (cs, cf, cse, cso, or t<N>)"
+                )
             }
             ParseError::DuplicateExpertise => {
                 write!(f, "a roll can only set one expertise budget (e<N>)")
@@ -152,6 +190,24 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::DuplicateCritFail => {
                 write!(f, "a roll can only set one crit-fail trigger (xf<N>)")
+            }
+            ParseError::TooDeeplyNested => {
+                write!(
+                    f,
+                    "the dice expression has too many nested brackets or chained terms"
+                )
+            }
+            ParseError::DuplicateClamp => {
+                write!(
+                    f,
+                    "a dice group can only set one floor (mn<N>) and one ceiling (mx<N>)"
+                )
+            }
+            ParseError::BestOfRequiresTwoArgs => {
+                write!(
+                    f,
+                    "best(...) needs at least two expressions to choose between"
+                )
             }
         }
     }

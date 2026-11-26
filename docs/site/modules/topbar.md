@@ -18,11 +18,41 @@ presence.
   `ctx.panels`).
 - `Presence.svelte` — who's connected.
 
+## Live player list
+
+The top bar shows one round badge per member of the world. A badge shows the
+member's avatar when they have one, otherwise the first letter of their name on
+their chosen colour. A small dot on the badge shows whether the member is
+connected: green for online, grey for offline. The dot is hidden for a member
+whose state is not known yet. Hovering a badge shows the member's name, followed
+by their pronouns in brackets when they have set any, for example "Ana
+(she/her)". The badge's accessible label uses the same text and adds "online" or
+"offline".
+
+The list is live:
+
+- On joining a world, the server tells the client who is already online, so a
+  player who connects late sees correct dots at once. After a reconnect the
+  list is rebuilt from the new snapshot, and a member the snapshot does not list
+  shows offline.
+- When someone connects or disconnects, their dot changes at once.
+- When a member changes their colour, pronouns or avatar in
+  **Settings → Profile**, every connected member sees the new colour and avatar
+  at once, with no reconnect.
+
+- When a member is added to the world while you are connected (the GM seats
+  them, or they accept an invite), they appear in the list at once, with no
+  reconnect. Their dot shows offline until they connect.
+
 ## Contracts & seams
 
 - **Requires** `shadowcat.surface:topbar` (from core-ui). Depends on
   `core-ui ^0.1.0`.
 - Reads `ctx.panels` (the panel bridge) for the launcher.
+- Reads `ctx.members`, `ctx.presence` and `ctx.memberProfiles` for the player
+  list. The shell fills `presence` from each `Welcome`'s `online_users`
+  snapshot plus `presence` frames, and `memberProfiles` from the roster read
+  plus `member_profile` frames (see the [wire protocol](/protocol)).
 
 ## Pointers
 

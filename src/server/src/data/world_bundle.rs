@@ -1,17 +1,19 @@
-//! Per-world export/import row DTOs — the on-disk-bundle-portable shape of the
-//! five FK-scoped tables `SqliteRepository::delete_world` already walks (read
-//! instead of deleted), the FK-less `explored_fog` table it purges via an
-//! explicit `DELETE`, plus the world's five keyed `settings` rows. A
-//! `users(id)` reference is exported as a portable username string, never a
-//! raw id (source and target servers do not share a `users` table) — resolved
-//! back to a target-local id (or degraded to `NULL`/row-drop when
-//! unresolved) only at import time, in `SqliteRepository::import_world`.
+//! This module defines the per-world export/import row types and `BundleManifest`.
 //!
-//! Search state is rebuilt from a document's/asset's own content, never
-//! carried across servers: `documents_fts_public`/`documents_fts_gm` and
-//! `assets_fts` are never exported or imported directly. Every FTS row a
-//! bundle produces on the target is a byproduct of the ordinary
-//! document/asset write paths this module drives.
+//! The rows are the on-disk-bundle-portable form of the five FK-scoped tables whose rows
+//! `SqliteRepository::delete_world` removes by FK cascade (here they are read instead), the FK-less
+//! `explored_fog` table it purges via an explicit `DELETE`, and the world's five keyed `settings`
+//! rows. `crate::world_bundle` builds the tar file format from them.
+//!
+//! A `users(id)` reference is exported as a portable username string, never a raw id (source and
+//! target servers do not share a `users` table). It is resolved back to a target-local id (or
+//! degraded to `NULL` or a row drop when unresolved) only at import time, in
+//! `SqliteRepository::import_world`.
+//!
+//! Search state is rebuilt from a document's or asset's own content and is never carried across
+//! servers: `documents_fts_public`, `documents_fts_gm` and `assets_fts` are never exported or
+//! imported directly. On the target, a document's FTS rows come from `reindex_document_fts` and
+//! `assets_fts` rows from the SQL triggers on the `assets` and `asset_tags` inserts.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -26,8 +28,7 @@ use crate::data::document::{Document, WorldRole};
 
 /// Bundle format version. Bumped whenever `BundleManifest`'s or a row type's
 /// shape changes in a way `world_bundle::read_bundle` cannot tolerate;
-/// import refuses cleanly on a mismatch rather than attempting a migration —
-/// no data-migration machinery exists pre-customers.
+/// import refuses cleanly on a mismatch rather than attempting a migration.
 pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
 
 /// `manifest.json`'s root: the exported world's identity/watermark plus
@@ -164,9 +165,11 @@ pub struct ExportedEventRow {
 /// to `NULL` on the target (`owner_username`, `author_username`,
 /// `created_by_username`, `consumed_by_username`): an unresolvable username
 /// here has no `NULL` to degrade to, so `SqliteRepository::import_world`
-/// drops the row entirely rather than seat a membership for nobody — the
-/// same row-drop behavior `ExportedFogRow.username` uses for the identical
-/// reason.
+/// drops the row entirely rather than seat a membership for nobody. Similar
+/// in spirit to `ExportedFogRow.username`'s own skip-on-unresolved path, but
+/// `ExportedFogRow.username` is `Option<String>` for an UNRELATED reason (a
+/// pool row legitimately carries none) — see that type's own doc rather than
+/// assuming the two are the same shape.
 ///
 /// # Examples
 ///
@@ -315,12 +318,22 @@ pub struct StagedSibling {
     pub staged: PathBuf,
 }
 
-/// One exported `explored_fog` row. `user_id` has no FK but is `NOT NULL`; an
-/// unresolvable username degrades the same way `world_members` does (row
-/// dropped) — `delete_user` already purges a deleted account's
-/// `explored_fog` rows outright, so a fog row's user always resolves to a
-/// LIVE account on the source server, meaning `username` here is never
-/// itself absent at export time.
+/// One exported `explored_fog` row. `user_id` has no FK but is `NOT NULL`.
+/// Two DIFFERENT reasons a row carries no `username`, and they must never be
+/// conflated: a shared/pooled scene's `Uuid::nil()` bucket row (`pool: true`,
+/// classified at export time from the actual `user_id` value, never guessed
+/// at from `username` being absent) and an orphan row whose real `user_id`
+/// no longer resolves to a live account (`pool: false`, `username: None` —
+/// theoretically possible since this table carries no FK, even though
+/// `delete_user` already purges a deleted account's own rows on the
+/// ordinary path). `SqliteRepository::import_world` skips-and-counts the
+/// latter into `ImportSummary::skipped_fog`, the SAME accounting
+/// `ExportedMemberRow`'s unresolvable case uses; the former always inserts
+/// under the nil sentinel, never counted as skipped. `level_id`/`pool` are
+/// `#[serde(default)]` so a bundle written before per-level fog and pooling
+/// existed still imports: every such row predates both, so `level_id: ""`
+/// (the scene's implicit ground level) and `pool: false` (every row was a
+/// real, resolved user) are the exact prior semantics, not an approximation.
 ///
 /// # Examples
 ///
@@ -329,7 +342,9 @@ pub struct StagedSibling {
 ///
 /// let row = ExportedFogRow {
 ///     scene_id: uuid::Uuid::new_v4(),
-///     username: "mock_player".to_string(),
+///     level_id: "".to_string(),
+///     pool: false,
+///     username: Some("mock_player".to_string()),
 ///     cells: vec![1, 0, 1],
 /// };
 /// assert_eq!(row.cells.len(), 3);
@@ -338,8 +353,17 @@ pub struct StagedSibling {
 pub struct ExportedFogRow {
     /// The scene the explored-cell memory belongs to.
     pub scene_id: Uuid,
-    /// The remembering user's username.
-    pub username: String,
+    /// The level the memory belongs to (`""` = the scene's implicit ground level).
+    #[serde(default)]
+    pub level_id: String,
+    /// Whether this row is the scene's Shared-mode pool bucket (`Uuid::nil()` sentinel) rather
+    /// than one real user's own memory. Decided at export time from the row's actual `user_id`
+    /// — see the type doc for why this must never be inferred from `username`.
+    #[serde(default)]
+    pub pool: bool,
+    /// The remembering user's username; `None` for a `pool` row (no user to name) OR an orphan
+    /// row (`user_id` unresolvable on the SOURCE server) — see the type doc.
+    pub username: Option<String>,
     /// The serialized explored-cell blob, verbatim.
     pub cells: Vec<u8>,
 }
@@ -508,7 +532,8 @@ pub struct ImportSummary {
     pub world_id: Uuid,
     /// `world_members` rows dropped because their username did not resolve.
     pub skipped_members: usize,
-    /// `explored_fog` rows dropped because their username did not resolve.
+    /// `explored_fog` rows dropped because their username did not resolve — never counts a
+    /// `pool` row (see `ExportedFogRow`), which needs no username to import.
     pub skipped_fog: usize,
 }
 

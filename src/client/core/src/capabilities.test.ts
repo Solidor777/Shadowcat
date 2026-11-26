@@ -23,6 +23,16 @@ test("owner floor is read + write_fields", () => {
   expect(caps.has("core:manage_embedded")).toBe(false);
 });
 
+test("token owner floor adds core:delete only when the caller is the effective owner", () => {
+  const owned = resolveCaps(perms({ default: "observer" }), "u1", "player", emptyGrants, true);
+  expect(owned.has("core:delete")).toBe(true);
+  expect(owned.has("core:write_fields")).toBe(true);
+  expect(owned.has("core:edit_permissions")).toBe(false);
+  // A stamped owner who is not the effective owner gets no delete.
+  const stamped = resolveCaps(perms({ users: { u1: "owner" } }), "u1", "player", emptyGrants);
+  expect(stamped.has("core:delete")).toBe(false);
+});
+
 test("world grant widens the floor", () => {
   const caps = resolveCaps(perms({ users: { u1: "owner" } }), "u1", "player", {
     by_role: { owner: ["core:manage_embedded"] },

@@ -1,11 +1,11 @@
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
-import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
+import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
+import { TokenSelection, SpeakAsToken, SnapModePreference, ShareRulerPreference } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
 
@@ -31,6 +31,15 @@ test("a GM sees tool buttons; selecting toggles the active tool on the scene", a
   expect(select.getAttribute("aria-pressed")).toBe("false");
 });
 
+test("unmounting the rail deactivates the active tool so its live state ends with the session", async () => {
+  const { scene, tools } = captureScene();
+  const { unmount } = render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  expect(tools.at(-1)).not.toBeNull();
+  unmount();
+  expect(tools.at(-1)).toBeNull();
+});
+
 test("selecting a different tool switches the active tool", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -50,6 +59,103 @@ test("the draw and template tools activate and reveal their controls", async () 
   await fireEvent.click(screen.getByTestId("tool-template"));
   expect(screen.getByTestId("template-mode")).toBeTruthy();
   expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
+});
+
+test("the template tool's angle/width inputs appear only for their respective shape modes", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-template"));
+
+  // Default mode is "circle": neither input is shown.
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.queryByTestId("template-width")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "cone" } });
+  expect(screen.getByTestId("template-angle")).toBeTruthy();
+  expect(screen.queryByTestId("template-width")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "line" } });
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.getByTestId("template-width")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "rect" } });
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.getByTestId("template-width")).toBeTruthy();
+});
+
+test("selecting the ambient_light region behavior reveals the mode/level inputs; switching away hides them", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  expect(screen.queryByTestId("region-ambient-mode")).toBeNull();
+  expect(screen.queryByTestId("region-ambient-level")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "ambient_light" } });
+  expect(screen.getByTestId("region-ambient-mode")).toBeTruthy();
+  expect(screen.getByTestId("region-ambient-level")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "terrain" } });
+  expect(screen.queryByTestId("region-ambient-mode")).toBeNull();
+  expect(screen.queryByTestId("region-ambient-level")).toBeNull();
+});
+
+test("the per-tag cost table is shown only for the terrain behavior", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  // Default behavior is "terrain": the add button is present.
+  expect(screen.getByTestId("region-cost-by-tag-add")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "impassable" } });
+  expect(screen.queryByTestId("region-cost-by-tag-add")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "terrain" } });
+  expect(screen.getByTestId("region-cost-by-tag-add")).toBeTruthy();
+});
+
+test("adding, editing and removing per-tag cost rows through the rail persists the surviving rows", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+
+  // Add two rows and fill each through its own inputs.
+  await fireEvent.click(screen.getByTestId("region-cost-by-tag-add"));
+  await fireEvent.click(screen.getByTestId("region-cost-by-tag-add"));
+  await waitFor(() => expect(screen.getAllByTestId("region-cost-by-tag-row")).toHaveLength(2));
+  const tagInputs = screen.getAllByTestId("region-cost-by-tag-tag") as HTMLInputElement[];
+  const costInputs = screen.getAllByTestId("region-cost-by-tag-cost") as HTMLInputElement[];
+  await fireEvent.input(tagInputs[0], { target: { value: "flying" } });
+  await fireEvent.input(costInputs[0], { target: { value: "1" } });
+  await fireEvent.input(tagInputs[1], { target: { value: "swimming" } });
+  await fireEvent.input(costInputs[1], { target: { value: "3" } });
+  expect((tagInputs[0] as HTMLInputElement).value).toBe("flying");
+  expect((costInputs[1] as HTMLInputElement).value).toBe("3");
+
+  // Remove the first row; only "swimming" survives.
+  const removeButtons = screen.getAllByTestId("region-cost-by-tag-remove");
+  await fireEvent.click(removeButtons[0]);
+  await waitFor(() => expect(screen.getAllByTestId("region-cost-by-tag-row")).toHaveLength(1));
+  expect((screen.getByTestId("region-cost-by-tag-tag") as HTMLInputElement).value).toBe("swimming");
+
+  // Drag to persist: the created region's cost_by_tag carries only the surviving row.
+  const tool = tools.at(-1)!;
+  const ev = {} as PointerEvent;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(dispatched).toHaveLength(1);
+  const op = dispatched[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { swimming: 3 } });
+  }
 });
 
 test("the measure and ping tools are available and activate", async () => {
@@ -77,7 +183,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -132,7 +238,7 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: 50, y: 50, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
         }, "tok1"),
       },
     ],
@@ -169,6 +275,34 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
   await new Promise((r) => setTimeout(r, 0)); // drain the pathfind microtasks
 
   expect(labels.at(-1)).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
+});
+
+/** A document store holding a world-settings doc whose session block is `paused`. */
+function pausedStore(paused: boolean): DocumentStore {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: buildWorldSettingsDoc("w1", { session: { paused, pauseAudio: false } }) }],
+  });
+  return docs;
+}
+
+test("a paused session marks a non-GM's move tools with the paused tooltip and leaves ping alone", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(true) }) });
+  for (const id of ["select", "measure"]) {
+    const btn = screen.getByTestId(`tool-${id}`);
+    expect(btn.getAttribute("data-moves-frozen")).toBe("true");
+    expect(btn.getAttribute("title")).toBe("tools.paused");
+  }
+  expect(screen.getByTestId("tool-ping").getAttribute("data-moves-frozen")).toBeNull();
+});
+
+test("the paused tooltip is absent for a GM and for a session that is not paused", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: pausedStore(true) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
+  cleanup();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(false) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
 });
 
 /** Every authoring tool: creates or edits scene content, GM-only. */
@@ -216,7 +350,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -316,6 +450,86 @@ test("a non-GM does not see the snap toggle even with an active scene", () => {
   expect(screen.queryByTestId("snap-toggle")).toBeNull();
 });
 
+test("the snap-mode toggle flips the session preference and reflects it (center default)", async () => {
+  const snapModePreference = new SnapModePreference();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", documents: sceneStore(), snapModePreference }),
+  });
+  const toggle = screen.getByTestId("snap-mode-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false"); // default: center mode
+  await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("vertex");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("edge");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("center");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+});
+
+test("the snap-mode toggle dispatches no document write (client-local session state)", async () => {
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("snap-mode-toggle"));
+  expect(dispatched).toEqual([]);
+});
+
+test("the share-ruler toggle is offered only while the measure tool is active, and is off by default", async () => {
+  const shareRuler = new ShareRulerPreference("u1");
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore(), shareRuler }) });
+  // Hidden until the measure tool is chosen: off by default and easy to miss unless looked for.
+  expect(screen.queryByTestId("share-ruler-toggle")).toBeNull();
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const toggle = screen.getByTestId("share-ruler-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  // Accessible name present and identical to the tooltip (the harness `t` echoes the key).
+  expect(toggle.getAttribute("aria-label")).toBeTruthy();
+  expect(toggle.getAttribute("aria-label")).toBe(toggle.getAttribute("title"));
+  expect(shareRuler.enabled).toBe(false);
+  // Choosing another tool hides it again.
+  await fireEvent.click(screen.getByTestId("tool-ping"));
+  expect(screen.queryByTestId("share-ruler-toggle")).toBeNull();
+});
+
+test("the share-ruler toggle flips the local preference, reflects it, and dispatches no document write", async () => {
+  const shareRuler = new ShareRulerPreference("u1");
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "player",
+      documents: sceneStore(),
+      shareRuler,
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const toggle = screen.getByTestId("share-ruler-toggle");
+  await fireEvent.click(toggle);
+  expect(shareRuler.enabled).toBe(true);
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(shareRuler.enabled).toBe(false);
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  expect(dispatched).toEqual([]);
+});
+
+test("no active scene: the snap-mode toggle does not render", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: new DocumentStore() }) });
+  expect(screen.queryByTestId("snap-mode-toggle")).toBeNull();
+});
+
+test("a non-GM does not see the snap-mode toggle even with an active scene", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
+  expect(screen.queryByTestId("snap-mode-toggle")).toBeNull();
+});
+
 test("the tool rail renders as a non-compact side rail under jsdom (expanded default)", () => {
   const { scene } = captureScene();
   const { container } = render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -332,7 +546,7 @@ test("a player who owns the single selected token sees and can use the speak-as-
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "u-self",
@@ -347,6 +561,64 @@ test("a player who owns the single selected token sees and can use the speak-as-
   expect(speakAsToken.tokenId).toBe("tok1");
 });
 
+/** Documents with scene `S1`, an `S2`, and tokens: two owned by `u-self` on S1 at (100,200) and
+ * (300,400), one owned by someone else on S1, one owned by `u-self` on S2. */
+function ownedTokenStore(): DocumentStore {
+  const documents = new DocumentStore();
+  documents.applyCommand({
+    seq: 1, world_id: "w1", author: "gm", ts: 0,
+    ops: [
+      { op: "create" as const, doc: buildSceneDoc("w1", {}, "S1") },
+      { op: "create" as const, doc: buildSceneDoc("w1", {}, "S2") },
+    ],
+  });
+  const tok = (id: string, scene: string, x: number, y: number, owner: string) => ({
+    ...buildTokenDoc(
+      "w1", scene,
+      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
+      id,
+    ),
+    owner,
+  });
+  documents.applyCommand({
+    seq: 2, world_id: "w1", author: "gm", ts: 0,
+    ops: [
+      { op: "create" as const, doc: tok("mine-a", "S1", 100, 200, "u-self") },
+      { op: "create" as const, doc: tok("mine-b", "S1", 300, 400, "u-self") },
+      { op: "create" as const, doc: tok("theirs", "S1", 9000, 9000, "someone-else") },
+      { op: "create" as const, doc: tok("mine-elsewhere", "S2", 5000, 5000, "u-self") },
+    ],
+  });
+  return documents;
+}
+
+test("pan-to-owned pans the camera to the average of the viewer's own tokens on the viewed scene", async () => {
+  const pans: unknown[][] = [];
+  const scene = new SceneInteractionBridge();
+  scene.attach(fakeSceneHost({ panToPoint: (x, y) => pans.push([x, y]) }));
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "player", selfId: "u-self", scene, documents: ownedTokenStore(), viewedSceneId: "S1" }),
+  });
+  const button = screen.getByTestId("pan-to-owned");
+  expect(button.hasAttribute("disabled")).toBe(false);
+  await fireEvent.click(button);
+  // The average of the two S1 tokens this user owns; another user's token and the token on S2 are excluded.
+  expect(pans).toEqual([[200, 300]]);
+});
+
+test("pan-to-owned is disabled, and pans nowhere, when the viewer owns no token on the viewed scene", async () => {
+  const pans: unknown[][] = [];
+  const scene = new SceneInteractionBridge();
+  scene.attach(fakeSceneHost({ panToPoint: (x, y) => pans.push([x, y]) }));
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "player", selfId: "u-other", scene, documents: ownedTokenStore(), viewedSceneId: "S1" }),
+  });
+  const button = screen.getByTestId("pan-to-owned");
+  expect(button.hasAttribute("disabled")).toBe(true);
+  await fireEvent.click(button);
+  expect(pans).toEqual([]);
+});
+
 test("a non-owner player does not see the speak-as-token button", () => {
   const { scene } = captureScene();
   const documents = new DocumentStore();
@@ -355,7 +627,7 @@ test("a non-owner player does not see the speak-as-token button", () => {
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "someone-else",
@@ -378,7 +650,7 @@ test("no button renders when more than one token is selected, even for a GM", ()
   const documents = new DocumentStore();
   const sceneDoc = buildSceneDoc("w1", {}, "S1");
   documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
-  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null };
+  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
   const tok1 = buildTokenDoc("w1", sceneDoc.id, engine, "tok1");
   const tok2 = buildTokenDoc("w1", sceneDoc.id, engine, "tok2");
   documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: tok1 }, { op: "create" as const, doc: tok2 }] });
@@ -424,7 +696,7 @@ function editorStore(): DocumentStore {
         doc: buildLightDoc("w1", "s1", {
           x: 200, y: 200,
           elevation: null,
-          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
         }, "light-1"),
       },
       {
@@ -437,7 +709,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, enabled: true, triggers: [], elevation: null,
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null, anchor: null,
         }, "region-1"),
       },
       {
@@ -481,7 +753,7 @@ test("clicking a light with the light tool opens the editor; edits dispatch whol
   tool.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
   expect(await screen.findByTestId("light-editor")).toBeTruthy();
 
-  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true };
+  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
 
   // Intensity edit: one `/engine/emission` write carrying the whole payload.
   await fireEvent.change(screen.getByTestId("emission-intensity"), { target: { value: "0.5" } });
@@ -542,6 +814,198 @@ test("selecting a wall with the select tool opens the flag editor; a flag toggle
   });
 });
 
+test("the wall editor's blocksSound checkbox authors an explicit override with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+
+  // The fixture wall blocks sight and authors no `blocksSound`: it inherits blocksSight, so the
+  // box reads checked, and unchecking it writes an explicit `false` with a null OCC pre-image.
+  const box = screen.getByTestId("wall-blocks-sound") as HTMLInputElement;
+  expect(box.checked).toBe(true);
+  await fireEvent.click(box);
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/blocksSound", old: null, new: false }],
+  });
+});
+
+test("the wall editor's door select dispatches /engine/door with the raw stored value as old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+
+  // The fixture wall carries no door: the select reads "none".
+  const wallId = docs.query("wall")[0].id;
+  const select = screen.getByTestId("wall-door") as HTMLSelectElement;
+  expect(select.value).toBe("none");
+
+  // Authoring a closed door: old is the raw ABSENT value (null), per the OCC convention.
+  await fireEvent.change(select, { target: { value: "closed" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/door", old: null, new: "closed" }],
+  });
+
+  // Selecting "none" removes the door (writes null with the raw stored value as old).
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 1,
+    ops: [{
+      op: "update", doc_id: wallId,
+      changes: [{ path: "/engine/door", old: null, new: "closed" }],
+    }],
+  });
+  // Let the store commit's re-render flush BEFORE the next change event, so the controlled
+  // select value ("closed" now) settles before the event's own value assignment — otherwise
+  // the flush lands between assignment and dispatch and the handler reads the stale value.
+  await new Promise((r) => setTimeout(r, 0));
+  await fireEvent.change(screen.getByTestId("wall-door"), { target: { value: "none" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/door", old: "closed", new: null }],
+  });
+});
+
+test("the wall editor's one-way and limited controls dispatch /engine/direction and /engine/sightTier with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+
+  // The fixture wall carries no `direction`: the checkbox reads unchecked, and enabling it
+  // writes `{ blockingSide: 1 }` with the raw ABSENT value (null) as old, per the OCC
+  // convention.
+  const oneWay = screen.getByTestId("wall-one-way") as HTMLInputElement;
+  expect(oneWay.checked).toBe(false);
+  expect(screen.queryByTestId("wall-flip-side")).toBeNull();
+  await fireEvent.click(oneWay);
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/direction", old: null, new: { blockingSide: 1 } }],
+  });
+
+  // With a direction stored, the flip button negates the sign, carrying the raw stored
+  // object as old. Flush the store commit's re-render first (the same settle discipline the
+  // door-select case above needs).
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 1,
+    ops: [{
+      op: "update", doc_id: wallId,
+      changes: [{ path: "/engine/direction", old: null, new: { blockingSide: 1 } }],
+    }],
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  await fireEvent.click(screen.getByTestId("wall-flip-side"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/direction", old: { blockingSide: 1 }, new: { blockingSide: -1 } }],
+  });
+
+  // The limited-sight checkbox writes the tier's wire spelling, raw-null as old.
+  await fireEvent.click(screen.getByTestId("wall-limited"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/sightTier", old: null, new: "limited" }],
+  });
+});
+
+test("the wall editor's proximity controls write the whole /engine/proximity tier with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const notified: Array<{ message: string; level?: string }> = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops),
+      notify: (message, level) => notified.push({ message, level }),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+  const path = "/engine/proximity";
+  let seq = 10;
+  /** Applies an update to the store and lets the editor re-render before the next event. */
+  const store = async (old: unknown, value: unknown): Promise<void> => {
+    docs.applyCommand({
+      seq: seq++, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: wallId, changes: [{ path, old, new: value }] }],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  const tier = { within: 1, senses: ["sight"], soundGain: null };
+
+  // No tier: the toggle is off and the tier controls are absent. Enabling writes the default
+  // tier with a null pre-image.
+  expect((screen.getByTestId("wall-proximity") as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByTestId("wall-proximity-within")).toBeNull();
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: null, new: tier }] });
+  await store(null, tier);
+
+  // The only checked sense cannot be unchecked; the gain slider needs the sound sense.
+  expect((screen.getByTestId("wall-proximity-sight") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByTestId("wall-proximity-gain")).toBeNull();
+
+  // The distance writes the whole tier; invalid input writes nothing.
+  const count = dispatched.length;
+  const within = screen.getByTestId("wall-proximity-within") as HTMLInputElement;
+  for (const bad of ["", "0", "-2", "1001"]) {
+    await fireEvent.change(within, { target: { value: bad } });
+    // A refused distance is not left as stale text: the input shows the stored value again.
+    expect(within.value).toBe("1");
+  }
+  expect(dispatched.length).toBe(count);
+  expect(notified.filter((n) => n.message === "tools.wallProximityOutOfRange")).toHaveLength(4);
+  await fireEvent.change(within, { target: { value: "3" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: tier, new: { ...tier, within: 3 } }],
+  });
+
+  // Adding sound reveals the gain slider; the gain writes into the same tier.
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  const withSound = { ...tier, senses: ["sight", "sound"] };
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: withSound }] });
+  await store(tier, withSound);
+  await fireEvent.change(screen.getByTestId("wall-proximity-gain"), { target: { value: "0.4" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: withSound, new: { ...withSound, soundGain: 0.4 } }],
+  });
+  await store(withSound, { ...withSound, soundGain: 0.4 });
+
+  // Removing sound clears the gain in the same write (the server rejects a gain without sound).
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path, old: { ...withSound, soundGain: 0.4 }, new: tier }],
+  });
+  await store({ ...withSound, soundGain: 0.4 }, tier);
+
+  // The toggle off removes the tier, carrying the stored tier as old.
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: null }] });
+});
+
 test("Escape clears the open editor", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });
@@ -581,6 +1045,57 @@ async function openRegionTriggerRow(): Promise<void> {
   await fireEvent.click(screen.getByTestId("tool-region"));
   await fireEvent.click(screen.getByTestId("region-trigger-add"));
 }
+
+test("the trigger-event select offers every event the server fires, and the row binds the choice", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  const select = screen.getByTestId("region-trigger-on") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.value)).toEqual([
+    "enter",
+    "arrest",
+    "exit",
+    "turn_start",
+    "turn_end",
+    "round_start",
+    "round_end",
+  ]);
+
+  await fireEvent.change(select, { target: { value: "turn_start" } });
+  expect(select.value).toBe("turn_start");
+});
+
+test("the scrolling-text limit is visible text beside the input, not a tooltip", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "scrolling_text" } });
+  expect(screen.getByTestId("region-trigger-scrolling-text-hint").textContent).toContain("tools.triggerScrollingTextHint");
+  expect(screen.getByTestId("region-trigger-scrolling-text").getAttribute("title")).toBeNull();
+});
+
+test("a paused session shows a non-GM the reason as visible text; a GM sees none", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(true) }) });
+  expect(screen.getByTestId("moves-paused-note").textContent).toBe("tools.paused");
+  cleanup();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: pausedStore(true) }) });
+  expect(screen.queryByTestId("moves-paused-note")).toBeNull();
+});
+
+test("every button in the tool controls and the portal editors meets the touch-target floor", async () => {
+  const controlsButton = toolRailSource.match(/\.controls button\s*\{([^}]*)\}/);
+  expect(controlsButton?.[1]).toContain("min-height: var(--input-height-coarse)");
+  expect(controlsButton?.[1]).toContain("min-width: var(--input-height-coarse)");
+  const editors = await Promise.all([
+    import("./RegionTriggerTeleportEditor.svelte?raw"),
+    import("./PortalTargetFields.svelte?raw"),
+  ]);
+  for (const mod of editors) {
+    const rule = (mod.default as string).match(/\n\s*button\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toContain("min-height: var(--input-height-coarse)");
+    expect(rule?.[1]).toContain("min-width: var(--input-height-coarse)");
+  }
+});
 
 test("selecting teleport seeds the default target (same scene, origin, no elevation/vfx override)", async () => {
   const { scene } = captureScene();
@@ -672,6 +1187,137 @@ test("a persisted region document's triggers includes the authored Teleport effe
       { on: "enter", effect: { type: "teleport", target: { scene: null, x: 50, y: 75, elevation: null, vfx: null } } },
     ]);
   }
+});
+
+test("the several-destinations switch turns a teleport row into a portal_choice row, carrying the first target across, and back", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: sceneStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-x"), { target: { value: "50" } });
+
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(1);
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("50");
+  // The effect select keeps reading "teleport" while the row holds a portal_choice effect.
+  expect((screen.getByTestId("region-trigger-effect") as HTMLSelectElement).value).toBe("teleport");
+
+  await fireEvent.input(screen.getByTestId("region-trigger-portal-label"), { target: { value: "The Library" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-reveal"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(2);
+
+  const tool = tools.at(-1)!;
+  tool.onPointerDown({ x: 0, y: 0 }, {} as PointerEvent);
+  tool.onPointerUp({ x: 100, y: 100 }, {} as PointerEvent);
+  const op = dispatched.at(-1)![0];
+  if (op.op !== "create") throw new Error("expected a create op");
+  const engine = op.doc.engine as { triggers: Array<{ effect: unknown }> };
+  expect(engine.triggers[0].effect).toEqual({
+    type: "portal_choice",
+    prompt: null,
+    options: [
+      { label: "The Library", target: { scene: null, x: 50, y: 0, elevation: null, vfx: null }, reveal_scene: true },
+      { label: "", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null }, reveal_scene: false },
+    ],
+  });
+
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  expect(screen.queryByTestId("region-trigger-portal-option")).toBeNull();
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("50");
+});
+
+test("removing an option drops it from the row", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  await fireEvent.click(screen.getAllByTestId("region-trigger-portal-remove")[0]);
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(1);
+});
+
+test("removing an option does not hand its search text to the option that took its place", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  const searches = (): HTMLInputElement[] => screen.getAllByTestId("region-trigger-teleport-scene") as HTMLInputElement[];
+  await fireEvent.input(searches()[0], { target: { value: "first" } });
+  await fireEvent.click(screen.getAllByTestId("region-trigger-portal-remove")[0]);
+  expect(searches()).toHaveLength(1);
+  expect(searches()[0].value).toBe("");
+});
+
+/** A store holding a portal region over (0,0)-(100,100) and a token at its centre. */
+function portalStore(): DocumentStore {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "s1", {
+          shape: { kind: "rect", points: [0, 0, 100, 100] },
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, ambient_override: null, occludes: null, anchor: null, elevation: null,
+          triggers: [{ on: "enter", effect: { type: "portal_choice", prompt: null, options: [{ label: "A", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null }, reveal_scene: false }] } }],
+        }, "portal-region"),
+      },
+      {
+        op: "create",
+        doc: buildTokenDoc("w1", "s1", {
+          x: 50, y: 50, w: 10, h: 10, rotation: 0,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
+        }, "tok1"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("Use portal appears for a selected token standing in a portal region and asks the server to re-offer", async () => {
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+  const opened: string[] = [];
+  const { scene } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: portalStore(), tokenSelection: sel,
+      portal: { onOffer: () => () => {}, choose: async () => {}, decline: async () => {}, open: async (t) => { opened.push(t); } },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("use-portal"));
+  expect(opened).toEqual(["tok1"]);
+});
+
+test("Use portal is absent when no selected token stands in a portal region", async () => {
+  const sel = new TokenSelection();
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: portalStore(), tokenSelection: sel }) });
+  expect(screen.queryByTestId("use-portal")).toBeNull();
+});
+
+test("a refused Use portal surfaces the server's text as a notification", async () => {
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+  const notes: string[] = [];
+  const { scene } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: portalStore(), tokenSelection: sel,
+      notify: (m) => notes.push(m),
+      portal: { onOffer: () => () => {}, choose: async () => {}, decline: async () => {}, open: () => Promise.reject(new Error("portal rejected")) },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("use-portal"));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(notes).toEqual(["portal rejected"]);
 });
 
 test("beginPickPortalTarget switches ctx.setGmViewedScene and overrides the active tool; endPickPortalTarget restores both and writes the captured point", async () => {
@@ -776,6 +1422,57 @@ test("selecting a region with the select tool opens its elevation editor; the ba
   });
 });
 
+test("the region editor's sense checkboxes write /engine/occludes and clearing the last one writes null", async () => {
+  // Fails if a checkbox writes the wrong flag, drops the other flags, uses a derived `old`, or
+  // leaves an all-false block (which the server rejects) instead of null.
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const documents = editorStore();
+  let seq = 10;
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        documents.applyCommand({ seq: seq++, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("region-editor");
+
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sight"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{ path: "/engine/occludes", old: null, new: { sight: true, light: false, sound: false } }],
+  });
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{
+      path: "/engine/occludes",
+      old: { sight: true, light: false, sound: false },
+      new: { sight: true, light: false, sound: true },
+    }],
+  });
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sight"));
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{ path: "/engine/occludes", old: { sight: false, light: false, sound: true }, new: null }],
+  });
+});
+
+test("the region tool shows the three sense checkboxes", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  for (const sense of ["sight", "light", "sound"]) {
+    expect(screen.getByTestId(`region-occludes-${sense}`)).toBeTruthy();
+  }
+});
+
 test("the region editor's delete dispatches the full pre-image and closes the editor", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];
@@ -790,6 +1487,79 @@ test("the region editor's delete dispatches the full pre-image and closes the ed
   expect(op.op).toBe("delete");
   if (op.op === "delete") expect(op.doc.id).toBe("region-1");
   expect(screen.queryByTestId("region-editor")).toBeNull();
+});
+
+/** `editorStore()` plus a carrier token at (500,500) and an anchored region following it, whose
+ * stored shape is a 300x300 box of offsets (so it is drawn, and picked, at (350,350)-(650,650)). */
+function anchoredEditorStore(): DocumentStore {
+  const docs = editorStore();
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 500, y: 500, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "carrier-1") },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "s1", {
+          shape: { kind: "rect", points: [-150, -150, 150, 150] },
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null,
+          anchor: { token: "carrier-1", include_carrier: false, follow_rotation: false },
+        }, "region-2"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the region editor's Follows token picker attaches without moving the region: one update writes the anchor and the offset shape", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: anchoredEditorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent); // the static region
+  await screen.findByTestId("region-editor");
+  expect(screen.queryByTestId("region-follow-rotation")).toBeNull(); // flags only appear once attached
+  await fireEvent.change(screen.getByTestId("region-follow-token"), { target: { value: "carrier-1" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [
+      { path: "/engine/anchor", old: null, new: { include_carrier: false, follow_rotation: false, token: "carrier-1" } },
+      // (1000,1000)-(1100,1100) minus the carrier centre (500,500): the region stays put.
+      { path: "/engine/shape", old: { kind: "rect", points: [1000, 1000, 1100, 1100] }, new: { kind: "rect", points: [500, 500, 600, 600] } },
+    ],
+  });
+});
+
+test("an anchored region is picked where it is drawn (at its carrier); its flags and Detach write back absolute coordinates", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: anchoredEditorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  // The stored offsets put the box at the scene origin; the pick lands only at the carrier.
+  tools.at(-1)!.onPointerDown({ x: -10, y: -10 }, { shiftKey: false } as PointerEvent);
+  expect(screen.queryByTestId("region-editor")).toBeNull();
+  tools.at(-1)!.onPointerDown({ x: 400, y: 400 }, { shiftKey: false } as PointerEvent); // inside the region, outside the carrier token
+  await screen.findByTestId("region-editor");
+
+  await fireEvent.click(screen.getByTestId("region-follow-include-carrier"));
+  const flag = dispatched.at(-1)![0];
+  expect(flag.op === "update" && flag.changes[0]).toEqual({
+    path: "/engine/anchor",
+    old: { token: "carrier-1", include_carrier: false, follow_rotation: false },
+    new: { include_carrier: true, follow_rotation: false, token: "carrier-1" },
+  });
+
+  await fireEvent.change(screen.getByTestId("region-follow-token"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-2",
+    changes: [
+      { path: "/engine/anchor", old: { token: "carrier-1", include_carrier: false, follow_rotation: false }, new: null },
+      { path: "/engine/shape", old: { kind: "rect", points: [-150, -150, 150, 150] }, new: { kind: "rect", points: [350, 350, 650, 650] } },
+    ],
+  });
 });
 
 test("selecting a drawing with the select tool opens its elevation editor; the band inputs write /engine/elevation", async () => {
@@ -858,6 +1628,87 @@ test("the template editor's delete dispatches the full pre-image and closes the 
   expect(screen.queryByTestId("template-editor")).toBeNull();
 });
 
+/** `editorStore()` plus a zero-width line template at (2000,2000) facing +x, length 100. */
+function editorStoreWithBareLine(): DocumentStore {
+  const docs = editorStore();
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "template", {
+          shape: { kind: "line", x: 2000, y: 2000, size: 100, direction: 0 },
+          color: "#3388ff", elevation: null,
+        }, "template-line"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the template editor's make-region action dispatches one create-region + delete-template batch and opens the region editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const documents = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        documents.applyCommand({ seq: 10, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("template-editor");
+  await fireEvent.click(screen.getByTestId("template-make-region"));
+
+  expect(dispatched).toHaveLength(1);
+  const [create, del] = dispatched[0];
+  expect(dispatched[0]).toHaveLength(2);
+  expect(create.op).toBe("create");
+  expect(del.op).toBe("delete");
+  if (create.op === "create") {
+    expect(create.doc.doc_type).toBe("region");
+    expect(create.doc.parent_id).toBe("s1");
+    expect((create.doc.engine as { shape: unknown }).shape).toEqual({ kind: "circle", points: [1600, 1600, 50] });
+  }
+  if (del.op === "delete") expect(del.doc.id).toBe("template-1");
+  expect(await screen.findByTestId("region-editor")).toBeTruthy();
+  expect(screen.queryByTestId("template-editor")).toBeNull();
+});
+
+test("a zero-width line template shows a disabled make-region button with its reason", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStoreWithBareLine(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 2050, y: 2000 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("template-editor");
+  const button = screen.getByTestId("template-make-region") as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  expect(screen.getByTestId("template-make-region-reason").textContent).toBe("tools.templateMakeRegionZeroWidth");
+  await fireEvent.click(button);
+  expect(dispatched).toHaveLength(0);
+});
+
+test("the make-region action is absent when the caller cannot create regions or cannot delete the template", async () => {
+  for (const denied of [{ canCreate: () => false }, { canDelete: () => false }]) {
+    const { scene, tools } = captureScene();
+    const view = render(ToolRail, {
+      context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), ...denied }),
+    });
+    await fireEvent.click(screen.getByTestId("tool-select"));
+    tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+    await screen.findByTestId("template-editor");
+    expect(screen.queryByTestId("template-make-region")).toBeNull();
+    view.unmount();
+  }
+});
+
 test("the rail renders one button per SCENE_TOOL_CONTRACT contribution and clicking it activates the contributed tool", async () => {
   const { scene, tools } = captureScene();
   const contributions = new ContributionRegistry();
@@ -888,4 +1739,63 @@ test("the rail renders one button per SCENE_TOOL_CONTRACT contribution and click
   // A built-in activation clears the contributed one (mutual exclusion).
   await fireEvent.click(screen.getByTestId("tool-ping"));
   expect(fx.getAttribute("aria-pressed")).toBe("false");
+});
+
+// The compound-region part-list gesture, driven through the REAL rail: arming via
+// `region-part-add` switches the region tool's drags from immediate single-shape persists
+// to staged parts (no document until commit), the per-row hole checkbox flips that part's
+// flag, and `region-create-commit` folds the whole list into ONE compound region doc.
+test("the compound region gesture stages parts via the rail and commits one compound region", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  const tool = tools.at(-1)!;
+  const ev = {} as PointerEvent;
+
+  // Arm the compound gesture, then drag two rects — nothing may persist yet.
+  await fireEvent.click(screen.getByTestId("region-part-add"));
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  await fireEvent.click(screen.getByTestId("region-part-add"));
+  tool.onPointerDown({ x: 200, y: 200 }, ev);
+  tool.onPointerUp({ x: 300, y: 300 }, ev);
+  expect(dispatched).toEqual([]);
+
+  // The rail lists both staged parts with a hole checkbox each; flip the second row's.
+  await waitFor(() => expect(screen.getAllByTestId("region-part-hole")).toHaveLength(2));
+  const holeBoxes = screen.getAllByTestId("region-part-hole");
+  expect(screen.getAllByTestId("region-part-kind")[0].textContent).toBe("tools.regionPartKind.rect");
+  await fireEvent.click(holeBoxes[1]);
+
+  await fireEvent.click(screen.getByTestId("region-create-commit"));
+  expect(dispatched).toHaveLength(1);
+  const op = dispatched[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.doc_type).toBe("region");
+    expect(op.doc.engine).toMatchObject({
+      behavior: "terrain",
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "rect", points: [200, 200, 300, 300] }, hole: true },
+      ],
+    });
+  }
+  // The gesture reset: the part rows are gone, and a plain drag persists immediately again.
+  await waitFor(() => expect(screen.queryByTestId("region-part-hole")).toBeNull());
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 50, y: 50 }, ev);
+  expect(dispatched).toHaveLength(2);
+  const single = dispatched[1][0];
+  if (single.op === "create") {
+    expect(single.doc.engine).toMatchObject({ shape: { kind: "rect", points: [0, 0, 50, 50] } });
+  }
 });

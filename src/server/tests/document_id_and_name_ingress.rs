@@ -1,8 +1,9 @@
-//! Create-path ingress checks over a real WS socket: `Document.id` must carry a v4 or v7 UUID
-//! (`data::validation::validate_document_id`), and `Document.name` must not exceed
-//! `data::validation::MAX_DOCUMENT_NAME_BYTES` -- both enforced at `validate_system_size`'s single
-//! chokepoint inside `apply_intent`'s Create-op validation, so this pins the wire-visible
-//! rejection rather than only the unit-level validator.
+//! Create-path ingress checks over a real WS socket.
+//!
+//! `Document.id` must carry a v4 or v7 UUID (`data::validation::validate_document_id`), and
+//! `Document.name` must not exceed `data::validation::MAX_DOCUMENT_NAME_BYTES` -- both enforced at
+//! `validate_system_size`'s single chokepoint inside `apply_intent`'s Create-op validation, so this
+//! pins the wire-visible rejection rather than only the unit-level validator.
 
 use futures_util::{SinkExt, StreamExt};
 use shadowcat::data::repository::Repository;
@@ -46,11 +47,7 @@ async fn send_create_and_recv_frame(id: Uuid, name: &str) -> (serde_json::Value,
     ))
     .await
     .unwrap();
-    let Ok(Some(Ok(m))) = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
-    else {
-        panic!("no frame received");
-    };
-    let frame: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+    let frame = common::next_non_presence_frame(&mut ws).await;
     (frame, h)
 }
 

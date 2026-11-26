@@ -1,7 +1,10 @@
+//! This module defines `AppError` and its status-code mapping.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -36,6 +39,12 @@ pub enum AppError {
     PayloadTooLarge(String),
     /// 429: a throttle budget was exceeded.
     TooManyRequests(String),
+    /// 503: a bounded resource stayed exhausted for the whole wait; the response carries
+    /// `Retry-After` with the given seconds.
+    Unavailable {
+        /// Seconds a client should wait before retrying.
+        retry_after_secs: u64,
+    },
     /// 500: server fault — detail logged, never echoed to the client.
     Internal,
 }
@@ -96,6 +105,7 @@ struct ErrorBody {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let mut retry_after = None;
         let (status, msg) = match self {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
@@ -105,11 +115,24 @@ impl IntoResponse for AppError {
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
             AppError::PayloadTooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m),
             AppError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
+            AppError::Unavailable { retry_after_secs } => {
+                retry_after = Some(retry_after_secs);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service unavailable".to_string(),
+                )
+            }
             AppError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_string(),
             ),
         };
-        (status, Json(ErrorBody { error: msg })).into_response()
+        let mut response = (status, Json(ErrorBody { error: msg })).into_response();
+        if let Some(seconds) = retry_after {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(seconds));
+        }
+        response
     }
 }

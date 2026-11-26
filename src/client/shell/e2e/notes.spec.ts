@@ -80,7 +80,7 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     await expect(player.getByTestId("note-row")).toHaveCount(0);
 
     // The GM shares it (visibility: shared); the player's panel now lists it live.
-    await gmSheet.getByTestId("note-visibility").selectOption("observer");
+    await gmSheet.getByTestId("permissions-default").selectOption("observer");
     await expect(player.getByTestId("note-row")).toHaveCount(1, { timeout: 15_000 });
 
     // Opening it shows the body with NO textarea/Edit control (the player is a reader, not the
@@ -116,7 +116,7 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
 
     // Sharing the child surfaces it under its parent (its `parent_id` resolves in the player's
     // view, so it nests rather than promoting to root).
-    await gmChildSheet.getByTestId("note-visibility").selectOption("observer");
+    await gmChildSheet.getByTestId("permissions-default").selectOption("observer");
     await openPanel(player, "notes:panel");
     await expect(player.getByTestId("note-toggle")).toHaveCount(1, { timeout: 15_000 });
     await player.getByTestId("note-toggle").click();

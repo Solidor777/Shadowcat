@@ -1,8 +1,14 @@
+//! This module holds the asset upload, serve, metadata, replace and delete handlers, the byte
+//! sniffers that decide a content type, and the upload rate limiter.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+mod file_response;
 pub mod mutate;
+pub mod permits;
 pub mod query;
+mod range;
 pub mod uploads;
 
 use std::collections::HashMap;
@@ -209,22 +215,25 @@ impl Default for UploadRateLimiter {
 
 use crate::auth::session::AuthUser;
 use crate::data::asset::process::audio::{self, AudioContainers};
-use crate::data::asset::process::{derivative_path, sibling_paths, write_derivatives, Variant};
+use crate::data::asset::process::{derivative_path, write_derivatives, Variant};
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
-    commit_staged_asset, move_asset_files, process_staged_blocking, remove_asset_files, Asset,
-    Provenance,
+    commit_staged_asset, discard_asset_files, move_asset_files, process_staged_blocking,
+    remove_asset_files, Asset, Provenance,
 };
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
-use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::Response;
 use axum::Json;
+use file_response::{not_modified, serve_file, FileResponse, MissingFile, Validator};
 use mutate::attachment_disposition;
+use range::{Disposition, Route};
 use tokio::io::AsyncWriteExt;
+
+use crate::trash::Trash;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
 /// arrive (never buffering the whole body). Returns
@@ -235,11 +244,13 @@ use tokio::io::AsyncWriteExt;
 /// the label is `application/octet-stream`. The bytes are the validation
 /// boundary; a client's image claim is never trusted. `containers` is the
 /// optional trailing text field selecting the audio derivative container(s).
-/// On any failure the partial file is removed.
+/// On any failure the partial file moves into `trash`; the open handle is dropped first
+/// because a file with an open handle cannot be moved on Windows.
 async fn store_streamed(
     mut multipart: Multipart,
     dest: &std::path::Path,
     max_bytes: u64,
+    trash: &Trash,
 ) -> Result<(String, i64, String, Option<String>), AppError> {
     let field = multipart
         .next_field()
@@ -267,13 +278,15 @@ async fn store_streamed(
             Ok(Some(c)) => c,
             Ok(None) => break,
             Err(e) => {
-                let _ = tokio::fs::remove_file(dest).await;
+                drop(file);
+                let _ = trash.discard(dest).await;
                 return Err(AppError::BadRequest(format!("multipart error: {e}")));
             }
         };
         total += chunk.len() as u64;
         if total > max_bytes {
-            let _ = tokio::fs::remove_file(dest).await;
+            drop(file);
+            let _ = trash.discard(dest).await;
             return Err(AppError::PayloadTooLarge(format!(
                 "file exceeds {max_bytes} bytes"
             )));
@@ -283,11 +296,15 @@ async fn store_streamed(
             head.extend_from_slice(&chunk[..chunk.len().min(want)]);
         }
         if file.write_all(&chunk).await.is_err() {
-            let _ = tokio::fs::remove_file(dest).await;
+            drop(file);
+            let _ = trash.discard(dest).await;
             return Err(AppError::Internal);
         }
     }
     file.flush().await.map_err(|_| AppError::Internal)?;
+    // The handle must be closed before any later failure arm moves `dest` (Windows refuses to
+    // move a file with an open handle).
+    drop(file);
 
     // An optional trailing `containers` text field selects the audio derivative container(s)
     // (`data::asset::process::audio::AudioContainers`'s snake_case names); the file field is
@@ -302,14 +319,14 @@ async fn store_streamed(
                 match field.chunk().await {
                     Ok(Some(c)) => {
                         if text.len() + c.len() > 64 {
-                            let _ = tokio::fs::remove_file(dest).await;
+                            let _ = trash.discard(dest).await;
                             return Err(AppError::BadRequest("containers field too long".into()));
                         }
                         text.push_str(&String::from_utf8_lossy(&c));
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        let _ = tokio::fs::remove_file(dest).await;
+                        let _ = trash.discard(dest).await;
                         return Err(AppError::BadRequest(format!("multipart error: {e}")));
                     }
                 }
@@ -400,6 +417,10 @@ fn parse_containers_field(value: Option<&str>) -> Result<AudioContainers, AppErr
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::builder()
 ///     .save_cookies()
@@ -460,12 +481,12 @@ pub async fn upload(
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
         let (arrived_type, arrived_size, original_name, containers_field) =
-            store_streamed(multipart, &tmp_path, max).await?;
+            store_streamed(multipart, &tmp_path, max, &state.trash).await?;
         let containers = match parse_containers_field(containers_field.as_deref()) {
             Ok(c) => c,
             Err(e) => {
                 // The staged tmp is already on disk; a rejected selection must not strand it.
-                remove_asset_files(&tmp_path).await;
+                remove_asset_files(&tmp_path, &state.trash).await;
                 return Err(e);
             }
         };
@@ -476,6 +497,7 @@ pub async fn upload(
             arrived_size,
             retain,
             containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -510,9 +532,16 @@ pub async fn upload(
         // assets copy. Concurrent asset writes share the read side freely;
         // this serializes nothing between uploads.
         let _read_permit = state.write_barrier.read().await;
-        commit_staged_asset(&state.repo, &tmp_path, &final_path, asset, &derived)
-            .await
-            .map_err(AppError::from)
+        commit_staged_asset(
+            &state.repo,
+            &tmp_path,
+            &final_path,
+            asset,
+            &derived,
+            &state.trash,
+        )
+        .await
+        .map_err(AppError::from)
     }
     .await;
 
@@ -552,14 +581,28 @@ pub struct ServeQuery {
     pub variant: Option<String>,
 }
 
-/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet]` — read-gated by world
-/// membership; ETag-revalidated. A derivative shares the canonical's ETag
-/// (`"{id}-{version}"`): it is regenerated whenever the canonical's version
-/// changes, so the version keys it. A missing `thumb`/`preview` derivative is regenerated on
+/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet|opus|opus-webm]` — read-gated by world
+/// membership; ETag-revalidated. The canonical, `thumb`, `preview` and `sheet` share one ETag
+/// (`"{id}-{version}"`): a derivative is regenerated whenever the canonical's version
+/// changes, so the version keys it. The `opus` and `opus-webm` ETags are derived from the served
+/// file's own length, modification time and head bytes (`Validator::OfFile`), because the audio
+/// upgrade sweep rewrites those files without a version bump. A missing `thumb`/`preview` derivative is regenerated on
 /// demand; if the canonical does not decode, the canonical itself is served
 /// in its place rather than a 404. `sheet` is the server-derived grid sheet
 /// (`AssetMeta.sheet`; animated sources only) — written once at commit/reconvert time, never
 /// regenerated on demand, so a missing sheet sibling answers 404 instead.
+///
+/// The file is streamed, never read whole into memory, and byte ranges are honoured for the media,
+/// raster-image, PDF, archive and font types (`Accept-Ranges: bytes`; `Range` and `If-Range`; 206,
+/// `multipart/byteranges` and 416 answers; a media response carries at most 2 MiB per request).
+/// Every other type is compressible and ignores `Range`. `If-None-Match` is answered before `Range`
+/// is read. On the canonical, `thumb`, `preview` and `sheet` branches the validator comes from the
+/// record, so a hit is answered before any file access and takes no permit. On the `opus` and
+/// `opus-webm` branch the validator comes from the opened file, so the file is opened first, under
+/// a streamed-file permit, and a hit is answered after the open. A `HEAD` request answers the
+/// status and headers of the matching `GET`: from the file's metadata, opening nothing, on the
+/// record-validated branches; on the `opus` and `opus-webm` branch it opens the file for the
+/// head read, under a permit held for that read.
 ///
 /// # Examples
 ///
@@ -585,6 +628,10 @@ pub struct ServeQuery {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::serve(
@@ -592,6 +639,7 @@ pub struct ServeQuery {
 ///     user,
 ///     axum::extract::Path(Uuid::new_v4()),
 ///     axum::extract::Query(shadowcat::http::assets::ServeQuery { variant: None }),
+///     axum::http::Method::GET,
 ///     axum::http::HeaderMap::new(),
 /// )
 /// .await;
@@ -602,6 +650,7 @@ pub async fn serve(
     user: AuthUser,
     Path(id): Path<uuid::Uuid>,
     Query(q): Query<ServeQuery>,
+    method: Method,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     // The Opus derivatives are NOT `Variant`s and bypass `ensure_derivative` entirely: a
@@ -619,28 +668,11 @@ pub async fn serve(
             .repo
             .permission_context(asset.world_id, user.id, user.role)
             .await?;
-        // ETag BEFORE the file read (a 304 costs no disk I/O, same as the canonical path),
-        // and the 304 carries the ETag back so a cache can refresh its validator.
-        let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
-        let if_none_match = headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if if_none_match.split(',').any(|t| t.trim() == etag) {
-            return Ok((
-                [
-                    (header::ETAG, etag),
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                ],
-                StatusCode::NOT_MODIFIED,
-            )
-                .into_response());
-        }
+        // The validator is derived from the served file's bytes (`Validator::OfFile`), so the
+        // `If-None-Match` check runs inside `serve_file` after the open, under the permit.
+        let stem = format!("{id}-{}-{etag_suffix}", asset.version);
         let canonical = state.config.assets_path().join(&asset.storage_key);
         let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
-        let bytes = tokio::fs::read(&sibling)
-            .await
-            .map_err(|_| AppError::NotFound)?;
         // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
         // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
         // `no-cache` (never `immutable`): the request URL (`/api/assets/{uuid}?variant=opus`)
@@ -652,16 +684,23 @@ pub async fn serve(
         // value on the way out — a per-handler copy here would be dead weight, proven by
         // `serve_never_lets_a_browser_render_a_stored_type_as_a_document` (an e2e test
         // against the live router) still asserting `nosniff` with no per-handler header.
-        return Ok((
-            [
-                (header::CONTENT_TYPE, content_type.to_string()),
-                (header::CONTENT_DISPOSITION, "inline".to_string()),
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            Body::from(bytes),
+        return serve_file(
+            FileResponse {
+                id,
+                path: &sibling,
+                content_type: content_type.to_string(),
+                content_disposition: "inline".to_string(),
+                disposition: Disposition::Inline,
+                route: Route::Embed,
+                etag: Validator::OfFile { stem },
+                missing: MissingFile::NotFound,
+            },
+            &headers,
+            &method,
+            &state.file_permits,
+            user.id,
         )
-            .into_response());
+        .await;
     }
     let variant = match q.variant.as_deref() {
         None => None,
@@ -684,43 +723,32 @@ pub async fn serve(
             if asset.meta.sheet.is_none() {
                 return Err(AppError::NotFound);
             }
+            let etag = format!("\"{}-{}\"", id, asset.version);
+            if let Some(not_modified) = not_modified(&headers, &etag) {
+                return Ok(not_modified);
+            }
             let canonical = state.config.assets_path().join(&asset.storage_key);
             let sheet = crate::data::asset::process::sheet_path(&canonical);
-            let bytes = tokio::fs::read(&sheet).await.map_err(|e| {
-                tracing::debug!(?e, %id, "grid sheet missing for an asset whose metadata names one");
-                AppError::NotFound
-            })?;
-            let etag = format!("\"{}-{}\"", id, asset.version);
-            let if_none_match = headers
-                .get(header::IF_NONE_MATCH)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if if_none_match.split(',').any(|t| t.trim() == etag) {
-                return Ok((
-                    [
-                        (header::ETAG, etag),
-                        (header::CACHE_CONTROL, "no-cache".to_string()),
-                    ],
-                    StatusCode::NOT_MODIFIED,
-                )
-                    .into_response());
-            }
             // `no-cache`: `?variant=sheet` carries no asset version in the URL either.
             // `X-Content-Type-Options` comes from the global `security_headers` layer — see
             // the comment on the Opus branch above.
-            return Ok((
-                [
-                    (
-                        header::CONTENT_TYPE,
-                        crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
-                    ),
-                    (header::CONTENT_DISPOSITION, "inline".to_string()),
-                    (header::ETAG, etag),
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                ],
-                Body::from(bytes),
+            return serve_file(
+                FileResponse {
+                    id,
+                    path: &sheet,
+                    content_type: crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
+                    content_disposition: "inline".to_string(),
+                    disposition: Disposition::Inline,
+                    route: Route::Embed,
+                    etag: Validator::Version(etag),
+                    missing: MissingFile::NotFound,
+                },
+                &headers,
+                &method,
+                &state.file_permits,
+                user.id,
             )
-                .into_response());
+            .await;
         }
         Some(other) => {
             return Err(AppError::BadRequest(format!("unknown variant '{other}'")));
@@ -737,26 +765,15 @@ pub async fn serve(
     let etag = format!("\"{}-{}\"", id, asset.version);
     // `If-None-Match` is an RFC 7232 comma-separated list (browsers may send
     // several cached ETags); 304 if ours appears anywhere in it.
-    let if_none_match = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if if_none_match.split(',').any(|t| t.trim() == etag) {
-        return Ok((
-            [
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            StatusCode::NOT_MODIFIED,
-        )
-            .into_response());
+    if let Some(not_modified) = not_modified(&headers, &etag) {
+        return Ok(not_modified);
     }
 
     let canonical = state.config.assets_path().join(&asset.storage_key);
     let original_name = asset.original_name.clone();
     let (path, content_type) = match variant {
         None => (canonical, asset.content_type),
-        Some(v) => match ensure_derivative(&canonical, v).await {
+        Some(v) => match ensure_derivative(&canonical, v, &state.trash).await {
             Ok(p) => (
                 p,
                 crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
@@ -769,10 +786,6 @@ pub async fn serve(
             }
         },
     };
-    let bytes = tokio::fs::read(&path).await.map_err(|e| {
-        tracing::error!(?e, %id, "asset file missing for existing record");
-        AppError::Internal
-    })?;
     // Pass-through stores a GM-declared type verbatim, and `serve` is
     // membership-gated, so the response never lets a browser render an
     // asset as a document: `nosniff` always, and `inline` only for the raster
@@ -782,25 +795,36 @@ pub async fn serve(
     // Reuses `mutate::attachment_disposition` rather than a bare `"attachment"`, so a
     // downloaded non-inline asset names itself after the upload exactly like
     // `mutate::original`'s retained-original download does.
-    let disposition = if INLINE_CONTENT_TYPES.contains(&content_type.as_str()) {
-        "inline".to_string()
+    let inline = INLINE_CONTENT_TYPES.contains(&content_type.as_str());
+    let (content_disposition, disposition) = if inline {
+        ("inline".to_string(), Disposition::Inline)
     } else {
-        attachment_disposition(&original_name)
+        (
+            attachment_disposition(&original_name),
+            Disposition::Attachment,
+        )
     };
     // `no-cache`: the request URL carries no asset version, so a cache must always
     // revalidate through `If-None-Match` rather than trust a heuristic freshness lifetime.
     // `X-Content-Type-Options` comes from the global `security_headers` layer — see the
     // comment on the Opus branch above.
-    Ok((
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, disposition),
-            (header::ETAG, etag),
-            (header::CACHE_CONTROL, "no-cache".to_string()),
-        ],
-        Body::from(bytes),
+    serve_file(
+        FileResponse {
+            id,
+            path: &path,
+            content_type,
+            content_disposition,
+            disposition,
+            route: Route::Embed,
+            etag: Validator::Version(etag),
+            missing: MissingFile::Internal,
+        },
+        &headers,
+        &method,
+        &state.file_permits,
+        user.id,
     )
-        .into_response())
+    .await
 }
 
 /// `GET /api/assets/{uuid}/meta` — membership-gated (any member of the asset's world may
@@ -832,6 +856,10 @@ pub async fn serve(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::meta(
@@ -871,13 +899,15 @@ const INLINE_CONTENT_TYPES: [&str; 6] = [
 async fn ensure_derivative(
     canonical: &std::path::Path,
     variant: Variant,
+    trash: &Trash,
 ) -> std::io::Result<std::path::PathBuf> {
     let path = derivative_path(canonical, variant);
     if tokio::fs::try_exists(&path).await? {
         return Ok(path);
     }
     let src = canonical.to_path_buf();
-    tokio::task::spawn_blocking(move || write_derivatives(&src))
+    let blocking_trash = trash.clone();
+    tokio::task::spawn_blocking(move || write_derivatives(&src, &blocking_trash))
         .await
         .map_err(std::io::Error::other)??;
     Ok(path)
@@ -914,6 +944,10 @@ async fn ensure_derivative(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::builder()
 ///     .save_cookies()
@@ -982,14 +1016,14 @@ pub async fn replace(
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
         let (arrived_type, arrived_size, _name, containers_field) =
-            store_streamed(multipart, &tmp_path, max).await?;
+            store_streamed(multipart, &tmp_path, max, &state.trash).await?;
         // No explicit selection on a replace re-emits the derivative set the asset already
         // has (`audio::effective_reencode_selection`), never silently widening or narrowing it.
         let containers = match containers_field.as_deref() {
             Some(_) => match parse_containers_field(containers_field.as_deref()) {
                 Ok(c) => c,
                 Err(e) => {
-                    remove_asset_files(&tmp_path).await;
+                    remove_asset_files(&tmp_path, &state.trash).await;
                     return Err(e);
                 }
             },
@@ -1004,6 +1038,7 @@ pub async fn replace(
             arrived_size,
             retain,
             containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -1039,8 +1074,7 @@ pub async fn replace(
 /// live bytes are untouched and the record stays consistent (tmp is removed).
 /// If the rename later fails, the DB is one version ahead of unchanged bytes
 /// — clients re-fetch (ETag changed) and the next replace lands correctly;
-/// the inverse order would strand new bytes under a stale ETag (broken 304)
-/// [[commit-db-row-before-swapping-file]].
+/// the inverse order would strand new bytes under a stale ETag (broken 304).
 pub(super) async fn commit_replacement(
     state: &AppState,
     existing: &Asset,
@@ -1063,14 +1097,14 @@ pub(super) async fn commit_replacement(
     {
         Ok(v) => v,
         Err(e) => {
-            remove_asset_files(tmp_path).await;
+            remove_asset_files(tmp_path, &state.trash).await;
             return Err(e.into());
         }
     };
     // Canonical + every sibling (a stale `.orig`/derivative of the old
     // bytes is removed when the new upload has none).
-    if let Err(e) = move_asset_files(tmp_path, final_path).await {
-        remove_asset_files(tmp_path).await;
+    if let Err(e) = move_asset_files(tmp_path, final_path, &state.trash).await {
+        remove_asset_files(tmp_path, &state.trash).await;
         tracing::error!(?e, %id, "asset replace rename failed after DB commit");
         return Err(AppError::Internal);
     }
@@ -1111,17 +1145,11 @@ pub(super) async fn delete_asset_files_and_row(
         return Ok(false);
     };
     let path = state.config.assets_path().join(&deleted.storage_key);
-    if let Err(e) = tokio::fs::remove_file(&path).await {
-        // Record is gone; a missing file is not fatal (it becomes a no-op).
-        tracing::warn!(?e, %id, "asset file remove failed after record delete");
-    }
-    // Siblings (`.orig`, derivatives) exist only for some assets; absence is
-    // the ordinary case and not worth a warning.
-    for sibling in sibling_paths(&path) {
-        match tokio::fs::remove_file(&sibling).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(?e, %id, "asset sibling remove failed after record delete"),
+    // Record is gone; a failed move is not fatal. `Trash::discard` treats a missing file
+    // (siblings exist only for some assets) as already gone, so only real failures log.
+    for (file, outcome) in discard_asset_files(&state.trash, &path).await {
+        if let Err(e) = outcome {
+            tracing::warn!(?e, %id, ?file, "asset file trash move failed after record delete");
         }
     }
     if let Some(room) = state.ws.rooms.get(deleted.world_id) {
@@ -1167,6 +1195,10 @@ pub(super) async fn delete_asset_files_and_row(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::delete(

@@ -1,6 +1,9 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
 
+mod account_profile;
+mod port_forward;
+
 pub(crate) async fn test_state() -> AppState {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     AppState {
@@ -14,6 +17,13 @@ pub(crate) async fn test_state() -> AppState {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
+        tls: crate::tls::TlsRuntime::disabled(),
+        portmap: crate::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(crate::trash::Trash::new(
+            std::env::temp_dir(),
+            crate::trash::TrashRetention::Disabled,
+        )),
     }
 }
 
@@ -197,6 +207,22 @@ async fn config_reports_initialized_state_and_is_public_pre_init() {
 }
 
 #[tokio::test]
+async fn config_publishes_onboarding_enabled_from_the_server_configuration() {
+    let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+    let body = server.get("/api/config").await.json::<serde_json::Value>();
+    assert_eq!(body["onboarding_enabled"], true);
+
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        onboarding_enabled: false,
+        ..Default::default()
+    });
+    let server = axum_test::TestServer::new(router(state).await).unwrap();
+    let body = server.get("/api/config").await.json::<serde_json::Value>();
+    assert_eq!(body["onboarding_enabled"], false);
+}
+
+#[tokio::test]
 async fn ui_state_get_put_round_trip_and_validation() {
     let state = initialized_state().await;
     seed_user(&state, "u").await;
@@ -253,6 +279,27 @@ async fn ui_state_get_put_round_trip_and_validation() {
         .json(&serde_json::json!({ "worlds": [1] }))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A non-object `modules` value is rejected.
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": [1] }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A `modules` patch merges inside one module's slice over the wire.
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": { "m1": { "foo": 1 } } }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": { "m1": { "bar": 2 } } }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+    assert_eq!(
+        got["modules"]["m1"],
+        serde_json::json!({ "foo": 1, "bar": 2 })
+    );
 
     // An over-cap body is rejected.
     let big = "x".repeat(70 * 1024);
@@ -463,13 +510,11 @@ async fn login_throttle_budget_is_config_tunable() {
 
 /// A `TestServer` served over a REAL loopback TCP connection (not the
 /// default mock transport), so `throttle::ClientIp` resolves an actual
-/// `SocketAddr` via `into_make_service_with_connect_info` — the mock
+/// `ConnMeta` via `http::into_service` — the mock
 /// transport never populates `ConnectInfo`, which would leave the
 /// per-IP throttle branches silently untested.
 async fn real_transport_server(state: AppState) -> axum_test::TestServer {
-    let app = router(state)
-        .await
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = crate::http::into_service(router(state).await);
     axum_test::TestServer::builder()
         .http_transport()
         .save_cookies()
@@ -987,7 +1032,7 @@ async fn user_password_reset_unknown_id_is_not_found() {
 /// An admin resetting their OWN password is not exempted from the same live-eviction rule
 /// `set_user_password` applies to any other target: their own session dies in the same
 /// transaction as the hash update, so the very server instance that just performed the reset
-/// is authenticated no longer. Pins the intent `reset_user_password`'s own doc now states.
+/// is authenticated no longer. Pins the intent `reset_user_password`'s own doc states.
 #[tokio::test]
 async fn user_password_reset_by_admin_on_their_own_account_evicts_their_own_session() {
     let state = initialized_state().await;
@@ -1006,6 +1051,204 @@ async fn user_password_reset_by_admin_on_their_own_account_evicts_their_own_sess
     root.get("/api/users")
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn change_own_password_succeeds_revokes_the_session_and_swaps_the_credential() {
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    me.get("/api/me").await.assert_status(StatusCode::OK);
+
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // Every session for the account is revoked, the caller's own included.
+    me.get("/api/me")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    let anon = anon_server(&state).await;
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Skipping the current-password check would turn a stolen session into an account takeover:
+/// the wrong current password must be refused and the stored hash must stay as it was.
+#[tokio::test]
+async fn change_own_password_with_the_wrong_current_password_is_401_and_changes_nothing() {
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let hash_before = state
+        .repo
+        .user_by_id(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash;
+
+    me.post("/api/account/password")
+        .json(
+            &serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }),
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    let hash_after = state
+        .repo
+        .user_by_id(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash;
+    assert_eq!(hash_before, hash_after, "a refused change writes nothing");
+    // The session survives a refused change.
+    me.get("/api/me").await.assert_status(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn change_own_password_rejects_a_policy_failure_with_422_and_changes_nothing() {
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "short" }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    let anon = anon_server(&state).await;
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn change_own_password_requires_authentication() {
+    let state = initialized_state().await;
+    anon_server(&state)
+        .await
+        .post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+}
+
+/// One Argon2 verify per change, on the same constant-cost path `login` uses; a refused
+/// change must not skip it and a policy failure is decided after it.
+#[tokio::test]
+async fn change_own_password_spends_exactly_one_verify_per_call() {
+    use crate::auth::password::verify_count;
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(
+            &serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }),
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    assert_eq!(verify_count() - before, 1, "wrong current password");
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "short" }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(verify_count() - before, 1, "policy failure");
+}
+
+/// Fails if the route drops its `AuthThrottle` check: the wrong-password guesses would never
+/// reach 429.
+#[tokio::test]
+async fn change_own_password_wrong_guesses_exhaust_the_budget_into_429() {
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let body =
+        serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" });
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT {
+        me.post("/api/account/password")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+    me.post("/api/account/password")
+        .json(&body)
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    // Even the correct password is refused once the budget is spent, and nothing changes.
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert!(state.repo.user_by_id(id).await.unwrap().is_some());
+    anon_server(&state)
+        .await
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Fails if the throttle check moves after the verify: a 429 call would then spend Argon2 work.
+#[tokio::test]
+async fn change_own_password_429_runs_no_verify() {
+    use crate::auth::password::verify_count;
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let now = crate::auth::setup::now_millis();
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT {
+        assert!(state.auth_throttle.check(
+            &format!("password_change:u:{id}"),
+            now,
+            PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT
+        ));
+    }
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        verify_count() - before,
+        0,
+        "a throttled call verifies nothing"
+    );
+}
+
+/// Fails if the budget is too tight to use: the last in-budget call, correct password, succeeds.
+#[tokio::test]
+async fn change_own_password_succeeds_on_the_last_attempt_within_budget() {
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT - 1 {
+        me.post("/api/account/password")
+            .json(&serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -2941,6 +3184,13 @@ async fn file_backed_state() -> (AppState, tempfile::TempDir) {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
+        tls: crate::tls::TlsRuntime::disabled(),
+        portmap: crate::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(crate::trash::Trash::new(
+            std::env::temp_dir(),
+            crate::trash::TrashRetention::Disabled,
+        )),
     };
     (state, tmp)
 }
@@ -3015,6 +3265,325 @@ async fn admin_backup_reports_a_malformed_database_string_as_an_internal_error()
     );
 }
 
+/// Gives `state` a real, retaining trash inside `tmp`, so a deleted backup is observable there.
+fn with_retaining_trash(state: &mut AppState, tmp: &tempfile::TempDir) {
+    state.trash = Arc::new(crate::trash::Trash::new(
+        tmp.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    ));
+}
+
+/// Creates one backup through the route and returns its id, spacing the calls so ids differ.
+async fn post_backup(admin: &axum_test::TestServer) -> String {
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    admin.post("/api/admin/backup").await.assert_status_ok();
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    listing["entries"][0]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn every_backup_route_is_admin_only() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let admin = login_server(&state, "root").await;
+    let user = login_server(&state, "pleb").await;
+    let id = post_backup(&admin).await;
+
+    user.get("/api/admin/backups")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.post("/api/admin/backups/prune")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.delete(&format!("/api/admin/backups/{id}"))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.post(&format!("/api/admin/backups/{id}/restore"))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // The refused restore stopped nothing and wrote no marker.
+    assert!(!*state.ws.shutdown.borrow());
+    assert!(!tmp.path().join("restore-pending.json").exists());
+}
+
+#[tokio::test]
+async fn backup_list_returns_newest_first_with_policy_and_root() {
+    let (mut state, tmp) = file_backed_state().await;
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(9),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let first = post_backup(&admin).await;
+    let second = post_backup(&admin).await;
+    assert_ne!(first, second);
+
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["entries"][0]["id"], second.as_str());
+    assert_eq!(listing["entries"][1]["id"], first.as_str());
+    assert_eq!(listing["entries"][0]["manifest"]["kind"], "manual");
+    assert!(listing["entries"][0]["total_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(listing["policy"]["keep_last"], 9);
+    assert!(listing["policy"]["keep_days"].is_null());
+    assert_eq!(
+        listing["root"],
+        tmp.path().join("backups").to_string_lossy().as_ref()
+    );
+}
+
+#[tokio::test]
+async fn backup_list_reports_a_failed_restore_marker() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let none: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(none["restore_failed"].is_null());
+
+    std::fs::write(
+        tmp.path().join("restore-failed.json"),
+        r#"{"id":"backup-7","requested_at_ms":42,"error":"copy failed"}"#,
+    )
+    .unwrap();
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["restore_failed"]["id"], "backup-7");
+    assert_eq!(listing["restore_failed"]["requested_at_ms"], 42);
+    assert_eq!(listing["restore_failed"]["error"], "copy failed");
+
+    // An unparsable marker never breaks the list.
+    std::fs::write(tmp.path().join("restore-failed.json"), "not json").unwrap();
+    let broken: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(broken["restore_failed"].is_null());
+}
+
+#[tokio::test]
+async fn backup_dismissing_the_failed_restore_marker_trashes_it_and_is_idempotent() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let admin = login_server(&state, "root").await;
+    let user = login_server(&state, "pleb").await;
+    let marker = tmp.path().join("restore-failed.json");
+    std::fs::write(
+        &marker,
+        r#"{"id":"backup-7","requested_at_ms":42,"error":"copy failed"}"#,
+    )
+    .unwrap();
+
+    user.delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    assert!(marker.exists(), "a refused dismissal leaves the marker");
+    assert!(state.trash.list().unwrap().is_empty());
+
+    admin
+        .delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(!marker.exists());
+    assert_eq!(state.trash.list().unwrap().len(), 1, "moved, not deleted");
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(listing["restore_failed"].is_null());
+
+    admin
+        .delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn delete_moves_the_backup_into_the_trash_and_unknown_ids_are_404() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let id = post_backup(&admin).await;
+
+    admin
+        .delete("/api/admin/backups/missing")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete("/api/admin/backups/has.dot")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete(&format!("/api/admin/backups/{id}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(listing["entries"].as_array().unwrap().is_empty());
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_backup_prunes_down_to_the_configured_count() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(2),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(post_backup(&admin).await);
+    }
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    let listed: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [ids[2].as_str(), ids[1].as_str()]);
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_prune_route_applies_the_policy_now() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let oldest = post_backup(&admin).await;
+    let middle = post_backup(&admin).await;
+    let newest = post_backup(&admin).await;
+
+    // No policy: nothing is removed.
+    let none: serde_json::Value = admin.post("/api/admin/backups/prune").await.json();
+    assert!(none["removed"].as_array().unwrap().is_empty());
+
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(1),
+        ..(*state.config).clone()
+    });
+    let admin = login_server(&state, "root").await;
+    let result: serde_json::Value = admin.post("/api/admin/backups/prune").await.json();
+    let mut removed: Vec<String> = result["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    removed.sort();
+    let mut expected = vec![oldest, middle];
+    expected.sort();
+    assert_eq!(removed, expected);
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["entries"][0]["id"], newest.as_str());
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn restore_takes_a_pre_restore_backup_writes_the_marker_and_requests_shutdown() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let target = post_backup(&admin).await;
+    assert!(!*state.ws.shutdown.borrow());
+
+    let res = admin
+        .post(&format!("/api/admin/backups/{target}/restore"))
+        .await;
+    res.assert_status_ok();
+    let staged: serde_json::Value = res.json();
+    assert_eq!(staged["staged"], true);
+    let pre_id = staged["pre_restore_id"].as_str().unwrap().to_string();
+    assert_ne!(pre_id, target);
+
+    let marker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("restore-pending.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["id"], target.as_str());
+    assert!(marker["requested_at_ms"].as_u64().unwrap() > 0);
+    assert!(!tmp.path().join("restore-pending.json.tmp").exists());
+    assert!(
+        *state.ws.shutdown.borrow(),
+        "the server must be told to stop"
+    );
+
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    let pre = listing.iter().find(|e| e.id == pre_id).unwrap();
+    assert_eq!(pre.manifest.kind, crate::backup::BackupKind::PreRestore);
+    assert_eq!(
+        pre.manifest.note.as_deref(),
+        Some(format!("before restoring {target}").as_str())
+    );
+}
+
+/// The safety backup a restore takes must not prune the backup being restored. Fails if
+/// `create_in_app_backup` prunes after a `PreRestore` backup: with `backup_keep_last = 2` the
+/// pre-restore backup and the newer one are kept and the older restore target is trashed.
+#[tokio::test]
+async fn restoring_the_oldest_backup_under_a_retention_limit_keeps_it_for_the_next_start() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(2),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let oldest = post_backup(&admin).await;
+    let _newer = post_backup(&admin).await;
+
+    admin
+        .post(&format!("/api/admin/backups/{oldest}/restore"))
+        .await
+        .assert_status_ok();
+
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    assert!(
+        listing.iter().any(|e| e.id == oldest),
+        "the restore target survives the safety backup"
+    );
+    assert!(state.trash.list().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn restore_of_an_unknown_id_changes_nothing() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let only = post_backup(&admin).await;
+
+    admin
+        .post("/api/admin/backups/missing/restore")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert!(!tmp.path().join("restore-pending.json").exists());
+    assert!(!*state.ws.shutdown.borrow());
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    assert_eq!(listing.len(), 1);
+    assert_eq!(listing[0].id, only);
+}
+
+#[tokio::test]
+async fn serve_with_returns_once_the_server_requests_its_own_shutdown() {
+    let state = initialized_state().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws = state.ws.clone();
+    let serve = tokio::spawn(serve_with(
+        listener,
+        state,
+        std::future::pending::<()>(),
+        conn_serve::ConnLimits::default(),
+    ));
+    ws.trigger_shutdown();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), serve)
+        .await
+        .expect("serve_with must stop after trigger_shutdown")
+        .unwrap();
+    assert!(outcome.is_ok());
+}
+
 #[tokio::test]
 async fn security_response_headers_are_set_on_every_response_without_hsts_by_default() {
     let server = fresh_server().await;
@@ -3029,49 +3598,7 @@ async fn security_response_headers_are_set_on_every_response_without_hsts_by_def
         res.header(axum::http::header::REFERRER_POLICY),
         "same-origin"
     );
-    // Not behind a TLS proxy by default: HSTS over plain HTTP is wrong and must be absent.
-    assert!(res
-        .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
-        .is_none());
-}
-
-#[tokio::test]
-async fn hsts_header_present_only_when_behind_tls_proxy() {
-    let mut state = test_state().await;
-    state.config = std::sync::Arc::new(crate::config::Config {
-        behind_tls_proxy: true,
-        ..crate::config::Config::default()
-    });
-    let server = axum_test::TestServer::builder()
-        .save_cookies()
-        .build(router(state).await)
-        .unwrap();
-    let res = server.get("/health").await;
-    res.assert_status_ok();
-    assert_eq!(
-        res.header(axum::http::header::STRICT_TRANSPORT_SECURITY),
-        "max-age=31536000; includeSubDomains"
-    );
-}
-
-#[tokio::test]
-async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
-    // `is_exposed()` is true here (non-loopback bind), but HSTS reads `behind_tls_proxy`
-    // directly — see `Config::is_exposed`'s doc. A non-loopback bind with no TLS proxy
-    // declared has no TLS anywhere in the path, so sending HSTS would be wrong.
-    let mut state = test_state().await;
-    state.config = std::sync::Arc::new(crate::config::Config {
-        bind: "0.0.0.0:30000".into(),
-        behind_tls_proxy: false,
-        ..crate::config::Config::default()
-    });
-    assert!(state.config.is_exposed());
-    let server = axum_test::TestServer::builder()
-        .save_cookies()
-        .build(router(state).await)
-        .unwrap();
-    let res = server.get("/health").await;
-    res.assert_status_ok();
+    // HSTS is opt-in (`Config.hsts_max_age_secs`): absent by default.
     assert!(res
         .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
         .is_none());
@@ -3079,11 +3606,9 @@ async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
 
 /// Build a `test_state()`-shaped state (uninitialized repo, one seeded user) whose `Config` is
 /// `mutate`d before the router is built, then log in and return the raw `set-cookie` header
-/// value — exercises the real `session_layer(&repo, &config)` construction inside `router`,
-/// not a config-level re-assertion of `is_exposed()` (see the anti-drift gotcha on
-/// `behind_tls_proxy_flips_setup_token_policy_and_session_secure_together` in
-/// `config::tests`: that test pins `session_layer`'s ARGUMENT, `config.is_exposed()`, but never
-/// actually builds a `session_layer` or inspects the cookie it produces).
+/// value — exercises the real `session_layer(&repo, &config)` construction inside `router`.
+/// The axum-test mock transport carries no `ConnectInfo`, so every request here is plain HTTP;
+/// the per-scheme flavours are exercised in `scheme::tests`.
 async fn login_set_cookie_header(mutate: impl FnOnce(&mut crate::config::Config)) -> String {
     let mut cfg = crate::config::Config::default();
     mutate(&mut cfg);
@@ -3123,23 +3648,17 @@ async fn session_cookie_is_not_secure_on_a_plain_loopback_bind() {
         !set_cookie.to_ascii_lowercase().contains("secure"),
         "unexpected Secure attribute: {set_cookie}"
     );
+    assert!(set_cookie.starts_with("sc_sid="), "{set_cookie}");
 }
 
 #[tokio::test]
-async fn session_cookie_is_secure_on_a_loopback_bind_behind_a_declared_tls_proxy() {
-    let set_cookie = login_set_cookie_header(|cfg| cfg.behind_tls_proxy = true).await;
-    assert!(
-        set_cookie.to_ascii_lowercase().contains("secure"),
-        "missing Secure attribute: {set_cookie}"
-    );
-}
-
-#[tokio::test]
-async fn session_cookie_is_secure_on_a_plain_non_loopback_bind() {
+async fn session_cookie_is_not_secure_on_a_plain_non_loopback_bind() {
+    // LAN play: browsers refuse to store a `Secure` cookie set over plain HTTP from a
+    // non-loopback origin, so a plain-HTTP request never gets a `Secure` cookie.
     let set_cookie = login_set_cookie_header(|cfg| cfg.bind = "0.0.0.0:30000".into()).await;
     assert!(
-        set_cookie.to_ascii_lowercase().contains("secure"),
-        "missing Secure attribute: {set_cookie}"
+        !set_cookie.to_ascii_lowercase().contains("secure"),
+        "unexpected Secure attribute: {set_cookie}"
     );
 }
 
@@ -3188,4 +3707,173 @@ async fn write_barrier_blocks_asset_writes_while_backup_holds_it() {
             .unwrap()
             .unwrap()
     );
+}
+
+/// `serve` takes its no-progress window from `Config::egress_window_secs`, as `serve_with`'s
+/// callers do through `ConnLimits::for_config`. A window of zero is rejected by
+/// `serve_router`, so a panic there proves the configured key reached it; a `serve` that ignored
+/// the key would run on the default window and return.
+#[tokio::test]
+async fn serve_honours_the_configured_egress_window() {
+    let mut state = test_state().await;
+    state.config = Arc::new(Config {
+        egress_window_secs: 0,
+        ..Config::default()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let outcome = tokio::spawn(serve(listener, state, async {})).await;
+    let err = outcome.expect_err("serve ran on a window other than the configured one");
+    assert!(err.is_panic(), "{err:?}");
+}
+
+/// An initialized state whose trash keeps what it receives, rooted in a fresh temp dir, plus three
+/// discarded files (oldest `a.bin`, then `b.bin`, newest `c.bin`), their entry ids newest first,
+/// and the dir guard.
+async fn state_with_trashed_files() -> (AppState, tempfile::TempDir, Vec<String>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = initialized_state().await;
+    state.trash = Arc::new(crate::trash::Trash::new(
+        tmp.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    ));
+    for name in ["a.bin", "b.bin", "c.bin"] {
+        let file = tmp.path().join(name);
+        std::fs::write(&file, name.as_bytes()).unwrap();
+        state.trash.discard_sync(&file).unwrap();
+        // Distinct millisecond stamps so the newest-first order is unambiguous.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    let ids = state
+        .trash
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    (state, tmp, ids)
+}
+
+#[tokio::test]
+async fn trash_routes_are_admin_only() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let user = login_server(&state, "pleb").await;
+    let anon = anon_server(&state).await;
+
+    for (server, want) in [
+        (&user, StatusCode::FORBIDDEN),
+        (&anon, StatusCode::UNAUTHORIZED),
+    ] {
+        server.get("/api/admin/trash").await.assert_status(want);
+        server
+            .post("/api/admin/trash/empty")
+            .await
+            .assert_status(want);
+        server
+            .delete(&format!("/api/admin/trash/{}", ids[0]))
+            .await
+            .assert_status(want);
+    }
+    // Nothing was removed by the rejected calls.
+    assert_eq!(state.trash.list().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn list_trash_returns_entries_newest_first_with_their_manifest_fields() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.get("/api/admin/trash").await;
+    res.assert_status_ok();
+    let body: Vec<serde_json::Value> = res.json();
+    let listed: Vec<&str> = body.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ids.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(body[0]["original_path"]
+        .as_str()
+        .unwrap()
+        .ends_with("c.bin"));
+    assert_eq!(body[0]["kind"], "file");
+    assert_eq!(body[0]["size_bytes"], 5);
+    assert!(body[0]["trashed_at_ms"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn list_trash_pages_by_cursor_and_clamps_limit() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let first: Vec<serde_json::Value> = admin.get("/api/admin/trash?limit=2").await.json();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[1]["id"], ids[1]);
+    let second: Vec<serde_json::Value> = admin
+        .get(&format!("/api/admin/trash?limit=2&before={}", ids[1]))
+        .await
+        .json();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0]["id"], ids[2]);
+    // A limit of zero is clamped up to one entry, never rejected.
+    let one: Vec<serde_json::Value> = admin.get("/api/admin/trash?limit=0").await.json();
+    assert_eq!(one.len(), 1);
+    // A cursor whose entry is gone still pages from its position.
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let after_gone: Vec<serde_json::Value> = admin
+        .get(&format!("/api/admin/trash?before={}", ids[1]))
+        .await
+        .json();
+    assert_eq!(after_gone.len(), 1);
+    assert_eq!(after_gone[0]["id"], ids[2]);
+    admin
+        .get("/api/admin/trash?before=..%2Fx")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn delete_trash_entry_removes_only_that_entry_and_a_second_delete_is_not_found() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let left: Vec<String> = state
+        .trash
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(left, vec![ids[0].clone(), ids[2].clone()]);
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete("/api/admin/trash/not-an-entry-id")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn empty_trash_removes_every_entry_and_reports_the_totals() {
+    let (state, _tmp, _ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.post("/api/admin/trash/empty").await;
+    res.assert_status_ok();
+    let body: serde_json::Value = res.json();
+    assert_eq!(body["entries"], 3);
+    assert_eq!(body["bytes"], 15);
+    assert!(state.trash.list().unwrap().is_empty());
+    let again: serde_json::Value = admin.post("/api/admin/trash/empty").await.json();
+    assert_eq!(again["entries"], 0);
 }

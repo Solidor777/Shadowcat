@@ -40,8 +40,20 @@ export const RUNTIME_ENTRIES: Record<string, string> = {
   "shadowcat-types": "@shadowcat/types",
 };
 
+// `index.html` carries the `%%SHADOWCAT_BASE%%` placeholder the Rust server substitutes with its
+// route prefix when it serves the built page. The dev server serves the template directly, so this
+// plugin substitutes the root-mount value (`""`); the placeholder survives the build untouched.
+const devBasePlaceholder = {
+  name: "shadowcat-dev-base-placeholder",
+  apply: "serve" as const,
+  transformIndexHtml: (html: string) => html.replaceAll("%%SHADOWCAT_BASE%%", ""),
+};
+
 export default defineConfig({
-  plugins: [svelte()],
+  // Relative asset URLs: the built page's `<base href>` (set by the server to its route prefix)
+  // anchors every `./assets/...` and `./runtime/...` reference, so one build serves any prefix.
+  base: "./",
+  plugins: [svelte(), devBasePlaceholder],
   build: {
     outDir: "../../../dist",
     // The root `build` script runs `pnpm clean` before this build, sending `dist/` to the OS

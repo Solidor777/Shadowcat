@@ -11,6 +11,10 @@
 //! Every expected value is derived from the underlying square-grid geometry, not copied from a
 //! run: each scenario is constructed so its optimal route / visible set / rasterized set is UNIQUE
 //! (no A* tie-break ambiguity, no occlusion), making the pin independently re-derivable by hand.
+//! Where a fixture cannot force a unique optimum (the `Orthogonal` arm of
+//! `astar_route_parity_all_diagonal_rules_pins_full_path_and_cost`, whose detour family is
+//! tie-break-dependent), the pin is the hand-derived cost plus the path's structural properties —
+//! never the tie-broken cell sequence.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -21,7 +25,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::data::document::{Document, WorldCapDefaults, WorldRole};
-use crate::scene::grid_shape::SquareGrid;
+use crate::scene::grid_shape::{GridShape, SquareGrid};
 use crate::scene::move_exec::{execute_move, MoveGateInputs};
 use crate::scene::pathfinding::MoveTraits;
 use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
@@ -53,16 +57,18 @@ fn entity_doc(id: u128, parent: u128, ty: &str, body: Value) -> Document {
 }
 
 // -------------------------------------------------------------------------------------------
-// Fixture 1: grid A* route, all four DiagonalRule variants on one layout.
+// Fixture 1: grid A* route, all six DiagonalRule variants on one layout.
 //
 // Layout: an open field (cell = 100, footprint radius 0.1), start (50,50) = cell (0,0), goal
 // (250,250) = cell (2,2), with FOUR one-cell impassable regions blocking the orthogonal flanker
 // cells (1,0), (0,1), (2,1), (1,2). Blocking the flankers forces the pure diagonal staircase
-// (0,0) -> (1,1) -> (2,2) to be the UNIQUE optimal route under every rule (every alternative
-// either enters a blocked cell or is strictly longer), so the returned `path` is identical across
-// rules and only the diagonal-cost `cost` varies — isolating the per-rule step-cost math with no
-// tie-break ambiguity. The impassable cells carry no terrain weight (multiplier 1.0) and no
-// arrest, so `cost` is exactly the sum of the two diagonal step costs and `arrested` is false.
+// (0,0) -> (1,1) -> (2,2) to be the UNIQUE optimal route under every cost-only rule (every
+// alternative either enters a blocked cell or is strictly longer), so the returned `path` is
+// identical across those five rules and only the diagonal-cost `cost` varies — isolating the
+// per-rule step-cost math with no tie-break ambiguity. `Orthogonal` is the exception BY
+// DEFINITION (the staircase's edges are absent from its search graph); its case derives its own
+// expectation in the test body. The impassable cells carry no terrain weight (multiplier 1.0)
+// and no arrest, so `cost` is exactly the sum of the per-rule step costs and `arrested` is false.
 // -------------------------------------------------------------------------------------------
 
 /// One-cell impassable rect tightly enclosing `center` (±40 units), so it rasterizes to exactly
@@ -119,7 +125,7 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
 #[test]
 fn astar_route_parity_all_diagonal_rules_pins_full_path_and_cost() {
     let field = flanker_blocked_field();
-    // The forced-unique route's cell-center waypoints, identical under every rule.
+    // The forced-unique route's cell-center waypoints, identical under every cost-only rule.
     let expected_path = vec![(50.0, 50.0), (150.0, 150.0), (250.0, 250.0)];
 
     // Chebyshev: each diagonal costs 1.0 -> 2.0 total.
@@ -149,6 +155,56 @@ fn astar_route_parity_all_diagonal_rules_pins_full_path_and_cost() {
     assert_eq!(alt.path, expected_path);
     assert!((alt.cost - 3.0).abs() < 1e-9, "alternating cost");
     assert!(!alt.arrested);
+
+    // Approximate: cost-only rule — the adjacency is the unchanged king-move graph, so the
+    // same diagonal staircase is still the unique sub-8-step route (every alternative enters a
+    // blocked flanker or is the 8-step orthogonal detour derived below). Each diagonal costs
+    // 1.5 -> 3.0 total.
+    let approx = route(DiagonalRule::Approximate, &field);
+    assert_eq!(approx.path, expected_path);
+    assert!((approx.cost - 3.0).abs() < 1e-9, "approximate cost");
+    assert!(!approx.arrested);
+
+    // Orthogonal: the diagonal staircase CANNOT exist — the search graph has no diagonal edges
+    // — so the route, the cost, and even the route LENGTH all differ from the five cost-only
+    // rules. Hand-derived from the rule's definition plus the blocked-flanker geometry:
+    //   * The first step cannot be (1,0) or (0,1) (both blocked), so it must step AWAY from the
+    //     goal ((-1,0) or (0,-1)), making the remaining Manhattan distance 5, not 4.
+    //   * The last step cannot come from (1,2) or (2,1) (both blocked), so the approach must be
+    //     via (3,2) or (2,3) — and the detour distance from (0,0) to either, around the blocked
+    //     pair, is 7 (e.g. (0,0)->(0,-1)->(1,-1)->(2,-1)->(2,0)->(3,0)->(3,1)->(3,2)).
+    //   * Total is therefore exactly 8 orthogonal steps at cost 1.0 each -> 8.0.
+    // The EXACT cell sequence among the several 8-step detours is tie-break-dependent (the
+    // `QNode` ordering picks one), so asserting it would pin the heap's tie-break rather than
+    // the rule — unlike the five cases above, whose fixture-forced staircase is the UNIQUE
+    // optimal route and needs no tie-break. What the rule itself fixes is asserted instead:
+    // endpoints, step count, per-step orthogonality, and that no blocked flanker is entered.
+    let ortho = route(DiagonalRule::Orthogonal, &field);
+    assert_eq!(ortho.path.first(), Some(&(50.0, 50.0)));
+    assert_eq!(ortho.path.last(), Some(&(250.0, 250.0)));
+    assert_eq!(
+        ortho.path.len(),
+        9,
+        "8 orthogonal steps between the endpoints: {ortho:?}"
+    );
+    let grid = SquareGrid {
+        cell: FIXTURE_GRID_SIZE,
+        rule: DiagonalRule::Orthogonal,
+    };
+    for w in ortho.path.windows(2) {
+        let (a, b) = (grid.cell_of(w[0]), grid.cell_of(w[1]));
+        let step = (b.0 - a.0).abs() + (b.1 - a.1).abs();
+        assert_eq!(
+            step, 1,
+            "every step is a single orthogonal cell under `orthogonal`: {a:?} -> {b:?}"
+        );
+        assert!(
+            !field.is_impassable(b),
+            "the route never enters a blocked flanker: {b:?}"
+        );
+    }
+    assert!((ortho.cost - 8.0).abs() < 1e-9, "orthogonal cost");
+    assert!(!ortho.arrested);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -335,6 +391,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("unclamped route");
@@ -350,6 +407,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     budget_cells: Some(2.0),
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("clamped route");

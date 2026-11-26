@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext } from "@shadowcat/ui-kit";
-  import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl } from "@shadowcat/core";
+  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
+  import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl, fmtBytes } from "@shadowcat/core";
 
   let {
     asset,
@@ -24,23 +24,44 @@
   let renameDraft = $state("");
   let confirmingDelete = $state(false);
   let busy = $state(false);
+  /** The inline rename input, bound while a rename is in progress. */
+  let renameEl = $state<HTMLInputElement | null>(null);
+
+  // Escape cancels the inline rename only when the keystroke comes from the rename input itself.
+  $effect(() => {
+    if (!renaming || !mutable) return;
+    return escapeCoordinator.register(
+      ESCAPE_PRIORITY.OVERLAY,
+      () => {
+        renaming = false;
+      },
+      (event) => renameEl !== null && event.target === renameEl,
+    );
+  });
 
   /** Runs one mutation with the shared busy/error/refresh handling.
    * @param op - The REST call to run.
+   * @param progressMessage - When given, an indeterminate progress notification with this text
+   * stays up for the awaited call (a single request with no incremental signal), and is dismissed
+   * however the call settles.
    * @example
    * ```
    * // private function; wraps every mutation handler below
    * void run(async () => {});
    * ```
    */
-  async function run(op: () => Promise<unknown>): Promise<void> {
+  async function run(op: () => Promise<unknown>, progressMessage?: string): Promise<void> {
     busy = true;
+    const toast = progressMessage
+      ? ctx.notifyProgress(progressMessage, { value: null, max: 0 })
+      : null;
     try {
       await op();
       onChanged();
     } catch (e) {
       ctx.notify(t("assetBrowser.error", { message: String(e) }));
     } finally {
+      toast?.dismiss();
       busy = false;
     }
   }
@@ -78,21 +99,6 @@
     });
   }
 
-  /** A human-readable byte size.
-   * @param n - Byte count.
-   * @returns The formatted size.
-   * @example
-   * ```
-   * // private helper; used by the metadata rows below
-   * fmtBytes(2048); // "2.0 KiB"
-   * ```
-   */
-  function fmtBytes(n: number | bigint): string {
-    const v = Number(n);
-    if (v < 1024) return `${v} B`;
-    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KiB`;
-    return `${(v / (1024 * 1024)).toFixed(1)} MiB`;
-  }
 </script>
 
 <div class="preview-pane" data-testid="preview-pane">
@@ -126,10 +132,9 @@
           const next = renameDraft.trim();
           if (next && next !== asset.original_name)
             void run(() => patchAsset(asset.id, { name: next }));
-        } else if (e.key === "Escape") {
-          renaming = false;
         }
       }}
+      bind:this={renameEl}
     />
   {:else}
     <h3 class="name">
@@ -230,7 +235,11 @@
         type="button"
         data-testid="preview-reconvert"
         disabled={!asset.original_retained || busy}
-        onclick={() => void run(() => reconvertAsset(asset.id))}
+        onclick={() =>
+          void run(
+            () => reconvertAsset(asset.id),
+            t("assetBrowser.reconverting", { name: asset.original_name }),
+          )}
       >{t("assetBrowser.reconvert")}</button>
       {#if asset.content_type.startsWith("image/")}
         <button

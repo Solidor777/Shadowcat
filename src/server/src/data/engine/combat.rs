@@ -1,11 +1,10 @@
-//! Engine bands for the combat clock: `combat` (a world document bound to a
-//! scene), `combatant` (a child document of a combat), `resource-registry`
-//! (the singleton turn-resource definitions), `effect` (clock-bound
-//! expiry) and `combat-history` (the per-turn snapshot log of one combat).
-//! A `Formula::Text` is engine-grammar source the server evaluates through
-//! `crate::formula`; ingress requires it to parse. (The combat transitions
-//! that consume the evaluator are wired by the combat-resolution milestone;
-//! until then they still skip an unresolved value.)
+//! This module defines the engine bands for the combat clock.
+//!
+//! The bands are `combat` (a world document bound to a scene), `combatant` (a child document of a
+//! combat), `resource-registry` (the singleton turn-resource definitions), `effect` (clock-bound
+//! expiry) and `combat-history` (the per-turn snapshot log of one combat). A `Formula::Text` is
+//! engine-grammar source the server evaluates through `crate::formula`; ingress requires it to
+//! parse.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -86,6 +85,28 @@ pub enum TurnControl {
     #[default]
     OwnerMayEnd,
     /// The GM only.
+    GmOnly,
+}
+
+/// Who reads the chat note a command posts when effects expire.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::ExpiryNotice;
+///
+/// assert_eq!(ExpiryNotice::default(), ExpiryNotice::Visible);
+/// assert_ne!(ExpiryNotice::Visible, ExpiryNotice::GmOnly);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiryNotice {
+    /// An expired effect everyone can already read is named to every world member; an effect
+    /// only some members can read is named to the GM alone.
+    #[default]
+    Visible,
+    /// Every expired effect is named to the GM alone.
     GmOnly,
 }
 
@@ -176,6 +197,10 @@ pub struct CombatDefaults {
     /// Override of `CombatEngine.forward_restore`.
     #[ts(optional = nullable)]
     pub forward_restore: Option<bool>,
+    /// Who reads the chat note posted when effects expire. Read live at each command rather
+    /// than snapshotted at combat start: it is a notification preference, not a clock rule.
+    #[ts(optional = nullable)]
+    pub expiry_notice: Option<ExpiryNotice>,
 }
 
 impl CombatDefaults {
@@ -206,8 +231,8 @@ where
 ///
 /// ```
 /// use shadowcat::data::engine::combat::{
-///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, ResolvedCombatRules,
-///     TurnControl,
+///     EffectLifecycleDefaults, Enforcement, ExpiryNotice, Interpretation, MovementRules,
+///     ResolvedCombatRules, TurnControl,
 /// };
 ///
 /// let rules = ResolvedCombatRules {
@@ -221,6 +246,7 @@ where
 ///     rewind_restore: true,
 ///     forward_restore: false,
 ///     effect_lifecycle: EffectLifecycleDefaults::default(),
+///     expiry_notice: ExpiryNotice::default(),
 /// };
 /// assert_eq!(rules.turn_control, TurnControl::OwnerMayEnd);
 /// assert!(rules.rewind_restore);
@@ -239,6 +265,8 @@ pub struct ResolvedCombatRules {
     pub forward_restore: bool,
     /// Resolved `CombatEngine.effect_lifecycle`.
     pub effect_lifecycle: EffectLifecycleDefaults,
+    /// Resolved `CombatDefaults.expiry_notice`.
+    pub expiry_notice: ExpiryNotice,
 }
 
 /// Resolve the combat rules for a scene: scene overrides beat world overrides
@@ -311,6 +339,11 @@ pub fn resolve_combat_rules(
         on_turn_end: lifecycle_field(|l| l.on_turn_end.clone()),
         on_advance: lifecycle_field(|l| l.on_advance.clone()),
     };
+    let expiry_notice = scene
+        .and_then(|d| d.expiry_notice)
+        .or_else(|| world.and_then(|d| d.expiry_notice))
+        .or_else(|| system.and_then(|d| d.expiry_notice))
+        .unwrap_or_default();
     ResolvedCombatRules {
         movement: MovementRules {
             resource,
@@ -322,6 +355,7 @@ pub fn resolve_combat_rules(
         rewind_restore,
         forward_restore,
         effect_lifecycle,
+        expiry_notice,
     }
 }
 
@@ -493,6 +527,8 @@ pub struct CombatantResource {
 ///     },
 ///     initiative: Some(14.0),
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: BTreeMap::new(),
 /// };
 /// assert_eq!(engine.initiative, Some(14.0));
@@ -509,6 +545,18 @@ pub struct CombatantEngine {
     pub tiebreak: f64,
     /// Per-resource numbers keyed by `resource-registry` id.
     pub resources: BTreeMap<String, CombatantResource>,
+    /// Out of the fight (unconscious, dead, removed): the turn walk
+    /// auto-resolves past this combatant regardless of `turn_control`, while
+    /// its document, resources and effects stay alive so it can return.
+    /// Independent of the combatant's hidden state.
+    #[serde(default)]
+    pub defeated: bool,
+    /// The `combatant-group` document (a child of the same combat) whose
+    /// members share one initiative slot, or `None` for an ungrouped
+    /// combatant. A reference to an absent group is not refused: it
+    /// contributes nothing, like a dangling `token_id`.
+    #[serde(default)]
+    pub group: Option<Uuid>,
 }
 
 impl CombatantEngine {
@@ -533,6 +581,46 @@ impl CombatantEngine {
             if !r.current.is_finite() {
                 return Err(format!("resource {key} must be finite"));
             }
+        }
+        Ok(())
+    }
+}
+
+/// The engine body of a `combatant-group` document: a named set of combatants
+/// that share one initiative slot. Always a child (`parent_id`) of a `combat`;
+/// a member names the group through `CombatantEngine::group`. The group holds
+/// no member list and no initiative of its own: `transition::rebuild_order`
+/// derives the shared slot from the members.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::CombatantGroupEngine;
+///
+/// let group = CombatantGroupEngine {
+///     name: "Rat swarm".to_string(),
+///     color: Some("#3fb950".to_string()),
+/// };
+/// assert_eq!(group.name, "Rat swarm");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct CombatantGroupEngine {
+    /// Display name; non-empty.
+    pub name: String,
+    /// Accent color as css `#rrggbb`, or `None` for no accent.
+    pub color: Option<String>,
+}
+
+impl CombatantGroupEngine {
+    /// A non-empty name and, when present, a css `#rrggbb` color.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("group name must not be empty".into());
+        }
+        if let Some(color) = &self.color {
+            crate::data::engine::geometry::validate_hex_color(color)?;
         }
         Ok(())
     }
@@ -902,6 +990,7 @@ impl EffectLifecycleDefaults {
 ///     transfer: false,
 ///     duration: None,
 ///     lifecycle: None,
+///     origin: None,
 /// };
 /// assert!(effect.active);
 /// assert!(!effect.transfer);
@@ -922,12 +1011,86 @@ pub struct EffectEngine {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub lifecycle: Option<EffectLifecycle>,
+    /// Where the effect came from; `None` = unrecorded. Read by the expiry note a command posts
+    /// and by the effects list; redacted exactly with the effect document that carries it.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub origin: Option<EffectOrigin>,
+}
+
+/// Longest `EffectOrigin.label`, in characters.
+pub const MAX_ORIGIN_LABEL_CHARS: usize = 120;
+
+/// Where an effect came from: the document that granted it and/or a display label. At least
+/// one is present. `source` need not resolve: it may name a document since deleted, in which
+/// case display falls back to `label`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::EffectOrigin;
+///
+/// let origin = EffectOrigin {
+///     source: None,
+///     label: Some("Aldric's blessing".to_string()),
+/// };
+/// assert!(origin.validate().is_ok());
+/// assert!(EffectOrigin { source: None, label: None }.validate().is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct EffectOrigin {
+    /// The document the effect came from (an item, actor, region or spell item).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub source: Option<Uuid>,
+    /// Display text naming the origin.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub label: Option<String>,
+}
+
+impl EffectOrigin {
+    /// At least one of `source` and `label` is present, and a present `label` is 1 to
+    /// `MAX_ORIGIN_LABEL_CHARS` characters with no control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::combat::EffectOrigin;
+    ///
+    /// let labelled = EffectOrigin { source: None, label: Some("Spider Queen".to_string()) };
+    /// assert!(labelled.validate().is_ok());
+    /// let empty_label = EffectOrigin { source: None, label: Some(String::new()) };
+    /// assert!(empty_label.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if self.source.is_none() && self.label.is_none() {
+            return Err("origin needs a source or a label".into());
+        }
+        if let Some(label) = &self.label {
+            let chars = label.chars().count();
+            if chars == 0 || chars > MAX_ORIGIN_LABEL_CHARS {
+                return Err(format!(
+                    "origin label must be 1 to {MAX_ORIGIN_LABEL_CHARS} characters"
+                ));
+            }
+            if label.chars().any(char::is_control) {
+                return Err("origin label must not contain control characters".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EffectEngine {
     /// A duration's `amount` formula is well-formed, and — when a literal number — `>= 1`;
-    /// every present lifecycle formula is well-formed.
+    /// every present lifecycle formula is well-formed; a present `origin` is valid.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(o) = &self.origin {
+            o.validate()?;
+        }
         if let Some(d) = &self.duration {
             d.amount.validate("duration.amount")?;
             if let Formula::Number(n) = &d.amount {
@@ -970,6 +1133,7 @@ pub const MAX_TURN_HISTORY: usize = 200;
 ///         transfer: false,
 ///         duration: None,
 ///         lifecycle: None,
+///         origin: None,
 ///     },
 /// };
 /// assert_eq!(snapshot.path, "/embedded/effect/0");
@@ -1021,6 +1185,8 @@ pub struct EffectSnapshot {
 ///         },
 ///         initiative: None,
 ///         tiebreak: 0.0,
+///         defeated: false,
+///         group: None,
 ///         resources: BTreeMap::new(),
 ///     },
 ///     system: serde_json::json!({}),

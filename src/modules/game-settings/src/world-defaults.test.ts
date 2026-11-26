@@ -48,6 +48,19 @@ describe("world defaults editor", () => {
     ]);
   });
 
+  // Insurance: pins the panel's rendered option VALUES to the exact `DiagonalRule` wire strings
+  // (the ts-rs-generated union). A drift here (a variant added to the server enum but not the
+  // panel, or vice versa) must fail loudly rather than silently omit an option.
+  it("diagonal rule select exposes exactly the DiagonalRule wire strings", () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws), dispatchIntent }) });
+    const sel = screen.getByLabelText("gameSettings.diagonalRule") as HTMLSelectElement;
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual([
+      "chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal",
+    ]);
+  });
+
   it("changing movement model dispatches a JSON-pointer update", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
@@ -58,6 +71,40 @@ describe("world defaults editor", () => {
 
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/movementModel", old: null, new: "continuous" }] },
+    ]);
+  });
+
+  it("the facing-vision switch is off by default and the turn rule defaults to free; each writes the raw stored old", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws), dispatchIntent }) });
+
+    const box = screen.getByLabelText("gameSettings.facingVision") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    await fireEvent.click(box);
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/facingVision", old: null, new: true }] },
+    ]);
+
+    const rule = screen.getByLabelText("gameSettings.facingTurnRule") as HTMLSelectElement;
+    expect(rule.value).toBe("free");
+    await fireEvent.change(rule, { target: { value: "own_turn" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/facingTurnRule", old: null, new: "own_turn" }] },
+    ]);
+  });
+
+  it("the auto-rotate toggle is off by default and writes the raw stored old on change", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws), dispatchIntent }) });
+
+    const box = screen.getByLabelText("gameSettings.autoRotateTokens") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    await fireEvent.click(box);
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/autoRotateTokens", old: null, new: true }] },
     ]);
   });
 });

@@ -57,7 +57,7 @@ fn extracts_string_and_number_leaves_and_doc_type_is_absent() {
     // Keys and non-text leaves are not indexed.
     assert!(!c.contains("weapon"));
     assert!(!c.contains("true"));
-    // doc_type is no longer an index term (a `doc_types` filter replaces it).
+    // doc_type is not an index term; the `doc_types` filter selects by type.
     assert!(!c.contains("actor"));
 }
 
@@ -164,6 +164,43 @@ fn name_gm_only_hides_from_public_index_but_gm_index_retains_it() {
 }
 
 #[test]
+fn recipients_tiered_text_is_absent_from_both_index_partitions() {
+    let alice = crate::test_ids::test_uuid(0xA1);
+    let mut d = doc("actor", serde_json::json!({ "note": "MOCK_WHISPER_TEXT" }));
+    d.permissions.property_overrides.insert(
+        "/system/note".into(),
+        Visibility::Recipients {
+            recipients: vec![alice],
+        },
+    );
+
+    let public = index_content_public(&d);
+    assert!(
+        !public.contains("MOCK_WHISPER_TEXT"),
+        "recipient-only text leaked into the shared public index: {public}"
+    );
+    let gm = index_content_gm(&d);
+    assert!(
+        !gm.contains("MOCK_WHISPER_TEXT"),
+        "recipient-only text leaked into the shared GM index: {gm}"
+    );
+    assert!(
+        index_content(&d).contains("MOCK_WHISPER_TEXT"),
+        "negative control: the raw sweep does contain it"
+    );
+}
+
+#[test]
+fn gm_index_keeps_gm_only_text() {
+    let mut d = doc("actor", serde_json::json!({ "note": "MOCK_GM_TEXT" }));
+    d.permissions
+        .property_overrides
+        .insert("/system/note".into(), Visibility::GmOnly);
+    assert!(index_content_gm(&d).contains("MOCK_GM_TEXT"));
+    assert!(!index_content_public(&d).contains("MOCK_GM_TEXT"));
+}
+
+#[test]
 fn engine_leaf_gm_only_hides_from_public_index_but_gm_index_retains_it() {
     // A redacted NESTED engine leaf (not the whole `/engine` band) must
     // still be absent from the public index, while a SIBLING engine leaf
@@ -251,4 +288,25 @@ fn build_match_punctuation_only_is_none() {
     for q in ["---", "*", "\"\"\"", "()", ":::", "^", "- ^ *"] {
         assert!(build_match(q).is_none(), "expected None for {q:?}");
     }
+}
+
+#[test]
+fn public_index_never_holds_a_secret_identity_tokens_real_name() {
+    let mut token = doc("token", serde_json::json!({}));
+    token.name = Some("Mimic Gorgonzola".into());
+    token.engine = Some(serde_json::json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "identity_hidden": true,
+    }));
+    assert!(
+        index_content_gm(&token).contains("Gorgonzola"),
+        "the GM partition keeps the real name"
+    );
+    assert!(
+        !index_content_public(&token).contains("Gorgonzola"),
+        "the public partition must not tokenize an identity-hidden token's name"
+    );
+    // Control: the same token without the flag is searchable in the public partition.
+    token.engine.as_mut().unwrap()["identity_hidden"] = serde_json::json!(false);
+    assert!(index_content_public(&token).contains("Gorgonzola"));
 }

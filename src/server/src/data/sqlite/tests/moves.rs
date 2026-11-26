@@ -1,7 +1,8 @@
-//! `Operation::Move` through `apply_intent`: authorization, Create-validity
-//! placement (including parent world scope), folder cycle rejection
-//! (including same-batch Move cycles), OCC on the parent pre-image, the
-//! no-op short-circuit, derived-tag recomputation, and bundle survival.
+//! These tests drive `Operation::Move` through `apply_intent`.
+//!
+//! They cover authorization, Create-validity placement (including parent world scope), folder cycle
+//! rejection (including same-batch Move cycles), OCC on the parent pre-image, the no-op
+//! short-circuit, derived-tag recomputation, and bundle survival.
 
 use super::*;
 use crate::data::asset::{Asset, AssetMeta};
@@ -48,6 +49,7 @@ fn message_doc(world: Uuid, author: Uuid) -> Document {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     )
@@ -495,8 +497,9 @@ async fn moved_folder_tree_survives_a_bundle_round_trip() {
         .await
         .unwrap();
     let import_tmp = tempfile::tempdir().unwrap();
-    let data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    target.import_world(data).await.unwrap();
+    let data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    target.import_world(data, &test_trash()).await.unwrap();
 
     let imported_b = target.get_document(b.id).await.unwrap().unwrap();
     assert_eq!(imported_b.parent_id, None, "the post-move parent survives");
@@ -714,4 +717,12 @@ async fn trigger_origin_moves_a_player_owned_token_past_the_gm_only_gate() {
     .unwrap();
     let moved = r.get_document(token_id).await.unwrap().unwrap();
     assert_eq!(moved.parent_id, Some(scene_b));
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

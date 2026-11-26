@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
-import { ContributionRegistry, type Contribution, PANEL_CONTRACT, type PanelMeta, SCENE_TOOL_CONTRACT, type SceneToolMeta } from "./contributions";
+import { ContributionRegistry, type Contribution, PANEL_CONTRACT, type PanelMeta, SCENE_TOOL_CONTRACT, type SceneToolMeta, VISION_TREATMENT_CONTRACT, type VisionTreatmentMeta } from "./contributions";
 
 const c = (over: Partial<Contribution>): Contribution => ({
   id: "x",
@@ -80,6 +80,17 @@ describe("ContributionRegistry", () => {
     expect(result.map((x) => x.id)).toEqual(["m1:a", "m2:b"]);
     expect(result[0].sceneTool).toEqual(toolA);
     expect(result[1].sceneTool).toEqual(toolB);
+  });
+
+  it("registers, looks up by kind, and disposes a vision treatment through VISION_TREATMENT_CONTRACT", () => {
+    const r = new ContributionRegistry();
+    const meta: VisionTreatmentMeta = { kind: "blood-sense", resolve: () => ({ shape: "fill", color: 0x8b0000, opacity: 0.3 }) };
+    const dispose = r.contribute(c({ id: "m1:bs", contract: VISION_TREATMENT_CONTRACT, component: null, visionTreatment: meta }), { module: "m1" });
+    const find = (kind: string) => r.contributionsFor(VISION_TREATMENT_CONTRACT).find((x) => x.visionTreatment?.kind === kind);
+    expect(find("blood-sense")?.visionTreatment?.resolve({}, { corners: [] })).toEqual({ shape: "fill", color: 0x8b0000, opacity: 0.3 });
+    expect(find("other")).toBeUndefined();
+    dispose();
+    expect(find("blood-sense")).toBeUndefined();
   });
 });
 

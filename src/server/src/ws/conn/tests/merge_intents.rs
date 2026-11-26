@@ -1,8 +1,11 @@
-//! `conn::merge_intents`'s wire-dispatch layer: the stateless two-call flow, the
-//! owner-or-GM and per-path authorization derivations, push's per-instance
-//! visibility/capability outcomes, and the `WriteOrigin::TemplateMerge` commit's
-//! broadcast/redaction behaviour. Fixture pattern mirrors `combat_intents`'s
-//! harness construction.
+//! These tests exercise `conn::merge_intents`'s wire-dispatch layer
+//! (`merge_intents::handle_merge_intent`).
+//!
+//! They cover the stateless two-call flow, the owner-or-GM and per-path authorization
+//! derivations, push's per-instance visibility/capability outcomes, and the
+//! `WriteOrigin::TemplateMerge` commit's broadcast/redaction behaviour.
+//!
+//! The fixture pattern mirrors the harness construction of `combat_intents`.
 
 use super::*;
 use crate::auth::role::ServerRole;
@@ -86,7 +89,7 @@ impl Harness {
         let cur = self.get(id).await;
         let new: std::collections::BTreeMap<String, Visibility> = overrides
             .iter()
-            .map(|(p, v)| ((*p).to_string(), *v))
+            .map(|(p, v)| ((*p).to_string(), v.clone()))
             .collect();
         self.room
             .publish(
@@ -2845,4 +2848,108 @@ async fn non_owner_template_owner_push_reports_a_template_deleted_child_conflict
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].path, "/embedded/items/0");
     assert!(matches!(conflicts[0].parent_kind, ParentKind::Delete));
+}
+
+/// A `token` document with the rotation lock as given, optionally stamped from `from`, owned by
+/// `owner` with the Owner role.
+fn lockable_token(
+    world: Uuid,
+    id: Uuid,
+    from: Option<Uuid>,
+    owner: Uuid,
+    lock_rotation: bool,
+) -> Document {
+    let mut d = crate::data::document::tests::world_scoped_doc(world, id, "token");
+    d.engine = crate::data::document::tests::default_test_engine("token");
+    d.engine.as_mut().unwrap()["lock_rotation"] = json!(lock_rotation);
+    d.source = from.map(|id| Source {
+        id,
+        pack: None,
+        version: 1,
+    });
+    d.owner = Some(owner);
+    d.permissions.default = DocRole::Observer;
+    d.permissions.users.insert(owner, DocRole::Owner);
+    d
+}
+
+/// A template cannot carry a player past the rotation lock a GM set: when the template later
+/// clears the lock, the owner's pull of it is refused and writes nothing, while the GM's pull of
+/// the same template applies.
+#[tokio::test]
+async fn a_pull_cannot_clear_a_rotation_lock_for_a_player() {
+    let h = merge_harness().await;
+    let template = crate::test_ids::test_uuid(0xE171);
+    let child = crate::test_ids::test_uuid(0xE172);
+    h.create(lockable_token(
+        h.world_id,
+        template,
+        None,
+        h.gm.user_id,
+        true,
+    ))
+    .await;
+    h.create(lockable_token(
+        h.world_id,
+        child,
+        Some(template),
+        h.player.user_id,
+        true,
+    ))
+    .await;
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: template,
+                changes: vec![FieldChange {
+                    path: "/engine/lock_rotation".into(),
+                    old: json!(true),
+                    new: json!(false),
+                    remove: false,
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let pull = |ctx: PermissionContext, n: u128| {
+        let h = &h;
+        async move {
+            handle_merge_intent(
+                &h.room,
+                h.repo.as_ref(),
+                &ctx,
+                ClientMsg::MergePull {
+                    request_id: crate::test_ids::test_uuid(n),
+                    child_id: child,
+                    resolutions: None,
+                },
+                0,
+            )
+            .await
+            .expect("a reply")
+        }
+    };
+    let reply = pull(h.player, 1).await;
+    assert!(
+        matches!(error_reason(reply), MergeErrorKind::Forbidden),
+        "a player's pull that clears the lock is refused"
+    );
+    assert_eq!(
+        h.get(child).await.engine.unwrap()["lock_rotation"],
+        json!(true),
+        "nothing written"
+    );
+
+    let reply = pull(h.gm, 2).await;
+    assert!(matches!(pull_status(reply), MergePullStatus::Applied));
+    assert_eq!(
+        h.get(child).await.engine.unwrap()["lock_rotation"],
+        json!(false),
+        "the GM's pull applies the template's cleared lock"
+    );
 }

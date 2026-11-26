@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
 import { checkSkillSymbolRefs } from "./check-skill-symbol-refs.mjs";
-import { defaultSkillsRoot } from "./lib/gate-corpus.mjs";
+import { CorpusListingError, defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 
 /**
  * Every bucket a code span can end up in, as the label the banner prints for it, paired with the
@@ -257,7 +257,18 @@ function main() {
   // to the shared skills-dir location Claude Code itself reads live; an explicit second argument
   // is the seam the spawned-CLI test uses to point at a fixture's own seeded corpus.
   const skillsRoot = process.argv[3] === undefined ? defaultSkillsRoot() : resolve(process.argv[3]);
-  process.exitCode = report(checkSkillSymbolRefs(repoRoot, skillsRoot), console);
+  // Only a `CorpusListingError` (git could not list the code or the skill corpus) becomes one line
+  // and status 2; any other error is a defect in the gate and keeps its stack.
+  let result;
+  try {
+    result = checkSkillSymbolRefs(repoRoot, skillsRoot, { log: (line) => console.error(line) });
+  } catch (e) {
+    if (!(e instanceof CorpusListingError)) throw e;
+    console.error(`check-skill-symbol-refs: ${e.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  process.exitCode = report(result, console);
 }
 
 if (isDirectEntry(import.meta.url)) main();

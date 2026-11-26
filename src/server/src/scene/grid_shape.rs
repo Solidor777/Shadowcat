@@ -1,18 +1,17 @@
-//! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs, so
-//! square and hex scenes share one code path rather than each caller branching on grid kind.
-//! `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top axial
-//! implementation mirroring the client's `Grid` class exactly.
+//! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs.
 //!
-//! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`
-//! and `regions::rasterize`;
-//! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
-//! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
-//! `move_exec::execute_move`; `neighbors_with_cost` is ALSO wired into `move_exec::execute_move`,
-//! which prices its own transitions through it too, so the router's preview cost and the
-//! executor's execution cost are the same number; `cell_of` is wired into
-//! `move_exec::execute_move`'s region-cell lookup (and `HexGrid::cells_in_bounds`'s corner
-//! mapping); `cell_vertices` is wired into `accumulate_visible_cells`'s lenient corner-sampling
-//! branch.
+//! Square and hex scenes share one code path through it rather than each caller branching on grid
+//! kind. `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top
+//! axial implementation mirroring the client's `Grid` class exactly.
+//!
+//! `accumulate_visible_cells`, `player_lit_mask` and `regions::rasterize` call `cell_center` and
+//! `cells_in_bounds`. `pathfinding::astar_leg` enumerates steps with `neighbors_with_cost`, and
+//! `pathfinding::cell_enterable` tests them with `footprint_cells` and `line_traversal`.
+//! `move_exec::execute_move` calls `line_traversal` for its visibility test, `cell_of` for its
+//! region-cell lookup, and, under `MovementModel::GridStepped`, `neighbors_with_cost` to price its
+//! own transitions, so the router's preview cost and the executor's execution cost are the same
+//! number. `HexGrid::cell_bounds` maps the corners of its box with `cell_of`, and
+//! `accumulate_visible_cells` samples cell corners from `cell_vertices` in its lenient branch.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -33,7 +32,9 @@ pub(crate) trait GridShape {
     fn cell_of(&self, p: vision::P) -> Cell;
     /// Every reachable neighbor of `c` under diagonal-parity `parity`, as `(neighbor, step_cost,
     /// next_parity)`. `parity` exists only for square's `Alternating` rule (PF1e/3.5 5-10-5);
-    /// `HexGrid` always returns the same `parity` it was given (no rule-dependent state).
+    /// `HexGrid` always returns the same `parity` it was given (no rule-dependent state). The
+    /// neighbor SET itself is rule-dependent: `SquareGrid` under `DiagonalRule::Orthogonal`
+    /// enumerates only the four orthogonal directions.
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)>;
     /// Every cell the segment `a -> b` crosses (supercover, not a thin line) at the given cell
     /// size. `None` on a degenerate/over-cap span — callers fail closed on `None`.
@@ -190,7 +191,15 @@ pub(crate) trait GridShape {
     /// `min = max = (0.0, 0.0)` from both impls, which every consumer's span guard refuses, rather
     /// than two shapes disagreeing about degenerate input. `normalize_bounds_cells` is where that
     /// whole class is refused, once, for both.
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent;
+    ///
+    /// **The authored margin.** `bounds.padding_cells` widens the envelope on all four sides, by
+    /// that many cells' world spacing per axis: `world_units_per_cell` on both square axes, and on
+    /// hex `√3·size` in x and `1.5·size` in y (the axial neighbour spacings), so "n cells" is n
+    /// hexes on each hex axis. With a margin of `0.0` every statement above holds unchanged; with
+    /// a margin, `min` moves down by it and `max` up by it, and every consumer listed above sees
+    /// the larger rectangle, so what a player is told they can see and route through widens by the
+    /// margin. A degenerate `bounds.cells` still yields `REFUSED_EXTENT`, margin or not.
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent;
     /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
     /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
     /// `route ⊆ gate-allowed` invariant. `SquareGrid` returns the existing `DiagonalRule`-based
@@ -278,8 +287,10 @@ pub(crate) fn euclidean_span_cells(a: (f64, f64), b: (f64, f64), world_units_per
 
 /// The ordinary square-grid formulas: `cell_center` is `((i+0.5)*cell, (j+0.5)*cell)`;
 /// `footprint_cells` is disc-vs-cell overlap; `line_traversal` delegates to
-/// `movement::supercover_cells`; `neighbors_with_cost` is the 8-directional `dirs` array +
-/// `step_cost`. `cell` and `rule` are the scene's resolved cell size and diagonal-cost rule.
+/// `movement::supercover_cells`; `neighbors_with_cost` is the shared 8-direction `DIRS` array +
+/// `step_cost`, sliced to its four orthogonal entries under `DiagonalRule::Orthogonal` (the one
+/// adjacency-changing rule). `cell` and `rule` are the scene's resolved cell size and
+/// diagonal-cost rule.
 pub(crate) struct SquareGrid {
     /// Cell size in scene units.
     pub cell: f64,
@@ -300,6 +311,9 @@ impl GridShape for SquareGrid {
     }
 
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
+        // Orthogonal FIRST: `Orthogonal` slices the shared array's first four entries rather
+        // than maintaining a second array, so the orthogonal-direction ordering can never drift
+        // from the 8-direction enumeration's own.
         const DIRS: [(i32, i32); 8] = [
             (1, 0),
             (-1, 0),
@@ -310,7 +324,17 @@ impl GridShape for SquareGrid {
             (-1, 1),
             (-1, -1),
         ];
-        DIRS.iter()
+        // `Orthogonal` removes the diagonal grid EDGES from this neighbor set entirely, so the
+        // router never searches them and `execute_move` treats an omitted step as forbidden
+        // (adjacency, not cost — an excluded edge is never an A* candidate, which an infinite
+        // price would still leave). `step_cost` is therefore never called with a diagonal pair
+        // under this rule; its `unreachable!` arm pins that invariant.
+        let dirs: &[(i32, i32)] = if self.rule == DiagonalRule::Orthogonal {
+            &DIRS[..4]
+        } else {
+            &DIRS[..]
+        };
+        dirs.iter()
             .map(|&(di, dj)| {
                 let next = (c.0 + di, c.1 + dj);
                 let (cost, next_parity) = step_cost(self.rule, di, dj, parity);
@@ -388,7 +412,7 @@ impl GridShape for SquareGrid {
     }
 
     /// Delegates to `pathfinding::heuristic(self.rule, ...)` — the admissible+consistent
-    /// `DiagonalRule`-based square estimate, covering all 4 diagonal rules.
+    /// `DiagonalRule`-based square estimate, covering all six diagonal rules.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         pathfinding::heuristic(self.rule, from, to)
     }
@@ -397,16 +421,17 @@ impl GridShape for SquareGrid {
         self.cell
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent {
         // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so cell (0,0)'s own lower-left corner
         // IS the origin and a w × h block spans exactly (w*cell, h*cell) from it, with no shear and
-        // no overhang.
-        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+        // no overhang. The margin moves each edge out by `padding_cells` cells.
+        let Some((w, h)) = normalize_bounds_cells(bounds.cells) else {
             return REFUSED_EXTENT;
         };
+        let pad = sanitize_padding_cells(bounds.padding_cells) * self.cell;
         WorldExtent {
-            min: (0.0, 0.0),
-            max: (w * self.cell, h * self.cell),
+            min: (-pad, -pad),
+            max: (w * self.cell + pad, h * self.cell + pad),
         }
     }
 
@@ -782,26 +807,31 @@ impl GridShape for HexGrid {
         self.size * 3.0_f64.sqrt()
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent {
         // The far corner of the axial block is cell (w-1, h-1): `axial_to_pixel` is monotone
         // increasing in q on x, and in r on BOTH axes (the shear), so that cell maximises each
         // coordinate. The near corner is cell (0,0), which `axial_to_pixel` places AT the origin,
         // so it minimises each coordinate. Both corners then move out by the same pointy-top
         // half-extents — √3/2·size across the flats (x) and the circumradius `size` to a vertex
         // (y) — so each extreme hex's own far vertices are inside.
-        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+        // The margin then moves every edge out by `padding_cells` axial-neighbour spacings: √3·size
+        // in x, 1.5·size in y.
+        let Some((w, h)) = normalize_bounds_cells(bounds.cells) else {
             return REFUSED_EXTENT;
         };
+        let padding = sanitize_padding_cells(bounds.padding_cells);
         let qmax = (w - 1.0).max(0.0);
         let rmax = (h - 1.0).max(0.0);
         let sqrt3 = 3.0_f64.sqrt();
         let half_x = self.size * sqrt3 / 2.0;
         let half_y = self.size;
+        let pad_x = padding * self.size * sqrt3;
+        let pad_y = padding * self.size * 1.5;
         WorldExtent {
-            min: (-half_x, -half_y),
+            min: (-half_x - pad_x, -half_y - pad_y),
             max: (
-                self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + half_x,
-                self.size * 1.5 * rmax + half_y,
+                self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + half_x + pad_x,
+                self.size * 1.5 * rmax + half_y + pad_y,
             ),
         }
     }
@@ -831,6 +861,66 @@ pub(crate) const REFUSED_EXTENT: WorldExtent = WorldExtent {
     max: (0.0, 0.0),
 };
 
+/// A scene's resolved size: the authored play-area rectangle plus the uniform margin around it,
+/// both in grid cells. `GridShape::world_extent` is the one place that turns it into world units,
+/// so no consumer adds the margin on its own.
+///
+/// Compared whole (`PartialEq`): `ResolvedScene` carries it, and every cache keyed on the resolved
+/// settings therefore misses when only the margin changes.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::SceneBounds;
+///
+/// let b = SceneBounds { cells: (10.0, 8.0), padding_cells: 2.0 };
+/// assert_eq!(b, SceneBounds::resolve(Some((10.0, 8.0)), Some(2.0)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneBounds {
+    /// Authored width and height in grid cells, continuous, never world units. Finite `> 0` on a
+    /// resolved value (`DEFAULT_SCENE_BOUNDS_UNITS` when the scene authors none).
+    pub cells: (f64, f64),
+    /// Margin added on all four sides, in grid cells; `0.0` is no margin. Finite `>= 0` on a
+    /// resolved value.
+    pub padding_cells: f64,
+}
+
+impl SceneBounds {
+    /// Resolve authored values: a non-finite or non-positive axis (or no authored size) falls to
+    /// `DEFAULT_SCENE_BOUNDS_UNITS`, and a non-finite or negative margin falls to `0.0`. Both fail
+    /// toward the smaller envelope, which reveals less.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::{SceneBounds, DEFAULT_SCENE_BOUNDS_UNITS};
+    ///
+    /// let b = SceneBounds::resolve(Some((f64::NAN, 5.0)), Some(-1.0));
+    /// assert_eq!(b.cells, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(b.padding_cells, 0.0);
+    /// ```
+    pub fn resolve(cells: Option<(f64, f64)>, padding_cells: Option<f64>) -> Self {
+        Self {
+            cells: cells
+                .and_then(normalize_bounds_cells)
+                .unwrap_or(crate::scene::DEFAULT_SCENE_BOUNDS_UNITS),
+            padding_cells: sanitize_padding_cells(padding_cells.unwrap_or(0.0)),
+        }
+    }
+}
+
+/// A margin in cells admitted to the range `world_extent` computes over: finite and `>= 0`, else
+/// `0.0`. The one rule behind `SceneBounds::resolve` and `world_extent`, so a hand-built
+/// `SceneBounds` cannot widen an envelope the resolver would not.
+fn sanitize_padding_cells(padding_cells: f64) -> f64 {
+    if padding_cells.is_finite() && padding_cells >= 0.0 {
+        padding_cells
+    } else {
+        0.0
+    }
+}
+
 /// Admit an authored `bounds_cells` pair to the range every `world_extent` impl computes over —
 /// both axes finite and strictly positive — or `None` for anything else.
 ///
@@ -845,8 +935,8 @@ pub(crate) const REFUSED_EXTENT: WorldExtent = WorldExtent {
 ///
 /// Non-finite and non-positive are the SAME input class here, not two: `0.0` and a negative axis
 /// reach the two impls exactly as `NaN` does and split them exactly as far apart. Both are
-/// unreachable from a scene document — `SceneEcs::resolve_scene`'s bounds filter rejects
-/// non-finite and non-positive alike, substituting `DEFAULT_SCENE_BOUNDS_UNITS` — so this refusal
+/// unreachable from a scene document — `SceneBounds::resolve` (through `SceneEcs::resolve_scene`)
+/// rejects non-finite and non-positive alike, substituting `DEFAULT_SCENE_BOUNDS_UNITS` — so this refusal
 /// is the trait's own contract rather than a live guard, and it must cover the whole class or the
 /// contract is only true of part of it.
 ///
@@ -871,7 +961,7 @@ fn normalize_bounds_cells(bounds_cells: (f64, f64)) -> Option<(f64, f64)> {
 /// The sole definition of this rule — `pathfinding::astar_leg` AND `move_exec::execute_move` both
 /// reach it through the `GridShape` trait's neighbor enumeration rather than duplicating it, so
 /// the A* cost, the executor's cost, and any other consumer cannot drift apart. The client
-/// mirrors the same four rules in the client's `Grid.distance`.
+/// mirrors the same six rules in the client's `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
@@ -881,10 +971,20 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
         DiagonalRule::Chebyshev => (1.0, parity),
         DiagonalRule::Manhattan => (2.0, parity),
         DiagonalRule::Euclidean => (std::f64::consts::SQRT_2, parity),
+        DiagonalRule::Approximate => (1.5, parity),
         DiagonalRule::Alternating => {
             let cost = if parity == 0 { 1.0 } else { 2.0 };
             (cost, 1 - parity)
         }
+        // `SquareGrid::neighbors_with_cost` never emits a diagonal pair under `Orthogonal`, so
+        // this arm is unreachable BY CONSTRUCTION — and it must stay a panic: it is the
+        // load-bearing tripwire proving the neighbor enumeration and the pricing rule cannot
+        // silently drift apart (a refactor that re-admitted a diagonal edge under `Orthogonal`
+        // panics loudly here instead of silently pricing an illegal step).
+        DiagonalRule::Orthogonal => unreachable!(
+            "Orthogonal excludes diagonal steps from neighbors_with_cost; step_cost is never \
+             called with a diagonal step under this rule"
+        ),
     }
 }
 

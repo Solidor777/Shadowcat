@@ -1,5 +1,7 @@
-//! Full-text search: content extraction, query sanitization, and the search
-//! result types. The query/rank/filter execution lives in `SqliteRepository::search`.
+//! This module defines the full-text search result types, content extraction and query
+//! sanitization.
+//!
+//! The query/rank/filter execution lives in `SqliteRepository::search`.
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -99,7 +101,7 @@ pub struct SearchPage {
 /// let text = index_content(&doc);
 /// assert!(text.contains("MOCK_NOTE_A") && text.contains("cellar"));
 /// assert!(!text.contains("hidden_flag")); // keys and booleans are not indexed
-/// assert!(!text.contains("item")); // doc_type is no longer indexed
+/// assert!(!text.contains("item")); // doc_type is not indexed
 /// ```
 pub fn index_content(doc: &Document) -> String {
     let mut out = String::new();
@@ -153,19 +155,77 @@ pub fn index_content(doc: &Document) -> String {
 /// assert!(public.contains("public"));
 /// ```
 pub fn index_content_public(doc: &Document) -> String {
-    let non_gm = crate::data::permission::Access {
-        caps: std::collections::BTreeSet::new(),
-        all: false,
-        see_gm_only: false,
-        is_owner: false,
-    };
-    // This is a write-path call (the index build): it must never fail the write,
-    // and must never index unredacted text, so an unclassifiable override falls
-    // back to empty public content rather than propagating the error.
-    match crate::data::permission::filter_properties(doc, &non_gm) {
+    index_content_redacted(
+        doc,
+        &crate::data::permission::Access {
+            caps: std::collections::BTreeSet::new(),
+            all: false,
+            see_gm_only: false,
+            is_owner: false,
+            // No viewer: a `Visibility::Recipients` tier can never match, so such
+            // content is never indexed in the shared public partition.
+            user_id: None,
+        },
+    )
+}
+
+/// The text of the GM index partition: everything a GM may read, with the
+/// same viewer-less redaction as [`index_content_public`] applied for the
+/// per-user `Visibility::Recipients` tier. Both partitions are shared by every
+/// searcher of their tier, so recipient-only text has no viewer to be indexed
+/// for and is absent from both; a GM matches `GmOnly` and `OwnerOrGm` text
+/// but never text only a listed user may read.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::search::index_content_gm;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "item",
+///     "schema_version": 1,
+///     "permissions": {
+///         "default": "observer", "users": {},
+///         "property_overrides": {
+///             "/system/secret": "gm_only",
+///             "/system/whisper": { "recipients": ["00000000-0000-0000-0000-0000000000a1"] }
+///         },
+///         "capabilities": { "by_role": {}, "by_user": {} }, "gm_role": null
+///     },
+///     "system": { "secret": "MOCK_SECRET_A", "whisper": "MOCK_WHISPER_A", "body": "public text" },
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// let gm = index_content_gm(&doc);
+/// assert!(gm.contains("MOCK_SECRET_A")); // GM-only text stays searchable by a GM
+/// assert!(!gm.contains("MOCK_WHISPER_A")); // recipient-only text is indexed nowhere
+/// ```
+pub fn index_content_gm(doc: &Document) -> String {
+    index_content_redacted(
+        doc,
+        &crate::data::permission::Access {
+            caps: std::collections::BTreeSet::new(),
+            all: false,
+            see_gm_only: true,
+            is_owner: true,
+            user_id: None,
+        },
+    )
+}
+
+/// `index_content` of `doc` after `filter_properties` redaction for `access`.
+/// This is a write-path call (the index build): it must never fail the write,
+/// and must never index unredacted text, so an unclassifiable override falls
+/// back to empty content rather than propagating the error.
+fn index_content_redacted(doc: &Document, access: &crate::data::permission::Access) -> String {
+    match crate::data::permission::filter_properties(doc, access) {
         Ok(redacted) => index_content(&redacted),
         Err(e) => {
-            tracing::warn!(doc_id = %doc.id, error = %e, "indexing empty public content");
+            tracing::warn!(doc_id = %doc.id, error = %e, "indexing empty redacted content");
             String::new()
         }
     }

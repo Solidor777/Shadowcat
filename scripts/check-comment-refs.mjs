@@ -22,8 +22,6 @@
 
 import {
   readFileSync,
-  readdirSync,
-  statSync,
   writeFileSync,
   mkdirSync,
   existsSync,
@@ -35,14 +33,17 @@ import { isDirectEntry } from "./lib/is-main.mjs";
 // gates import from. Importing the sibling gate instead formed a cycle: nothing evaluated an
 // imported binding at module scope, so it worked by accident rather than by construction.
 import {
+  CorpusListingError,
   EXAMPLE_EXEMPT,
   GENERATED_ROOT,
   defaultSkillsRoot,
   listSkillDirs,
   MD_EXTS,
   norm,
+  REPO_ROOTS,
+  repoFiles,
   SKIP_DIRS,
-  sources,
+  skillSources,
   under,
 } from "./lib/gate-corpus.mjs";
 // Every extension whose files carry comments a human reads. A stylesheet is code that decides what
@@ -58,15 +59,15 @@ const EXTS = [".ts", ".rs", ".svelte", ".mjs", ".js", ".scss"];
 //
 // `examples` is a published workspace whose packages ship as the authoring reference, so a comment
 // there is read by more people than most of `src`. Every other repo-wide gate already covers it.
-const ROOTS = ["src", "scripts", "examples"];
-
-// Repo-root config files are code too — an eslint config decides what ships. They are collected by
-// walking the root non-recursively rather than by listing them, so a new config is in scope the
-// day it is added instead of the day someone remembers to enumerate it.
-const rootFiles = () =>
-  readdirSync(".").filter(
-    (n) => EXTS.some((e) => n.endsWith(e)) && statSync(n).isFile(),
-  );
+//
+// Repo-root config files are code too — an eslint config decides what ships. `repoFiles` takes
+// them with `rootFiles`, so a new config is in scope the day it is added instead of the day
+// someone remembers to enumerate it.
+//
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files), so
+// a new file is checked before `git add`. The corpus line goes to stderr because `--json` owns
+// stdout.
+const ROOTS = REPO_ROOTS;
 
 /** True when `p` sits inside one of `scopes` (or `scopes` is empty, meaning "everything"). */
 export const inScope = (scopes, p) =>
@@ -93,25 +94,27 @@ export const inScope = (scopes, p) =>
 // what keeps the two skill gates from disagreeing about the size of the corpus; the excluded count
 // prints on every run, because an uncounted exclusion is a backdoor.
 export function collectFiles(skillsRoot = defaultSkillsRoot()) {
-  const codeFiles = [
-    ...ROOTS.flatMap((d) => sources(d, EXTS)),
-    ...rootFiles(),
-  ]
-    .map(norm)
-    .filter((p) => !under(p, GENERATED_ROOT));
-  const generatedFiles = sources(GENERATED_ROOT, EXTS).map(norm);
+  const corpus = repoFiles({
+    roots: ROOTS,
+    rootFiles: true,
+    exts: EXTS,
+    label: "lint:comments",
+    log: (line) => console.error(line),
+  });
+  const codeFiles = corpus.filter((p) => !under(p, GENERATED_ROOT));
+  const generatedFiles = corpus.filter((p) => under(p, GENERATED_ROOT));
   if (!existsSync(skillsRoot)) return { codeFiles, mdFiles: [], generatedFiles, untrackedSkillFiles: [] };
   const dirs = listSkillDirs(skillsRoot);
   if (dirs === null)
-    throw new Error(
+    throw new CorpusListingError(
       "git could not list the skill corpus: this gate scopes skill prose by tracked-ness and " +
         `cannot report a trustworthy count without it (looked in ${skillsRoot}).`,
     );
   const mdFiles = [...dirs.tracked]
-    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .flatMap((name) => skillSources(join(skillsRoot, name), MD_EXTS))
     .map(norm);
   const untrackedSkillFiles = dirs.untracked
-    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .flatMap((name) => skillSources(join(skillsRoot, name), MD_EXTS))
     .map(norm);
   return { codeFiles, mdFiles, generatedFiles, untrackedSkillFiles };
 }
@@ -639,6 +642,16 @@ const ACKNOWLEDGED = [
     name: "a numbered-rule citation into the durable truthfulness-rules design doc",
     re: /\bRULE\s?\d+\b/,
   },
+  // A skill or skill reference file split into numbered parts labels itself "Part NN of NN". The
+  // total after "of" is what marks the label as a document-part label: a bare "Part N" names a
+  // section of some plan or spec outside the file and stays residue. This entry needs to see the
+  // " of NN" that follows the matched token, so it carries its own `contextChars`; the word-shaped
+  // candidate class that reaches it runs over skill prose only, so code comments never match.
+  {
+    name: "a document-part label (Part NN of NN) naming one numbered part of a split skill file",
+    re: /^Part \d+ of \d+\b/,
+    contextChars: 8,
+  },
 ];
 
 // Deliberately narrow: no entry here matches a bare, single English verb by itself. `re` is
@@ -1034,6 +1047,7 @@ export function subjectGroups(content, isMd) {
  * A class's own `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's
  * `re` can see: 0 for the identifier class (its entries match the bare token), a few for the
  * narration class (an entry there can require a specific following word, e.g. "replaced BY").
+ * An entry may carry its own `contextChars`, which replaces the class's value for that entry.
  */
 export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
   const banned = bannedFor(isMd, banLists);
@@ -1058,8 +1072,9 @@ export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
         if (banned.some((b) => bannedMatchesIn(b.re, token).length > 0)) continue;
-        const context = subject.slice(m.index, m.index + token.length + contextChars);
-        const ack = acks.find((a) => a.re.test(context));
+        const windowFor = (a) =>
+          subject.slice(m.index, m.index + token.length + (a.contextChars ?? contextChars));
+        const ack = acks.find((a) => a.re.test(windowFor(a)));
         const at = group.lineAt(m.index);
         if (ack) {
           acknowledged.push({ line: at.line, token, reason: ack.name });
@@ -1245,7 +1260,8 @@ const INSTRUMENT_COMPONENTS = [
   valueOf("MD_EXTS", () => MD_EXTS),
   valueOf("SKIP_DIRS", () => [...SKIP_DIRS].sort()),
   valueOf("GENERATED_ROOT", () => GENERATED_ROOT),
-  valueOf("ACKNOWLEDGED", () => ACKNOWLEDGED.map((a) => [a.name, a.re.source, a.re.flags])),
+  valueOf("ACKNOWLEDGED", () =>
+    ACKNOWLEDGED.map((a) => [a.name, a.re.source, a.re.flags, a.contextChars ?? null])),
   valueOf("ACKNOWLEDGED_NARRATION", () =>
     ACKNOWLEDGED_NARRATION.map((a) => [a.name, a.re.source, a.re.flags])),
 ];
@@ -1314,11 +1330,25 @@ function main() {
     .flatMap((a, i) => (a === "--cover" ? [argv[i + 1]] : []))
     .filter(Boolean);
 
+  // A git failure while listing the corpus (`CorpusListingError`, from the code listing or the
+  // skill-directory listing) ends the run with a message and status 2, never a stack trace; the
+  // same shape every other corpus gate reports. Any other error, such as a skill directory git
+  // tracks but the working tree lacks, is a defect and keeps its stack.
+  const listCorpus = () => {
+    try {
+      return gateFileSet(scopes);
+    } catch (e) {
+      if (!(e instanceof CorpusListingError)) throw e;
+      console.error(`lint:comments: ${e.message}`);
+      process.exit(2);
+    }
+  };
+
   // --residue: the coverage control. Reads `gateFileSet(scopes)` — the exact array the main scan
   // below also reads — so it cannot silently narrow to one corpus. Exits 1 only on non-empty
   // RESIDUE — an acknowledged match is not a failure, it is the mechanism working.
   if (argv.includes("--residue")) {
-    const { scanned: residueFiles } = gateFileSet(scopes);
+    const { scanned: residueFiles } = listCorpus();
     if (scopes.length > 0 && residueFiles.length === 0) {
       console.error(`--scope matched 0 file(s): ${scopes.join(", ")}`);
       console.error(
@@ -1358,7 +1388,7 @@ function main() {
     process.exit(1);
   }
 
-  const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = gateFileSet(scopes);
+  const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = listCorpus();
   const hits = [];
   let exempted = 0;
   // The coverage control's acknowledgement entries are hit-counted on the CI-wired run, not only

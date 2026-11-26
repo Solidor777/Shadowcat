@@ -390,3 +390,22 @@ fn move_round_trips_through_json_with_op_tag() {
     let back: Operation = serde_json::from_value(v).expect("deserialize");
     assert_eq!(back, op);
 }
+
+#[test]
+fn write_origin_door_toggle_skips_capability_gates() {
+    // The ToggleDoor handler vets reach + visibility (or GM standing) before
+    // constructing its op, so the write reaches `apply_intent` already
+    // authorized — the same server-authored shape as the other
+    // capability-skipping origins.
+    assert!(WriteOrigin::DoorToggle.is_server_authored());
+    assert!(WriteOrigin::DoorToggle.skips_capability_gates());
+}
+
+#[test]
+fn write_origin_module_placement_skips_capability_gates() {
+    // `Room::place_effect` derives the effect set from a manifest declaration and vets the
+    // sender against its `who` before constructing the op, so the write reaches `apply_intent`
+    // already authorized.
+    assert!(WriteOrigin::ModulePlacement.is_server_authored());
+    assert!(WriteOrigin::ModulePlacement.skips_capability_gates());
+}

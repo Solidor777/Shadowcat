@@ -1,5 +1,6 @@
 import { test, it, expect, vi, describe, afterEach, beforeEach } from "vitest";
 import * as api from "./api";
+import { CHAT_HISTORY_LIMIT } from "@shadowcat/core";
 import { i18n, theme, DEFAULT_THEME_ID, type PersistedTheme } from "@shadowcat/ui-kit";
 import {
   loadSessionState,
@@ -7,8 +8,12 @@ import {
   setLastWorld,
   getPanelLayout,
   setPanelLayout,
+  getKeybindings,
+  setKeybindings,
   getChatRead,
   setChatRead,
+  getChatHistory,
+  pushChatHistory,
   flushSessionState,
   flushOnUnload,
   resetSessionState,
@@ -36,7 +41,7 @@ afterEach(() => vi.restoreAllMocks());
 
 test("load applies the saved locale and exposes the blob", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: "w1" },
+    modules: {}, global: { locale: "en", lastWorld: "w1" },
     worlds: {},
   });
   const s = await loadSessionState();
@@ -47,7 +52,7 @@ test("load applies the saved locale and exposes the blob", async () => {
 
 test("setLastWorld updates state and persists (debounced)", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -61,7 +66,7 @@ test("setLastWorld updates state and persists (debounced)", async () => {
 
 test("a locale change persists the new locale", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -73,7 +78,7 @@ test("a locale change persists the new locale", async () => {
 
 test("getPanelLayout returns null for a world with no recorded state", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   await loadSessionState();
@@ -82,7 +87,7 @@ test("getPanelLayout returns null for a world with no recorded state", async () 
 
 test("setPanelLayout records the blob per-world and schedules a debounced persist", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -98,7 +103,7 @@ test("setPanelLayout records the blob per-world and schedules a debounced persis
 
 test("getChatRead returns null for a world with no recorded state", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   await loadSessionState();
@@ -107,7 +112,7 @@ test("getChatRead returns null for a world with no recorded state", async () => 
 
 test("setChatRead records the blob per-world and schedules a debounced persist", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -121,9 +126,42 @@ test("setChatRead records the blob per-world and schedules a debounced persist",
   expect(put.mock.calls.at(-1)?.[0].worlds?.w1?.chatRead).toBe(blob);
 });
 
+test("getChatHistory is empty for a world with no recorded history", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: null }, worlds: {} });
+  await loadSessionState();
+  expect(getChatHistory("w1")).toEqual([]);
+});
+
+test("pushChatHistory appends per world, bounded, and persists only the chatHistory key", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    modules: {}, global: { locale: "en", lastWorld: null },
+    worlds: { w1: { chatRead: { general: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  for (let i = 0; i < CHAT_HISTORY_LIMIT + 3; i++) pushChatHistory("w1", `m${i}`);
+  const history = getChatHistory("w1");
+  expect(history).toHaveLength(CHAT_HISTORY_LIMIT);
+  expect(history[history.length - 1]).toBe(`m${CHAT_HISTORY_LIMIT + 2}`);
+  expect(getChatHistory("w2")).toEqual([]);
+  await flushSessionState();
+  const slice = put.mock.calls.at(-1)?.[0].worlds?.w1;
+  expect(slice?.chatHistory).toEqual(history);
+  expect(slice).not.toHaveProperty("chatRead");
+});
+
+test("a persisted chatHistory blob survives a reload", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    modules: {}, global: { locale: "en", lastWorld: null },
+    worlds: { w1: { chatHistory: ["a", "b"] } },
+  });
+  await loadSessionState();
+  expect(getChatHistory("w1")).toEqual(["a", "b"]);
+});
+
 test("a world-slice change persists ONLY the touched key within that world's slice", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {
       w1: { chatRead: { general: 1 } }, // a different key owner already stored on w1
       wOther: { chatRead: { general: 1 } },
@@ -141,7 +179,7 @@ test("a world-slice change persists ONLY the touched key within that world's sli
 
 test("a global change persists ONLY the touched field within global", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null }, // `locale` untouched below
+    modules: {}, global: { locale: "en", lastWorld: null }, // `locale` untouched below
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -155,7 +193,7 @@ test("a global change persists ONLY the touched field within global", async () =
 
 test("a locale-only change persists locale without lastWorld", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: "w1" }, // `lastWorld` untouched below
+    modules: {}, global: { locale: "en", lastWorld: "w1" }, // `lastWorld` untouched below
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -168,7 +206,7 @@ test("a locale-only change persists locale without lastWorld", async () => {
 
 test("a failed persist's re-marked slice is retried once the in-flight attempt settles, not lost", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi
@@ -193,7 +231,7 @@ test("a failed persist's re-marked slice is retried once the in-flight attempt s
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -211,7 +249,7 @@ test("a second persist attempt while one is unresolved is deferred, not raced", 
   vi.useFakeTimers();
   try {
     vi.spyOn(api, "getUiState").mockResolvedValue({
-      global: { locale: "en", lastWorld: null },
+      modules: {}, global: { locale: "en", lastWorld: null },
       worlds: {},
     });
     let resolveFirst!: () => void;
@@ -246,7 +284,7 @@ test("a second persist attempt while one is unresolved is deferred, not raced", 
 
 test("resetSessionState clears loaded, dirty tracking, and any pending timer", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -270,7 +308,7 @@ test("resetSessionState clears loaded, dirty tracking, and any pending timer", a
 
 test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later flush retries it", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi
@@ -290,7 +328,7 @@ test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later fl
 
 test("pruneStaleWorlds is a no-op when every stored world id is still a member", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -302,7 +340,7 @@ test("pruneStaleWorlds is a no-op when every stored world id is still a member",
 
 test("pruneStaleWorlds removes a stale entry from session state immediately", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: { w1: { panelLayout: { version: 1 } }, w2: { chatRead: { general: 1 } } },
   });
   vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -313,7 +351,7 @@ test("pruneStaleWorlds removes a stale entry from session state immediately", as
 
 test("pruneStaleWorlds triggers a persist sending a null removal for the stale id", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -326,7 +364,7 @@ test("pruneStaleWorlds triggers a persist sending a null removal for the stale i
 
 test("pruneStaleWorlds removing a world with pending per-key dirty state sends ONLY the null removal", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -340,7 +378,7 @@ test("pruneStaleWorlds removing a world with pending per-key dirty state sends O
 
 test("pruneStaleWorlds retries a failed removal via remarkDirty", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi
@@ -360,7 +398,7 @@ test("pruneStaleWorlds retries a failed removal via remarkDirty", async () => {
 
 test("flushOnUnload flushes a pending pruneStaleWorlds removal", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {
       w1: { panelLayout: { version: 1 } },
       w2: { panelLayout: { version: 1 } },
@@ -379,7 +417,7 @@ test("flushOnUnload flushes a pending pruneStaleWorlds removal", async () => {
 
 test("load applies the saved theme to the ui-kit theme singleton", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: {
+    modules: {}, global: {
       locale: "en",
       lastWorld: null,
       theme: { active: "slate-light", custom: {} },
@@ -393,7 +431,7 @@ test("load applies the saved theme to the ui-kit theme singleton", async () => {
 
 test("load canonicalizes a garbage saved theme to the default without throwing", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: {
+    modules: {}, global: {
       locale: "en",
       lastWorld: null,
       theme: { active: "not-a-theme", custom: "junk" } as unknown as PersistedTheme,
@@ -407,7 +445,7 @@ test("load canonicalizes a garbage saved theme to the default without throwing",
 
 test("a theme change persists ONLY global.theme through the debounced machinery", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: "w1" }, // locale/lastWorld untouched below
+    modules: {}, global: { locale: "en", lastWorld: "w1" }, // locale/lastWorld untouched below
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -421,7 +459,7 @@ test("a theme change persists ONLY global.theme through the debounced machinery"
 
 test("a theme change writes the localStorage mirror", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -435,7 +473,7 @@ test("a theme change writes the localStorage mirror", async () => {
 test("load overwrites the localStorage mirror with the canonical persisted theme", async () => {
   localStorage.setItem(THEME_MIRROR_STORAGE_KEY, "{not json");
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: {
+    modules: {}, global: {
       locale: "en",
       lastWorld: null,
       theme: { active: "slate-light", custom: {} },
@@ -504,7 +542,7 @@ describe("readPerformanceMirror / writePerformanceMirror", () => {
 
 test("the editor save sequence (saveCustom + setActive + preview clear) persists the custom theme", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    modules: {}, global: { locale: "en", lastWorld: null },
     worlds: {},
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -515,6 +553,33 @@ test("the editor save sequence (saveCustom + setActive + preview clear) persists
   theme.previewCustom(null);
   await flushSessionState();
   const patch = put.mock.calls.at(-1)?.[0];
-  expect(patch?.global?.theme?.active).toBe("custom:mine");
-  expect(patch?.global?.theme?.custom?.mine?.label).toBe("Mine");
+  const persisted = patch?.global?.theme as PersistedTheme | undefined;
+  expect(persisted?.active).toBe("custom:mine");
+  expect(persisted?.custom?.mine?.label).toBe("Mine");
+});
+
+test("a keybindings change persists ONLY global.keybindings, and an equal value is a no-op", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    modules: {}, global: { locale: "en", lastWorld: "w1" }, // locale/lastWorld untouched below
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  expect(getKeybindings()).toEqual({});
+  setKeybindings({ "ducking:push-to-duck": "keyv" });
+  await flushSessionState();
+  expect(put.mock.calls.at(-1)?.[0].global).toEqual({ keybindings: { "ducking:push-to-duck": "keyv" } });
+  const calls = put.mock.calls.length;
+  setKeybindings({ "ducking:push-to-duck": "keyv" });
+  await flushSessionState();
+  expect(put.mock.calls.length).toBe(calls);
+});
+
+test("load exposes the saved keybinding overrides", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    modules: {}, global: { locale: "en", lastWorld: null, keybindings: { "a:b": null } },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(getKeybindings()).toEqual({ "a:b": null });
 });

@@ -1,32 +1,26 @@
-//! The engine's formula language, server side: an exact behavioural twin of
-//! the client's `@shadowcat/formula` package (lexer → parser → evaluator →
-//! dependency graph). The two implementations are pinned together by one
-//! conformance corpus (`src/client/formula/src/__fixtures__/conformance.json`)
-//! that both test suites read, so a divergence fails on whichever side moved.
-//! INVARIANT: nothing here panics on any input and no `Ok` value is ever
-//! non-finite — every failure is a `FormulaError` value. INVARIANT: the
-//! language carries no game-system vocabulary; a reference path means whatever
-//! the `Resolve` implementation says it means (`SystemLeafResolver` is the
-//! engine's one such decision).
+//! This module is the server side of the engine's formula language.
+//!
+//! It is an exact behavioural twin of the client's `@shadowcat/formula` package (lexer → parser →
+//! evaluator → dependency graph).
+//!
+//! One conformance corpus, the `conformance` fixture of the client package, is read by both test
+//! suites, so a divergence fails on whichever side moved.
+//!
+//! INVARIANT: nothing here panics on any input and no `Ok` value is ever non-finite — every
+//! failure is a `FormulaError` value. INVARIANT: the language carries no game-system vocabulary; a
+//! reference path means whatever the `Resolve` implementation says it means (`SystemLeafResolver`
+//! is the engine's one such decision).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// The character classes both grammars accept, in one declaration.
 pub(crate) mod chars;
-/// Structural recursion over a parsed expression.
 pub mod evaluate;
-/// Memoized, cycle-guarded resolution over a named dependency graph.
 pub mod graph;
-/// Source text → tokens.
 pub mod lexer;
-/// Tokens → `Expr`.
 pub mod parser;
-/// The engine's default reference resolver over a document's `system` band.
 pub mod resolver;
-/// Notation templates → plain dice notation (references substituted).
 pub mod template;
-/// Failure values, the value type and the DoS caps.
 pub mod types;
 
 #[cfg(test)]

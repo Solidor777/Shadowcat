@@ -1,7 +1,8 @@
-//! Loads a `CombatSnapshot`: one combat document, its combatants, their
-//! hosts, optional history/registry, sibling active combats on the scene,
-//! and the resolved-rules override chain — everything a pure `transition`
-//! needs, gathered in one read.
+//! This module loads a `CombatSnapshot`, the state a pure `transition` runs against.
+//!
+//! The snapshot holds one combat document, its combatants, their hosts, the optional history document
+//! and resource registry, the sibling active combats on the scene and the resolved-rules override
+//! chain.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -12,13 +13,13 @@ use uuid::Uuid;
 
 use crate::data::document::{world_of, Document};
 use crate::data::engine::combat::{
-    CombatDefaults, CombatEngine, CombatHistoryEngine, CombatantEngine, CombatantKind,
-    ResourceRegistryEngine,
+    CombatDefaults, CombatEngine, CombatHistoryEngine, CombatantEngine, CombatantGroupEngine,
+    CombatantKind, ResourceRegistryEngine,
 };
 use crate::data::engine::{
-    SceneEngine, SystemDefaultsEngine, WorldSettingsEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE,
-    COMBAT_HISTORY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
-    WORLD_SETTINGS_DOC_TYPE,
+    SceneEngine, SystemDefaultsEngine, WorldSettingsEngine, COMBATANT_DOC_TYPE,
+    COMBATANT_GROUP_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
+    SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::repository::Repository;
 
@@ -40,6 +41,8 @@ use super::CombatError;
 ///     kind: CombatantKind::Event { lifespan: None, message: None },
 ///     initiative: Some(10.0),
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: BTreeMap::new(),
 /// };
 /// let doc = Document {
@@ -70,8 +73,49 @@ pub struct Combatant {
     pub engine: CombatantEngine,
 }
 
-/// Everything a pure `transition` needs for one command against one combat,
-/// read once.
+/// One combatant group: its document and parsed `CombatantGroupEngine`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::CombatantGroup;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::CombatantGroupEngine;
+/// use uuid::Uuid;
+///
+/// let engine = CombatantGroupEngine {
+///     name: "Rat swarm".to_string(),
+///     color: None,
+/// };
+/// let doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "combatant-group".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(Uuid::new_v4()),
+///     engine: Some(serde_json::to_value(&engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let group = CombatantGroup { doc, engine };
+/// assert_eq!(group.engine.name, "Rat swarm");
+/// ```
+#[derive(Clone)]
+pub struct CombatantGroup {
+    /// The stored document.
+    pub doc: Document,
+    /// Its parsed engine band.
+    pub engine: CombatantGroupEngine,
+}
+
+/// Everything a pure `transition` needs for one command against one combat.
 ///
 /// # Examples
 ///
@@ -127,6 +171,7 @@ pub struct Combatant {
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 /// assert!(snapshot.combatants.is_empty());
@@ -139,6 +184,8 @@ pub struct CombatSnapshot {
     pub engine: CombatEngine,
     /// Every combatant child, parsed.
     pub combatants: Vec<Combatant>,
+    /// Every combatant-group child, parsed.
+    pub groups: Vec<CombatantGroup>,
     /// Every token/actor document a combatant names, keyed by its own id;
     /// present only when the host document actually exists.
     pub hosts: HashMap<Uuid, Document>,
@@ -258,9 +305,27 @@ pub async fn load_snapshot(
 
     let children = repo.query_children(combat_id).await?;
     let mut combatants = Vec::new();
+    let mut groups = Vec::new();
     let mut history = None;
     for child in children {
         match child.doc_type.as_str() {
+            COMBATANT_GROUP_DOC_TYPE => {
+                match child
+                    .engine
+                    .clone()
+                    .map(serde_json::from_value::<CombatantGroupEngine>)
+                {
+                    Some(Ok(engine)) => groups.push(CombatantGroup { doc: child, engine }),
+                    Some(Err(e)) => tracing::warn!(
+                        id = %child.id,
+                        error = %e,
+                        "unparseable combatant-group engine; skipped"
+                    ),
+                    None => {
+                        tracing::warn!(id = %child.id, "combatant-group with no engine body; skipped");
+                    }
+                }
+            }
             COMBATANT_DOC_TYPE => {
                 let Some(raw) = child.engine.clone() else {
                     tracing::warn!(id = %child.id, "combatant with no engine body; skipped");
@@ -352,6 +417,7 @@ pub async fn load_snapshot(
         combat,
         engine,
         combatants,
+        groups,
         hosts,
         history,
         registry,

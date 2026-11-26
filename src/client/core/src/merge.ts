@@ -3,6 +3,7 @@
 // that module's doc comment; this file keeps only what `snapshotBase`/`syncState`/`stampInstance`
 // need locally. Every value is plain JSON (objects recurse key-by-key, arrays are opaque leaves,
 // scalars are leaves).
+import { randomUuid } from "./uuid";
 import type { WireDocument } from "./wire";
 import type { MergeBase } from "@shadowcat/types";
 
@@ -293,7 +294,7 @@ export function placementExclusions(docType: string): string[] {
 
 /** Deep-clone `doc` into a new subtree: fresh `id`, `source` pointing at the template (`doc.id`),
  * recursively for every embedded child. Used to stamp a template-added embedded child into an
- * instance. Deep-clone independence is load-bearing ([[embedded-copy-needs-deep-clone]]).
+ * instance. Deep-clone independence is load-bearing.
  * @param doc The template (or template-embedded) document to restamp.
  * @returns A fresh clone with a new `id` and `source` pointing at `doc.id`; every embedded
  * child is restamped the same way, recursively.
@@ -309,7 +310,7 @@ export function placementExclusions(docType: string): string[] {
  */
 export function restampSubtree(doc: WireDocument): WireDocument {
   const out = structuredClone(doc) as WireDocument;
-  out.id = crypto.randomUUID();
+  out.id = randomUuid();
   out.source = { id: doc.id, pack: null, version: doc.source?.version ?? 1 };
   // `base` (a sync snapshot) belongs only on a top-level stamped document, set explicitly by
   // `stampInstance` after the whole tree is assembled; a restamped subtree has no prior sync

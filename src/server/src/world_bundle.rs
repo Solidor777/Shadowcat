@@ -1,10 +1,11 @@
-//! Per-world export/import bundle I/O: builds/reads the uncompressed `.tar`
-//! format (`manifest.json` + `rows/<table>.jsonl` + `assets/<asset_id>`).
-//! Pure file/tar I/O — no `SqliteRepository` dependency, mirroring `backup`'s
-//! separation between row-fetching (data layer) and file format (this
-//! module). Synchronous (the `tar` crate has no async API); every call in
-//! this module is CPU/disk-bound and must run inside
-//! `tokio::task::spawn_blocking` from async callers.
+//! This module reads and writes the per-world export/import bundle, an uncompressed `.tar` archive
+//! of `manifest.json`, one `rows/<table>.jsonl` per table and the `assets/<asset_id>` files.
+//!
+//! See `data::world_bundle` for the row and manifest types and `http::world_bundle` for the HTTP
+//! routes. The module is pure file/tar I/O with no `SqliteRepository` dependency, mirroring
+//! `backup`'s separation between row-fetching (data layer) and file format (this module). It is
+//! synchronous (the `tar` crate has no async API), and every call in it is CPU/disk-bound, so async
+//! callers must run it inside `tokio::task::spawn_blocking`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -20,6 +21,7 @@ use crate::data::world_bundle::{
     ExportedInviteRow, ExportedMemberRow, ExportedSettingRow, WorldExportData, WorldImportData,
     BUNDLE_SCHEMA_VERSION,
 };
+use crate::trash::Trash;
 
 /// All fallible bundle read/write operations return this.
 ///
@@ -216,18 +218,21 @@ pub fn write_bundle<W: std::io::Write>(
 /// `Malformed`. Refuses (before returning) on a `schema_version` mismatch or
 /// a `rows/<table>.jsonl` line count that disagrees with the manifest's own
 /// promise — a corrupt/truncated bundle is caught here, before
-/// `SqliteRepository::import_world` ever opens a transaction.
+/// `SqliteRepository::import_world` ever opens a transaction. Staged files of a
+/// rejected bundle move into `trash`.
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use shadowcat::world_bundle::read_bundle;
+/// use shadowcat::trash::{Trash, TrashRetention};
 ///
 /// // `tar_path` must already be staged to disk (see `http::world_bundle::import_world`),
 /// // and `assets_dir` is the server's real asset root -- both are on-disk directory trees.
 /// let data = read_bundle(
 ///     std::path::Path::new("upload.tar"),
 ///     std::path::Path::new("assets"),
+///     &Trash::new(std::path::PathBuf::from("trash"), TrashRetention::Disabled),
 /// )
 /// .unwrap();
 /// assert!(data.documents.is_empty());
@@ -235,6 +240,7 @@ pub fn write_bundle<W: std::io::Write>(
 pub fn read_bundle(
     tar_path: &Path,
     assets_dir: &Path,
+    trash: &Trash,
 ) -> Result<WorldImportData, WorldBundleError> {
     let file = std::fs::File::open(tar_path)?;
     let mut archive = tar::Archive::new(file);
@@ -353,10 +359,10 @@ pub fn read_bundle(
     })();
     if let Err(e) = loop_result {
         for (_, staged) in &staged_assets {
-            let _ = std::fs::remove_file(staged);
+            let _ = trash.discard_sync(staged);
         }
         for sibling in &staged_siblings {
-            let _ = std::fs::remove_file(&sibling.staged);
+            let _ = trash.discard_sync(&sibling.staged);
         }
         return Err(e);
     }

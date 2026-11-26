@@ -39,8 +39,8 @@ test("holding the bound push-to-duck key drops the audio panel's duck gain, rele
   await expect(page.getByLabel("Enable voice ducking")).toBeChecked();
   await page.getByLabel("Enable push-to-duck key").check();
 
-  // The default binding is Backquote; the settings section shows it once bound.
-  await expect(page.getByRole("button", { name: /Bound to Backquote/ })).toBeVisible();
+  // The binding is rebindable from the keyboard-shortcuts section; its default is Backquote.
+  await expect(page.getByRole("button", { name: "Change shortcut for Push-to-duck" })).toBeVisible();
 
   // Open the audio panel to observe the duck-gain indicator.
   await page.getByTestId("launcher-trigger").click();

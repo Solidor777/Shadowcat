@@ -9,6 +9,7 @@ import { z } from "zod";
 import {
   ActorOwnerRefSchema,
   AudienceSchema,
+  VisibilitySchema,
   type WireActorOwnerRef,
   type WireAudience,
   type WireDocument,
@@ -27,7 +28,7 @@ export const MAX_MESSAGE_CHARS = 4096;
 
 /** Validates a message's `kind` tag. `"system"` is reserved for server-authored
  * notices — no client-reachable parse path can ever produce it. */
-export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
+export const MessageKindSchema = z.enum(["normal", "emote", "roll", "ooc", "system"]);
 /** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
@@ -100,6 +101,9 @@ export type DieRecord = {
   /** The die's face space, mirroring `dice::outcome::DieRecord.kind`. Absent for a roll
    * stored before this field existed (dice-3d fails closed and renders no 3D dice for it). */
   kind?: WireDieKind | null;
+  /** Index of the losing `best(...)` branch that discarded this die; absent or null for a die no
+   * `best(...)` branch discarded. Display-only: selection is decided server-side. */
+  best_of_branch?: number | null;
 };
 
 // Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
@@ -123,6 +127,7 @@ export const dieRecordSchemaImpl = z.object({
   label: z.string().nullish(),
   symbols: z.array(z.string()),
   kind: WireDieKindSchema.nullish(),
+  best_of_branch: z.number().nullish(),
 });
 /** Validator for a `DieRecord`. Only the fields the roll card renders are
  * validated; `.passthrough()` tolerates server-only audit fields (id,
@@ -248,8 +253,9 @@ export const WireRawRollSchema: z.ZodType<WireRawRoll> = wireRawRollSchemaImpl.p
  * server-side, and the client never needs to reconstruct a past recalc's
  * exact die-level state) and pass through unvalidated. */
 export type RecalcHistoryEntry = {
-  /** The roll outcome that was in effect immediately before this recalculation. */
-  previous_outcome: RollOutcome;
+  /** The roll outcome that was in effect immediately before this recalculation. Absent on a
+   * blind roll's copy for a reader who is not the GM. */
+  previous_outcome?: RollOutcome;
   /** Display name of the user who triggered this recalculation. */
   recalculated_by: string;
   /** Unix-epoch milliseconds when this recalculation was applied. */
@@ -258,7 +264,7 @@ export type RecalcHistoryEntry = {
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const recalcHistoryEntrySchemaImpl = z.object({
-  previous_outcome: RollOutcomeSchema,
+  previous_outcome: RollOutcomeSchema.optional(),
   recalculated_by: z.string(),
   recalculated_at: z.number(),
 });
@@ -362,14 +368,15 @@ export const DocLinkTargetSchema: z.ZodType<DocLinkTarget> = docLinkTargetSchema
  * `link_preview` is a server-fetched, SSRF-guarded preview of a link in the message; the
  * client renders the stored `url`/`title`/`description` strings (escaped, never
  * innerHTML) and never fetches `url` itself — the optional `image_asset_id` is a
- * post-publish-resolved thumbnail, rendered via `ctx.assets.url(uuid)` (this server's own
+ * server-resolved thumbnail, rendered via `ctx.assets.url(uuid)` (this server's own
  * asset endpoint), never a raw external URL. `oembed` is a provider-native embed from an
  * allowlisted host, structured fields only — the provider's own `html` is never sent to
  * the client. `doc_link` is a free-form, author-inserted link to a document or placed
- * token; `label` is the display text captured at authoring time, fixed at that value —
- * a renderer MUST NOT re-resolve a live name lookup for it, and any visibility check a
- * renderer performs against `target` must be a fail-closed presence check (e.g. against
- * `ctx.documents`), never a live existence assumption. */
+ * token; an explicit `label` is the display text captured at authoring time, fixed at that
+ * value — a renderer MUST NOT re-resolve a live name lookup for it. A `doc_link` without a
+ * `label` takes its text from the target's current name, resolved at render. Any visibility
+ * check a renderer performs against `target` must be a fail-closed presence check (e.g.
+ * against `ctx.documents`), never a live existence assumption. */
 export type ChatSegment =
   | {
       /** Literal text; rendered as a DOM text node by the client (never innerHTML),
@@ -393,18 +400,23 @@ export type ChatSegment =
       formula: string;
       /** Optional display label (plain data, never markup). */
       label?: string | null;
+      /** Optional caption the click sends as the flavor of the roll it makes (plain data,
+       * never markup). Absent for a button stored without one. */
+      flavor?: string | null;
     }
   | {
       /** A server-fetched, SSRF-guarded preview of a link in the message. */
       kind: "link_preview";
-      /** The previewed URL as posted. */
+      /** The address the preview was built from: the address the server's fetch ended on
+       * (normalized, and after any redirect) when a fetch built it, or the link's address in the
+       * message when a stored cache row built it. */
       url: string;
       /** Server-extracted title. */
       title: string;
       /** Server-extracted description (may be empty). */
       description: string;
-      /** The asset-ified `og:image`, once the post-publish background
-       * pipeline has resolved one. Absent/`null` until then; the client
+      /** The asset-ified `og:image` when the server has resolved one, either at send
+       * time or through a later background update. Absent/`null` otherwise; the client
        * resolves it via `ctx.assets.url(uuid)` — the server's OWN
        * `/api/assets/{uuid}` endpoint, never a raw external URL (which is
        * never stored on this segment in the first place). */
@@ -429,16 +441,17 @@ export type ChatSegment =
       thumbnail_asset_id?: string | null;
     }
   | {
-      /** A free-form, author-inserted link to a document or placed token. `label` is the
-       * display text captured at authoring time, fixed at that value — a renderer MUST NOT
-       * re-resolve a live name lookup for it, and any visibility check against `target` must
+      /** A free-form, author-inserted link to a document or placed token. An explicit `label`
+       * is the display text captured at authoring time, fixed at that value — a renderer MUST
+       * NOT re-resolve a live name lookup for it. A link without one takes its text from the
+       * target's current name, resolved at render. Any visibility check against `target` must
        * be a fail-closed presence check (e.g. against `ctx.documents`), never a live
        * existence assumption. */
       kind: "doc_link";
       /** What the link points at. */
       target: DocLinkTarget;
-      /** Display text captured at authoring time. */
-      label: string;
+      /** Display text captured at authoring time; absent/`null` when the author gave none. */
+      label?: string | null;
     }
   | {
       /** An image: a `[[asset:<uuid>|alt]]` span the author placed, or a
@@ -452,7 +465,23 @@ export type ChatSegment =
       /** Alt text, plain data (never markup) — may be empty. */
       alt: string;
     }
-  | TableDrawSegment;
+  | TableDrawSegment
+  | SecretSegment;
+
+/** A server-redacted block. Mirrors `chat::Segment::Secret`. Declared as its own named type
+ * (not a `ChatSegment` union member inline) because it recurses through `content`. The server
+ * strips `content` and `visibility` (which names the recipients) from every copy whose
+ * recipient the `visibility` excludes; a stripped segment therefore arrives with both absent,
+ * and a reader treats the content as empty. */
+export type SecretSegment = {
+  /** Discriminant. */
+  kind: "secret";
+  /** Who the server delivers `content` to; absent when the server withheld it from this
+   * recipient, whom it excludes. */
+  visibility?: z.infer<typeof VisibilitySchema>;
+  /** The hidden segments; empty when the server withheld them from this recipient. */
+  content: (ChatSegment | UnknownSegment)[];
+};
 
 /** A completed roll: the formula plus its full deterministic outcome. Mirrors
  * `chat::Segment::RollEmbed`. Declared as its own named type (rather than a `ChatSegment`
@@ -462,10 +491,12 @@ export type ChatSegment =
 export type RollEmbedSegment = {
   /** Discriminant. */
   kind: "roll_embed";
-  /** The formula as the author wrote it. */
-  formula: string;
-  /** The full deterministic outcome, natural faces included. */
-  outcome: RollOutcome;
+  /** The formula as the author wrote it. Absent on a blind roll's copy for a reader who is not
+   * the GM; `parseMessageEngine` accepts the absence only on a message with a `blind` audience. */
+  formula?: string;
+  /** The full deterministic outcome, natural faces included. Absent exactly when `formula` is
+   * (a blind roll withheld from this reader). */
+  outcome?: RollOutcome;
   /** Stable identity for this roll; a recalc targets it by this id, never by
    * array index. Optional here (not `.default(...)`) purely to tolerate a
    * malformed/legacy test fixture omitting it -- the server always emits it. */
@@ -482,6 +513,9 @@ export type RollEmbedSegment = {
   /** Present iff this roll has been recalculated at least once; visible to
    * every recipient (unlike `spec`/`raw`). */
   recalc_history?: RecalcHistoryEntry[] | null;
+  /** Author-written caption for the roll (plain text, never markup); visible to every
+   * recipient. Absent/`null` for a roll sent without one. */
+  flavor?: string | null;
 };
 
 /** One executed table draw, recursive through any nested draws it fanned
@@ -500,15 +534,17 @@ export type TableDrawSegment = {
   /** Stable identity for this draw (mirrors `roll_embed.roll_id`'s role) —
    * NOT a recalc target. */
   roll_id: string;
-  /** The notation actually rolled. */
-  formula: string;
-  /** The full deterministic outcome of the roll that selected a row. */
-  outcome: RollOutcome;
+  /** The notation actually rolled. Absent on a blind draw's copy for a reader who is not the GM. */
+  formula?: string;
+  /** The full deterministic outcome of the roll that selected a row. Absent exactly when
+   * `formula` is (a blind draw withheld from this reader). */
+  outcome?: RollOutcome;
   /** GM-visible only: the parsed spec the row-selecting roll was scored from. */
   spec?: unknown;
   /** GM-visible only: the natural-face log the row-selecting roll was evaluated from. */
   raw?: WireRawRoll | null;
-  /** The matched row, or `null`/absent when a Formula total matched no range. */
+  /** The matched row, or `null`/absent when a Formula total matched no range. Also absent
+   * when a blind draw withholds it, so absence alone does not mean "no row matched". */
   row?: DrawnRow | null;
 };
 
@@ -541,23 +577,35 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
     table_id: z.string(),
     table_name: z.string(),
     roll_id: z.string(),
-    formula: z.string(),
-    outcome: RollOutcomeSchema,
+    formula: z.string().optional(),
+    outcome: RollOutcomeSchema.optional(),
     spec: z.unknown().optional(),
     raw: WireRawRollSchema.nullish(),
     row: drawnRowSchemaImpl.nullish(),
   }),
 );
 
+/** Validator for a `SecretSegment`; `z.lazy` since it recurses through `content`. `content`
+ * defaults to empty and `visibility` is optional because the server removes both keys from a
+ * copy the recipient may not read. */
+const secretSegmentSchemaImpl: z.ZodType<SecretSegment, z.ZodTypeDef, unknown> = z.lazy(() =>
+  z.object({
+    kind: z.literal("secret"),
+    visibility: VisibilitySchema.optional(),
+    content: SegmentListSchema.default([]),
+  }),
+);
+
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const rollEmbedSegmentSchemaImpl = z.object({
   kind: z.literal("roll_embed"),
-  formula: z.string(),
-  outcome: RollOutcomeSchema,
+  formula: z.string().optional(),
+  outcome: RollOutcomeSchema.optional(),
   roll_id: z.string().optional(),
   spec: z.unknown().optional(),
   raw: WireRawRollSchema.nullish(),
   recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
+  flavor: z.string().nullish(),
 });
 /** Validator for a `RollEmbedSegment`. Input type is widened to `unknown` because the
  * `outcome: RollOutcomeSchema` field inherits `RollOutcomeSchema`'s own widened input. */
@@ -572,7 +620,12 @@ const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   rollEmbedSegmentSchemaImpl,
-  z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
+  z.object({
+    kind: z.literal("roll_button"),
+    formula: z.string(),
+    label: z.string().nullish(),
+    flavor: z.string().nullish(),
+  }),
   z.object({
     kind: z.literal("link_preview"),
     url: z.string(),
@@ -588,12 +641,13 @@ const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
     author_name: z.string().nullish(),
     thumbnail_asset_id: z.string().nullish(),
   }),
-  z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string() }),
+  z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string().nullish() }),
   z.object({ kind: z.literal("image"), asset_id: z.string(), alt: z.string() }),
 ]);
 export const chatSegmentSchemaImpl = z.union([
   nonRecursiveChatSegmentSchemaImpl,
   tableDrawSegmentSchemaImpl,
+  secretSegmentSchemaImpl,
 ]);
 /** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
  * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
@@ -629,7 +683,8 @@ const UnknownSegmentSchema = z
       s.kind !== "oembed" &&
       s.kind !== "doc_link" &&
       s.kind !== "image" &&
-      s.kind !== "table_draw",
+      s.kind !== "table_draw" &&
+      s.kind !== "secret",
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
@@ -644,7 +699,7 @@ export const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegm
  * every known `kind` string, so a malformed known-kind segment fails the
  * whole message rather than being misclassified as trustworthy here.
  * @param s The parsed segment (known or opaque forward-compat).
- * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`/`table_draw`.
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`/`table_draw`/`secret`.
  * @example
  * ```ts
  * import { isKnownSegment } from "@shadowcat/core";
@@ -662,7 +717,8 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
     s.kind === "oembed" ||
     s.kind === "doc_link" ||
     s.kind === "image" ||
-    s.kind === "table_draw"
+    s.kind === "table_draw" ||
+    s.kind === "secret"
   );
 }
 
@@ -675,7 +731,7 @@ export type ChatMessageEngine = {
   /** Actor attribution, if the sender spoke as an actor (world-pinned and
    * ownership-checked at send). */
   actor_owner?: WireActorOwnerRef | null;
-  /** Message subtype (normal/emote/roll/system). */
+  /** Message subtype (normal/emote/roll/ooc/system). */
   kind: MessageKind;
   /** Readership beyond world-readable; drives the doc's `PermissionSet`. */
   audience: WireAudience;
@@ -696,18 +752,60 @@ export type ChatMessageEngine = {
   deleted_at?: number | null;
 };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
-export const chatMessageEngineSchemaImpl = z.object({
-  channel: z.string(),
-  user_owner: z.string(),
-  actor_owner: ActorOwnerRefSchema.nullish(),
-  kind: MessageKindSchema,
-  audience: AudienceSchema.default({ kind: "public" }),
-  content: SegmentListSchema,
-  source: z.string().nullish(),
-  edited_at: z.number().nullish(),
-  deleted_at: z.number().nullish(),
-});
+/** Whether `content` holds a roll or table draw whose formula or outcome is absent, anywhere
+ * (recursing through secret blocks, and a table draw's matched row and nested draws). The
+ * server withholds those from a reader of a blind roll who is not the GM; on any other
+ * audience their absence is a malformed message.
+ * @param content The segment list to scan (raw, including forward-compat unknown entries).
+ * @returns `true` when at least one roll, table draw or recalculation entry lacks its result.
+ * @example
+ * ```ts
+ * // private helper; not part of the public API — called by the message-engine schema refinement
+ * declare const content: (ChatSegment | UnknownSegment)[];
+ * holdsWithheldRoll(content);
+ * ```
+ */
+function holdsWithheldRoll(content: (ChatSegment | UnknownSegment)[]): boolean {
+  return content.some((seg) => {
+    if (!isKnownSegment(seg)) return false;
+    if (seg.kind === "roll_embed") {
+      return (
+        seg.formula === undefined ||
+        seg.outcome === undefined ||
+        (seg.recalc_history ?? []).some((entry) => entry.previous_outcome === undefined)
+      );
+    }
+    if (seg.kind === "table_draw") {
+      return (
+        seg.formula === undefined ||
+        seg.outcome === undefined ||
+        (seg.row ? holdsWithheldRoll([...seg.row.content, ...seg.row.nested]) : false)
+      );
+    }
+    if (seg.kind === "secret") return holdsWithheldRoll(seg.content);
+    return false;
+  });
+}
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above. The refinement keeps the
+// fail-closed rule for every audience except `blind`, the only one whose copies the server
+// strips a roll's formula and outcome from.
+export const chatMessageEngineSchemaImpl = z
+  .object({
+    channel: z.string(),
+    user_owner: z.string(),
+    actor_owner: ActorOwnerRefSchema.nullish(),
+    kind: MessageKindSchema,
+    audience: AudienceSchema.default({ kind: "public" }),
+    content: SegmentListSchema,
+    source: z.string().nullish(),
+    edited_at: z.number().nullish(),
+    deleted_at: z.number().nullish(),
+  })
+  .refine((eng) => eng.audience.kind === "blind" || !holdsWithheldRoll(eng.content), {
+    message: "a roll with no formula or outcome is only valid on a blind message",
+    path: ["content"],
+  });
 /** Validator for a `ChatMessageEngine`. Input type is widened to `unknown` because
  * `audience.default(...)` makes that key optional on input while the hand-written
  * `ChatMessageEngine` output type keeps it required. */
@@ -816,7 +914,8 @@ export function buildDiceSettingsDoc(
  * (false), except `link_previews` which is tri-state: absent/`null` defaults previews ON
  * whenever `hyperlinks` is also on (`ChatContentPolicy::previews_enabled`), and OFF when
  * `hyperlinks` is off regardless of this field; `true`/`false` is an explicit GM override.
- * The panel writes single fields via
+ * `blind_visible_to_players` and `blind_visible_to_actor_owner` decide who holds a blind
+ * roll's card (absent = false: only the roller and the GM; see `Audience` `blind`). The panel writes single fields via
  * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 
@@ -836,6 +935,8 @@ export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
  *   hyperlinks: true,
  *   emails: null,
  *   link_previews: null,
+ *   blind_visible_to_players: null,
+ *   blind_visible_to_actor_owner: null,
  * });
  * ```
  */

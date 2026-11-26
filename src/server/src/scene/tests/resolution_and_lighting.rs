@@ -1,5 +1,12 @@
-//! Scene-settings resolution (diagonal rule, movement restriction/model, bounds), lighting/environment-light occlusion, the movement-gate visibility mask, and the navmesh cache's invalidation/memoization.
+//! These tests cover scene-settings resolution, lighting and the movement-gate visibility mask.
+//!
+//! Their subjects are diagonal rule, movement restriction/model and bounds resolution, lighting and
+//! environment-light occlusion, carried lights, wall and light elevation bands, the movement-gate
+//! visibility mask, region fields and ambient region overrides, move-wall selection, and the
+//! navmesh cache's invalidation and memoization.
+
 use super::*;
+use crate::data::engine::RenderHint;
 
 #[test]
 fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
@@ -59,6 +66,49 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
         "unknown rule fails to chebyshev (the engine literal the client mirrors)"
     );
+}
+
+#[test]
+fn every_wire_rule_string_resolves_through_conv_diagonal_rule() {
+    // The whole `eng::DiagonalRule` → `pathfinding::DiagonalRule` bridge, one arm per wire
+    // string: a spelling drift on either enum (e.g. "approximate" vs "approximation") fails
+    // here, and `conv_diagonal_rule`'s exhaustive match is what makes a future variant
+    // un-forgettable at compile time.
+    use serde_json::json;
+    for (wire, expect) in [
+        (
+            "chebyshev",
+            crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        ),
+        (
+            "alternating",
+            crate::scene::pathfinding::DiagonalRule::Alternating,
+        ),
+        (
+            "euclidean",
+            crate::scene::pathfinding::DiagonalRule::Euclidean,
+        ),
+        (
+            "manhattan",
+            crate::scene::pathfinding::DiagonalRule::Manhattan,
+        ),
+        (
+            "approximate",
+            crate::scene::pathfinding::DiagonalRule::Approximate,
+        ),
+        (
+            "orthogonal",
+            crate::scene::pathfinding::DiagonalRule::Orthogonal,
+        ),
+    ] {
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_settings_for_test(ws_body(&[("/pathfinding/diagonalRule", json!(wire))]));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            expect,
+            "wire string {wire:?} resolves"
+        );
+    }
 }
 
 #[test]
@@ -216,7 +266,8 @@ fn resolve_scene_movement_model_null_scene_override_inherits_world() {
 fn resolve_scene_bounds_defaults_when_absent() {
     let ecs = SceneEcs::new();
     let r = ecs.resolve_scene(crate::test_ids::test_uuid(1));
-    assert_eq!(r.bounds, (100.0, 100.0));
+    assert_eq!(r.bounds.cells, (100.0, 100.0));
+    assert_eq!(r.bounds.padding_cells, 0.0);
 }
 
 #[test]
@@ -232,7 +283,45 @@ fn resolve_scene_bounds_reads_authored_value() {
         }),
     );
     let r = ecs.resolve_scene(scene_id);
-    assert_eq!(r.bounds, (40.0, 25.0));
+    assert_eq!(r.bounds.cells, (40.0, 25.0));
+}
+
+#[test]
+fn resolve_scene_padding_reads_authored_value_and_defaults_to_zero() {
+    use serde_json::json;
+    let mut ecs = SceneEcs::new();
+    let padded = crate::test_ids::test_uuid(20);
+    let bare = crate::test_ids::test_uuid(21);
+    ecs.insert_scene_for_test(
+        padded,
+        json!({
+            "grid": { "kind": "square", "size": 100 },
+            "bounds": { "width": 10.0, "height": 8.0 },
+            "padding": 3.0
+        }),
+    );
+    ecs.insert_scene_for_test(bare, json!({ "grid": { "kind": "square", "size": 100 } }));
+    // Discrimination: fails if the resolver drops `padding` (reads 0) or invents a default margin
+    // for a scene that authors none.
+    assert_eq!(ecs.resolve_scene(padded).bounds.padding_cells, 3.0);
+    assert_eq!(ecs.resolve_scene(bare).bounds.padding_cells, 0.0);
+}
+
+#[test]
+fn resolve_scene_padding_fails_closed_to_no_margin_on_a_negative_value() {
+    use serde_json::json;
+    let mut ecs = SceneEcs::new();
+    let scene_id = crate::test_ids::test_uuid(22);
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({
+            "grid": { "kind": "square", "size": 100 },
+            "padding": -4.0
+        }),
+    );
+    // Discrimination: fails if a negative margin reaches the envelope (shrinking it below the
+    // authored rectangle) instead of resolving to no margin.
+    assert_eq!(ecs.resolve_scene(scene_id).bounds.padding_cells, 0.0);
 }
 
 #[test]
@@ -249,7 +338,7 @@ fn resolve_scene_bounds_fail_closed_on_degenerate() {
         }),
     );
     let r = ecs.resolve_scene(scene_id);
-    assert_eq!(r.bounds, (100.0, 100.0));
+    assert_eq!(r.bounds.cells, (100.0, 100.0));
 }
 
 #[test]
@@ -464,7 +553,11 @@ fn cell_visible_predicate_honors_floor_and_range() {
     assert!(cell_visible(&normal, 1.0, 5.0));
     assert!(!cell_visible(&normal, 0.1, 5.0));
     // Darkvision floor 0.0 within range 6 admits an unlit cell; beyond range it does not.
-    let dark = vec![(0.0_f64, 6.0_f64, Some("desaturate".into()))];
+    let dark = vec![(
+        0.0_f64,
+        6.0_f64,
+        Some(std::sync::Arc::new(RenderHint::Desaturate)),
+    )];
     assert!(
         cell_visible(&dark, 0.0, 3.0),
         "unlit but within darkvision range"
@@ -812,7 +905,7 @@ fn hex_env_light_walks_the_blocks_real_origin_side_edges() {
     // real boundary — half the flats left of the origin hex's centre and one circumradius
     // below it — rather than at the origin, so the origin side gets boundary samples of its
     // own and the hexes just outside the block there fall inside the raycast bound those
-    // samples terminate on. Square has always had that one-cell margin (its own origin cell's
+    // samples terminate on. Square has that one-cell margin (its own origin cell's
     // corner IS the origin); this is hex reaching the same behaviour.
     //
     // Discrimination: both probes are hexes the ORIGIN-ANCHORED walk cannot reach — their
@@ -1187,6 +1280,86 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
 }
 
 #[test]
+fn movement_gate_mask_cache_invalidates_on_a_proximity_edit() {
+    // The viewer stands 20 units (one cell) from a sight-blocking wall. A one-cell sight tier
+    // opens it, so the cell behind is visible; editing the tier down to half a cell closes it,
+    // and the cached mask must follow the edit rather than serve the wider one.
+    use serde_json::json;
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let light = entity_doc_eng(
+        20,
+        10,
+        "light",
+        json!({
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
+        }),
+    );
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({
+            "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 },
+            "blocksSight": true,
+            "proximity": { "within": 1.0, "senses": ["sight"] }
+        }),
+    );
+    let wall_id = wall.id;
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, light, wall], 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": {
+            "losRestriction": true, "fog": true,
+            "lightingEnabled": true, "lightMode": "environmentLight",
+            "environment": { "color": "#000000", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    }));
+    let target_cell = (2, 0);
+    let mask = |ecs: &SceneEcs| {
+        ecs.visible_cells_cached(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0,
+        )
+    };
+    assert!(
+        mask(&ecs).contains(&target_cell),
+        "the viewer within the tier distance sees through the wall"
+    );
+    ecs.apply_op(&Operation::Update {
+        doc_id: wall_id,
+        changes: vec![fc(
+            "/engine/proximity",
+            json!({ "within": 0.5, "senses": ["sight"] }),
+        )],
+    });
+    assert!(
+        !mask(&ecs).contains(&target_cell),
+        "a narrower tier closes the wall and the cached mask must follow"
+    );
+}
+
+#[test]
 fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask_and_clip() {
     let (mut ecs, user, scene) = scene_with_lit_player_token();
     let ctx = PermissionContext {
@@ -1389,7 +1562,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     );
 
     let authoritative = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         authoritative.is_impassable((0, 0)),
@@ -1398,7 +1571,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
 
     let player_field = ecs
-        .region_field(scene_id, Some(player), elevation::GROUND)
+        .region_field(scene_id, Some(player), elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         !player_field.is_impassable((0, 0)),
@@ -1438,7 +1611,7 @@ fn region_field_ignores_disabled_regions() {
         0,
     );
     assert!(!ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists")
         .is_impassable((0, 0)));
 }
@@ -1485,11 +1658,11 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     );
 
     let field = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
     let rows = ecs
-        .trigger_regions(scene_id, elevation::GROUND)
+        .trigger_regions(scene_id, elevation::GROUND, None)
         .expect("scene exists");
     assert_eq!(
         rows.len(),
@@ -1511,6 +1684,101 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     assert!(field_cells.contains(&(4, 0)));
     assert!(!field_cells.contains(&(6, 0)));
     assert!(!rows.iter().any(|r| r.cells.contains(&(4, 0))));
+}
+
+/// A compound-region doc fixture: additive bar `[0,0]-[300,100]` with its middle cell
+/// `[100,0]-[200,100]` holed out, behavior `behavior`, carrying `triggers`.
+fn compound_region_doc(
+    id: u128,
+    scene_id: uuid::Uuid,
+    behavior: &str,
+    triggers: serde_json::Value,
+) -> crate::data::document::Document {
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        "region",
+    );
+    d.parent_id = Some(scene_id);
+    d.engine = Some(serde_json::json!({
+        "shape": [
+            { "shape": { "kind": "rect", "points": [0.0, 0.0, 300.0, 100.0] }, "hole": false },
+            { "shape": { "kind": "rect", "points": [100.0, 0.0, 200.0, 100.0] }, "hole": true }
+        ],
+        "behavior": behavior,
+        "cost": 1.0,
+        "enabled": true,
+        "triggers": triggers,
+    }));
+    d
+}
+
+#[test]
+fn region_field_composes_compound_parts_additive_minus_holes() {
+    // The composed field reads the POST-HOLE cell set: the additive bar's flanking cells are
+    // impassable, the holed-out middle cell is passable again.
+    let scene_id = crate::test_ids::test_uuid(10);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
+            compound_region_doc(20, scene_id, "impassable", serde_json::json!([])),
+        ],
+        0,
+    );
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND, None)
+        .expect("scene exists");
+    assert!(field.is_impassable((0, 0)));
+    assert!(field.is_impassable((2, 0)));
+    assert!(
+        !field.is_impassable((1, 0)),
+        "the holed cell subtracts out of the impassable region"
+    );
+}
+
+#[test]
+fn a_token_standing_in_a_hole_does_not_count_as_entered() {
+    // The trigger identity rows are built from the SAME composed (post-hole) cell set the
+    // movement field reads: a token whose entered cells are exactly a region's hole is NOT
+    // "in the region" for trigger purposes, and never fires its Enter trigger.
+    let scene_id = crate::test_ids::test_uuid(10);
+    let enter = serde_json::json!([
+        { "on": "enter", "effect": { "type": "condition_add", "condition": "x" } }
+    ]);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
+            compound_region_doc(20, scene_id, "terrain", enter),
+        ],
+        0,
+    );
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND, None)
+        .expect("scene exists");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert!(row.cells.contains(&(0, 0)) && row.cells.contains(&(2, 0)));
+    assert!(
+        !row.cells.contains(&(1, 0)),
+        "the trigger row's cells are the composed set, holes excluded"
+    );
+    assert!(
+        crate::scene::regions::fired_triggers(&rows, &[(1, 0)], None, &[]).is_empty(),
+        "a token standing in the hole is not standing in the region"
+    );
+    assert_eq!(
+        crate::scene::regions::fired_triggers(&rows, &[(0, 0)], None, &[]).len(),
+        1,
+        "positive control: the additive flank still fires the Enter trigger"
+    );
 }
 
 #[test]
@@ -1603,6 +1871,52 @@ fn move_walls_keeps_a_blocks_sight_false_wall_for_a_player() {
     );
 }
 
+#[test]
+fn move_wall_entries_excludes_an_open_door() {
+    // Three walls, every authored flag true: an OPEN door drops out of the
+    // routing set (the resolver makes it a hole); a CLOSED door and a doorless
+    // wall stay.
+    let (mut ecs, scene) = scene_with_grid(100.0);
+    let door_wall = |door: Option<eng::DoorState>| {
+        let mut w = wall_doc_eng(scene, (100.0, 0.0), (100.0, 200.0));
+        w.engine = Some(
+            serde_json::to_value(eng::WallEngine {
+                seg: eng::Seg {
+                    x1: 100.0,
+                    y1: 0.0,
+                    x2: 100.0,
+                    y2: 200.0,
+                },
+                blocks_sight: Some(true),
+                blocks_light: Some(true),
+                blocks_move: Some(true),
+                blocks_sound: None,
+                elevation: None,
+                door,
+                direction: None,
+                sight_tier: None,
+                proximity: None,
+            })
+            .unwrap(),
+        );
+        w
+    };
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(Some(eng::DoorState::Open)),
+    });
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(Some(eng::DoorState::Closed)),
+    });
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(None),
+    });
+    assert_eq!(
+        ecs.move_wall_entries(scene, None).len(),
+        2,
+        "an open door resolves blocks_move to false and leaves the routing set"
+    );
+}
+
 /// Anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
 /// must-NOT-converge constraint, so it gets a test rather than only a doc comment.
 #[test]
@@ -1689,7 +2003,12 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
 fn absent_scene_region_field_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
     assert!(ecs
-        .region_field(crate::test_ids::test_uuid(0xDEAD), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(0xDEAD),
+            None,
+            elevation::GROUND,
+            None
+        )
         .is_none());
 }
 
@@ -2858,7 +3177,7 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     // A floor-0 mover: the floor-2 region is absent from BOTH the composed field and the
     // trigger table; the unbanded region is present in both.
     let field = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         !field.is_impassable((0, 0)),
@@ -2869,7 +3188,7 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
         "an unbanded region applies at every elevation"
     );
     let rows = ecs
-        .trigger_regions(scene_id, elevation::GROUND)
+        .trigger_regions(scene_id, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         rows.iter()
@@ -2884,11 +3203,13 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
 
     // A mover inside the band: both regions apply, to the field and to the trigger table.
     let field = ecs
-        .region_field(scene_id, None, 15.0)
+        .region_field(scene_id, None, 15.0, None)
         .expect("scene exists");
     assert!(field.is_impassable((0, 0)));
     assert!(field.is_impassable((2, 0)));
-    let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
+    let rows = ecs
+        .trigger_regions(scene_id, 15.0, None)
+        .expect("scene exists");
     assert!(rows
         .iter()
         .any(|r| r.region_id == crate::test_ids::test_uuid(20)));
@@ -3037,5 +3358,323 @@ fn visible_cells_is_level_scoped_a_mover_on_one_level_ignores_a_same_cell_source
     assert_eq!(
         l2_cached, l2_mask,
         "cached floor-2 mask must equal the uncached one"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Region ambient-light overrides (`behavior: "ambient_light"` + `ambient_override`)
+// -----------------------------------------------------------------------
+
+/// A global-illumination scene fixture: one player-owned token at (50, 50) plus `extra` docs,
+/// with world-settings setting `lightingEnabled` + `lightMode: "globalIllumination"` (the
+/// `all_bright` arm). Cell size 100, default bounds.
+fn global_illumination_scene(extra: Vec<Document>) -> (SceneEcs, Uuid, Uuid) {
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let mut docs = vec![doc(10, None, "scene"), tok];
+    docs.extend(extra);
+    let mut ecs = SceneEcs::from_documents(docs, 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "lightingEnabled": true, "lightMode": "globalIllumination" }
+    }));
+    (ecs, user, scene_id)
+}
+
+#[test]
+fn ambient_region_override_applies_under_global_illumination() {
+    // THE design-point pin: the override applies even under `LightMode::GlobalIllumination` —
+    // the `all_bright` short-circuit skips gathering placed lights and light walls, never the
+    // per-cell ambient adjustment.
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "override",
+        0.2,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    assert!(settings.all_bright(), "the fixture is the all-bright arm");
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.2,
+        "the override replaces the flat all-bright baseline inside the region"
+    );
+
+    // A Darken region darkens the flat baseline by its delta, never below 0.
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "darken",
+        0.3,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.7,
+        "a darken subtracts from the all-bright baseline"
+    );
+}
+
+#[test]
+fn ambient_region_override_does_not_disable_all_bright_elsewhere_in_the_scene() {
+    // The exception is surgical: a cell OUTSIDE the region still reads the flat all-bright
+    // maximum, and a scene with no ambient-light region at all is byte-identical (the
+    // fast path is structural — an empty adjustment map).
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "override",
+        0.2,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((550.0, 550.0), &settings, 100.0, &[]).level,
+        1.0,
+        "a cell outside the region keeps the flat all-bright maximum"
+    );
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.2,
+        "the covered cell is overridden"
+    );
+
+    let (ecs, _user, scene) = global_illumination_scene(vec![]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert!(
+        li.ambient.is_empty(),
+        "no ambient-light region: the cell_light fast path stays structural"
+    );
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        1.0,
+        "the untouched scene reads the flat maximum exactly as before"
+    );
+}
+
+#[test]
+fn a_gm_only_ambient_region_still_darkens_a_non_gms_movement_gate() {
+    // Secrecy pin: the override VALUE reads the AUTHORITATIVE field (a hidden darkness region
+    // still darkens), while the region's GEOMETRY follows the ordinary per-requester rule (a
+    // non-GM's own region field omits it entirely).
+    use crate::data::document::Visibility;
+    let mut region = ambient_region_doc(20, 10, "override", 0.0, (200.0, 200.0, 400.0, 400.0));
+    region
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), Visibility::GmOnly);
+    let (ecs, user, scene) = global_illumination_scene(vec![region]);
+
+    let player_field = ecs
+        .region_field(scene, Some(user), elevation::GROUND, None)
+        .expect("scene exists");
+    assert_eq!(
+        player_field.ambient_at((2, 2)),
+        None,
+        "a non-GM's per-requester field omits the secret region's geometry"
+    );
+    let authoritative = ecs
+        .region_field(scene, None, elevation::GROUND, None)
+        .expect("scene exists");
+    assert_eq!(
+        authoritative.ambient_at((2, 2)),
+        Some(regions::AmbientAdjustment::Override(0.0)),
+        "the authoritative field carries the secret region's value"
+    );
+
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
+    assert!(
+        mask.contains(&(0, 0)),
+        "unaffected cells stay visible under global illumination, got {mask:?}"
+    );
+    assert!(
+        !mask.contains(&(2, 2)),
+        "the hidden override-0 region drops its cells from the non-GM's mask, got {mask:?}"
+    );
+}
+
+#[test]
+fn lighting_inputs_cache_invalidates_when_an_ambient_region_is_added_or_edited() {
+    // The fingerprint pin: `LightingInputsSnapshot::ambient` must make an ambient-region
+    // add/edit miss the cache — without it the computed field is served stale.
+    let (mut ecs, _user, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    assert!(
+        !settings.all_bright(),
+        "the fixture is the composed field, not the short-circuit"
+    );
+    let before = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1, "cold: one build");
+    // The light sits at (50, 50): the composed field there is bright before the region exists.
+    assert!(
+        before.cell_light((50.0, 50.0), &settings, 100.0, &[]).level > 0.0,
+        "the lit fixture cell starts bright"
+    );
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "an unchanged snapshot is served from the cache"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    let after = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        2,
+        "adding an ambient region must miss the cache"
+    );
+    assert_eq!(
+        after.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.0,
+        "the recomputed field carries the override"
+    );
+
+    ecs.apply_op(&Operation::Update {
+        doc_id: crate::test_ids::test_uuid(20),
+        changes: vec![fc("/engine/ambient_override/level", json!(0.6))],
+    });
+    let edited = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        3,
+        "editing an ambient region's level must miss the cache"
+    );
+    assert_eq!(
+        edited.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.6,
+        "the recomputed field carries the edited level"
+    );
+}
+
+#[test]
+fn visible_cells_cache_invalidates_when_an_ambient_region_is_added() {
+    // The movement-gate mask cache fingerprints the same ambient layer (the mask reads it
+    // through `cell_light`), so a region add must miss it too — otherwise a stale, wider mask
+    // is served until some unrelated input changes.
+    let (mut ecs, user, scene) = scene_with_lit_player_token();
+    let read = |ecs: &SceneEcs| {
+        ecs.visible_cells_cached(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0,
+        )
+    };
+    let before = read(&ecs);
+    assert_eq!(ecs.visible_cells_recompute_count(), 1, "cold cache");
+    let again = read(&ecs);
+    assert_eq!(before, again);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        1,
+        "an unchanged snapshot is served from the cache"
+    );
+    assert!(
+        before.contains(&(0, 0)),
+        "the token's own lit cell starts visible"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    let after = read(&ecs);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        2,
+        "adding an ambient region must miss the movement-gate cache"
+    );
+    assert!(
+        !after.contains(&(0, 0)),
+        "the override-0 region's cell drops out of the recomputed mask"
+    );
+    // The recomputed mask must equal the uncached primitive's answer for the same inputs —
+    // the cached path can never diverge from `visible_cells`.
+    assert_eq!(
+        after,
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        ),
+        "cached and uncached masks agree after the region add"
+    );
+}
+
+#[test]
+fn ambient_fingerprint_ignores_non_ambient_regions_and_tracks_ambient_ones() {
+    // The lighting caches fingerprint `SceneEcs::ambient_light_map`, which reads only
+    // `ambient_light` regions. A terrain, impassable or arrest region contributes no ambient
+    // cell, so adding or editing one must hit the cache; an ambient region must miss it. Fails if
+    // the map (or the snapshot beside it) starts carrying a non-ambient region again.
+    let (mut ecs, _user, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1, "cold: one build");
+
+    for (id, behavior) in [(21, "terrain"), (22, "impassable"), (23, "arrest")] {
+        ecs.apply_op(&Operation::Create {
+            doc: region_doc(id, 10, behavior, 3.0, (0.0, 0.0, 300.0, 300.0)),
+        });
+        assert!(
+            ecs.ambient_light_map(scene, &[], "").is_empty(),
+            "a {behavior} region adds no ambient cell"
+        );
+        ecs.lighting_inputs(scene, "", &settings, 100.0);
+        assert_eq!(
+            ecs.lighting_inputs_recompute_count(),
+            1,
+            "adding a {behavior} region must not miss the lighting cache"
+        );
+    }
+    ecs.apply_op(&Operation::Update {
+        doc_id: crate::test_ids::test_uuid(21),
+        changes: vec![fc("/engine/cost", json!(5.0))],
+    });
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "editing a non-ambient region must not miss the lighting cache"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    assert!(
+        !ecs.ambient_light_map(scene, &[], "").is_empty(),
+        "the ambient region is read"
+    );
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        2,
+        "adding an ambient region must miss the lighting cache"
     );
 }

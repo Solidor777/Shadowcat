@@ -1,16 +1,21 @@
-//! Per-world derived scene ECS. Hydrated from documents; never persisted,
-//! never authoritative. Holds one hecs entity per scene-entity document so
-//! engine-owned systems (vision, pathfinding) can query spatial state.
+//! This module is the per-world derived scene ECS.
+//!
+//! The ECS is hydrated from documents, never persisted and never authoritative. It holds one hecs
+//! entity per scene-entity document so engine-owned systems (vision, pathfinding) can query spatial
+//! state.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+mod anchored_regions;
 pub mod audibility;
+pub mod bars;
 pub(crate) mod elevation;
 pub(crate) mod emitters;
 pub mod explored;
 pub mod footprint;
 pub(crate) mod grid_shape;
+pub use grid_shape::SceneBounds;
 pub mod lighting;
 pub(crate) mod move_exec;
 pub(crate) mod move_stream;
@@ -18,7 +23,9 @@ pub mod movement;
 pub(crate) mod movement_tags;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
+pub(crate) mod placed_regions;
 pub(crate) mod regions;
+pub mod rotation_gate;
 pub(crate) mod senses;
 mod visibility_compute;
 pub mod vision;
@@ -48,8 +55,8 @@ use crate::scene::lighting::Band;
 pub use visibility_compute::compute_derived;
 pub(crate) use visibility_compute::segments_cross;
 use visibility_compute::{
-    accumulate_visible_cells, cell_visible, point_qualifies, source_los_poly, LightingInputs,
-    VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
+    accumulate_visible_cells, cell_visible, facing_arc_for, point_qualifies, source_los_poly,
+    LightingInputs, VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
 };
 
 /// Resolved per-scene lighting mode. The client's wire twin is generated from
@@ -67,8 +74,10 @@ use visibility_compute::{
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
-    /// Every LOS cell is fully bright; per-light raycasts are skipped
-    /// (`LightingInputs::all_bright`).
+    /// Every LOS cell's BASE field is fully bright; per-light raycasts are skipped
+    /// (`LightingInputs::all_bright`). The ambient-region layer still applies over that flat
+    /// baseline (`LightingInputs::cell_light` consults `LightingInputs::ambient` regardless):
+    /// an `ambient_light` region darkens/brightens/overrides its cells even here.
     GlobalIllumination,
     /// Ambient environment level + per-light contributions, sampled per cell
     /// by `lighting::cell_illumination`.
@@ -166,6 +175,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 /// # Examples
 ///
 /// ```
+/// use shadowcat::data::engine::FogPooling;
 /// use shadowcat::scene::{GridKind, LightMode, MovementModel, MovementRestriction, ResolvedScene};
 ///
 /// let scene = ResolvedScene {
@@ -179,8 +189,12 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     movement_restriction: MovementRestriction::Visible,
 ///     movement_model: MovementModel::GridStepped,
 ///     partial_cell_leniency: false,
-///     bounds: (100.0, 100.0),
+///     bounds: shadowcat::scene::SceneBounds { cells: (100.0, 100.0), padding_cells: 0.0 },
 ///     grid_kind: GridKind::Square,
+///     fog_pooling: FogPooling::Individual,
+///     auto_rotate_tokens: false,
+///     facing_vision: false,
+///     facing_turn_rule: shadowcat::data::engine::FacingTurnRule::Free,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -210,76 +224,54 @@ pub struct ResolvedScene {
     /// corner qualifies; strict samples the center only (`point_qualifies`
     /// is the shared per-point decision for all arms).
     pub partial_cell_leniency: bool,
-    /// Scene dimensions (width, height) measured in grid units (cells), continuous — never world
-    /// units, and not required to be integral. Always finite `> 0` (default
-    /// `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle, after
-    /// `GridShape::world_extent` converts it.
-    pub bounds: (f64, f64),
+    /// Scene dimensions (width, height) in grid cells plus the margin around them (see
+    /// `SceneBounds`). The navmesh's outer rectangle, after `GridShape::world_extent` converts it.
+    pub bounds: SceneBounds,
     /// The scene's cell geometry family. Decides the `GridShape` implementation, the coordinate
     /// system of persisted explored fog, and — because it is part of `ResolvedScene` — the
     /// visibility cache's own invalidation key.
     pub grid_kind: GridKind,
+    /// Which `explored_fog` bucket this scene's players accumulate into (see
+    /// `eng::FogPooling`). Every explored-fog reader derives its row through
+    /// `scene::explored::explored_fog_key`: `ws::conn::enrich_vision_explored`,
+    /// `ws::conn::handle_pathfind`, `Room::publish`'s Create gate and `Room::execute_move`.
+    pub fog_pooling: eng::FogPooling,
+    /// Whether a completed move rotates the mover to face its movement direction
+    /// (`Room::execute_move`, gated per token by `TokenEngine::lock_rotation`).
+    pub auto_rotate_tokens: bool,
+    /// Whether a token's `FacingVision` limits its sight to a forward arc plus bubble
+    /// (`gather_vision_sources_in_scene` reads it). Part of `ResolvedScene`, so toggling it misses
+    /// the visibility cache (`VisibilityInputsSnapshot::settings`).
+    pub facing_vision: bool,
+    /// When a player may rotate their own token (`Room::publish` refuses a non-GM rotation write
+    /// through `rotation_gate::rotation_refusal`).
+    pub facing_turn_rule: eng::FacingTurnRule,
 }
 
 impl ResolvedScene {
-    /// Whether every LOS cell is fully bright and the per-light raycasts are skipped:
-    /// lighting off, or `GlobalIllumination`. THE one predicate behind `LightingInputs::
+    /// Whether the per-light raycasts are skipped: lighting off, or `GlobalIllumination`.
+    /// THE one predicate behind `LightingInputs::
     /// all_bright`, the visibility-cache snapshot and the carried-light move timeline
     /// (`SceneEcs::mover_light_inputs`), so the three cannot disagree about which scenes
-    /// have a light field at all.
+    /// have a light field at all. The short-circuit skips gathering placed lights and light
+    /// walls ONLY — the ambient-region layer (`LightingInputs::ambient`, applied by
+    /// `LightingInputs::cell_light` over the flat baseline) still applies: an `ambient_light`
+    /// region edits even an all-bright scene's cells.
     pub(crate) fn all_bright(&self) -> bool {
         !self.lighting_enabled || matches!(self.light_mode, LightMode::GlobalIllumination)
     }
 }
 
-/// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
-/// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
-/// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
-/// `perceives`/`requires_los` carry the sense descriptor through: a `Creatures` mode
-/// contributes nothing to the illumination-floor mask and instead feeds
-/// `SceneEcs::player_perceived_tokens`.
-///
-/// # Examples
-///
-/// ```
-/// use shadowcat::data::engine::scene::Perception;
-/// use shadowcat::scene::VisionMode;
-///
-/// let darkvision = VisionMode {
-///     illumination_floor: "dark".into(),
-///     default_range: 12.0,
-///     render_hint: Some("desaturate".into()),
-///     perceives: Perception::Terrain,
-///     requires_los: true,
-/// };
-/// assert_eq!(darkvision.illumination_floor, "dark");
-/// ```
-#[derive(Clone, Debug)]
-pub struct VisionMode {
-    /// Minimum illumination band name the mode can see under.
-    pub illumination_floor: String,
-    /// Default vision range in cells (used when a token authors none).
-    pub default_range: f64,
-    /// Client render treatment (e.g. `"desaturate"`); `None` = plain.
-    pub render_hint: Option<String>,
-    /// What the mode perceives (terrain mask vs creature perception).
-    pub perceives: eng::Perception,
-    /// Whether sight walls bound the mode's reach (creature senses only; the
-    /// terrain mask is always LOS-gated).
-    pub requires_los: bool,
-}
+/// The resolved vision mode IS the `data::engine` document type: `SceneEcs::resolved_vision_modes`
+/// returns the authored or seed `VisionMode` unchanged, so the wire shape and the server's
+/// resolved shape cannot drift (a second hand-copied struct would have to be edited in step with
+/// every field the engine type gains).
+pub use crate::data::engine::VisionMode;
 
-/// Wire (`eng::VisionMode`) → resolved bridge — the single conversion both the
-/// authored-doc branch and the seed fallback of `resolved_vision_modes` pass through.
-fn conv_vision_mode(m: eng::VisionMode) -> VisionMode {
-    VisionMode {
-        illumination_floor: m.illumination_floor,
-        default_range: m.default_range,
-        render_hint: m.render_hint,
-        perceives: m.perceives,
-        requires_los: m.requires_los,
-    }
-}
+/// The shared, cheaply clonable handle a resolved `VisionMode.render_hint` travels as through
+/// the per-source vision floors and lit-mask cells: a `Custom` hint's `params` is cloned once per
+/// token floor build rather than once per candidate cell.
+pub(crate) type SharedRenderHint = Option<std::sync::Arc<eng::RenderHint>>;
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
 /// (untinted) on any malformed input. CSS shorthand: each nibble is doubled (`#abc` → `#aabbcc`).
@@ -352,13 +344,16 @@ fn conv_movement_model(v: eng::MovementModel) -> MovementModel {
     }
 }
 
-/// Wire (`eng::DiagonalRule`) → router-enum bridge.
+/// Wire (`eng::DiagonalRule`) → router-enum bridge. Exhaustive by construction (no wildcard
+/// arm): a variant added to one enum without the other fails the build here.
 fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
     match v {
         eng::DiagonalRule::Chebyshev => pathfinding::DiagonalRule::Chebyshev,
         eng::DiagonalRule::Manhattan => pathfinding::DiagonalRule::Manhattan,
         eng::DiagonalRule::Euclidean => pathfinding::DiagonalRule::Euclidean,
         eng::DiagonalRule::Alternating => pathfinding::DiagonalRule::Alternating,
+        eng::DiagonalRule::Approximate => pathfinding::DiagonalRule::Approximate,
+        eng::DiagonalRule::Orthogonal => pathfinding::DiagonalRule::Orthogonal,
     }
 }
 
@@ -456,8 +451,17 @@ pub struct LitScene {
     /// Grid cell size in scene units.
     pub cell: f64,
     /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
-    pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
+    pub cells: Vec<LitCell>,
 }
+
+/// One visible cell: `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
+pub type LitCell = (
+    i32,
+    i32,
+    usize,
+    u32,
+    Option<std::sync::Arc<eng::RenderHint>>,
+);
 
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
 /// so rays always terminate on the box rather than escaping to infinity.
@@ -472,7 +476,7 @@ pub(crate) struct SightSource {
     /// Committed viewpoint in scene units.
     vp: vision::P,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    floors: Vec<(f64, f64, Option<String>)>,
+    floors: Vec<(f64, f64, SharedRenderHint)>,
     /// The source token's elevation (`elevation::GROUND` = grounded) — a creature sense
     /// (`senses`) feels nothing from the air (`senses::sense_perceives`).
     elevation: f64,
@@ -483,6 +487,9 @@ pub(crate) struct SightSource {
     walls: Vec<vision::Seg>,
     /// LOS polygon from `vp` through `walls` (the whole scene bound when LOS is off).
     poly: Vec<vision::P>,
+    /// The source's facing arc: `los_at`'s re-raycast of a moving source reuses it, turned to
+    /// the move's committed rotation by `SightSources::turn_source` when the move writes one.
+    facing: Option<vision::FacingArc>,
 }
 
 /// A recipient's line of sight in one scene — the LOS half of the visibility predicate: the
@@ -550,6 +557,7 @@ impl SightSources {
                         &s.walls,
                         self.settings.los_restriction,
                         self.extent,
+                        s.facing,
                     )),
                 ),
                 None => (s.vp, Cow::Borrowed(s.poly.as_slice())),
@@ -676,6 +684,11 @@ impl RecipientSight {
                 dim_radius: cells(sample.dim),
                 falloff: emitters::field_falloff(Some(sample.falloff)),
                 enabled: true,
+                // A sample exists only while the light's darkness window is open, so the
+                // composed light is unconditionally active.
+                active_below_env: None,
+                angle: sample.angle,
+                rotation: sample.rotation.unwrap_or(0.0),
             },
             // The sample's own occluder; a sample carrying none composes as an unoccluded light,
             // exactly as `cell_illumination` reads an empty occluder for a committed light.
@@ -936,10 +949,11 @@ pub struct RouteRequester<'a> {
 ///     budget_cells: None,
 ///     traits: Default::default(),
 ///     elevation: 0.0,
+///     token: None,
 /// };
 /// assert_eq!(mover.footprint_radius, 0.4);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RouteMover {
     /// Mover footprint radius in CELLS — token-derived via `SceneEcs::resolve_token_footprint`
     /// when the request names a token, else the wire's own hypothetical value.
@@ -960,6 +974,10 @@ pub struct RouteMover {
     /// named-token request: the caller re-resolves it off the token exactly as `footprint_radius`
     /// is re-resolved.
     pub elevation: f64,
+    /// The named mover token, `None` for a token-less preview. Selects which token-anchored
+    /// regions exempt the mover (`RegionAnchor::include_carrier` unset), so the route and the
+    /// executor price a carrier against the same region set.
+    pub token: Option<Uuid>,
 }
 
 /// The per-world derived world. Writes are serialized by the caller
@@ -1040,6 +1058,40 @@ pub struct SceneEcs {
     /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
     /// doesn't linger indefinitely.
     engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
+    /// Per-region memo of the sense-occluder outline (`regions::occluder_outline`), keyed on the
+    /// region document's id. The three wall collectors run on every vision, light and sound
+    /// computation, so the outline is derived once and reused while the entry's shape, cell size
+    /// and grid kind still match (`regions::OccluderCacheEntry`). `Mutex`, never locked across an
+    /// `.await`, matching `engine_cache`.
+    occluder_cache: std::sync::Mutex<HashMap<Uuid, regions::OccluderCacheEntry>>,
+    /// EPHEMERAL token→region membership table: token id → the set of
+    /// trigger-bearing region ids the token currently OCCUPIES — the
+    /// authoritative `trigger_regions` identity rows intersecting the firing
+    /// report's occupancy basis (`TriggerReport::occupancy`: a move's stop
+    /// cell, a placement's footprint). This is the prior-event
+    /// state `TriggerEvent::Exit` firing diffs the post-event occupancy
+    /// against (`Room::fire_region_triggers` updates it unconditionally after
+    /// every move and every placement/teleport fire), AND the occupancy proof
+    /// the turn/round-scoped trigger family fires from
+    /// (`Room::fire_turn_round_triggers` reads it at each combat boundary the
+    /// transition reports — a clock boundary never WRITES it, since the clock
+    /// does not move tokens). Derived runtime state,
+    /// never persisted: documents are the source of truth and this table is
+    /// rebuilt event-by-event — the same shape as `Room::moving`'s
+    /// in-flight-registry, also ephemeral and rebuilt from documents. Restart
+    /// residual (accepted, the same class as `Room::moving`'s own): a fresh
+    /// ECS hydrates with an EMPTY table, so a token standing inside a region
+    /// across a server restart has no recorded membership to leave — its
+    /// first post-restart move fires no `Exit` for that region (correct: as
+    /// far as the fresh derivation knows it never left), which also means an
+    /// `Enter` effect it carried across the restart stays applied until it
+    /// re-enters and genuinely leaves again. Pruned when a token document is
+    /// deleted (`apply_op`); an entry naming a deleted/disabled region
+    /// self-heals on the token's next fire (the diff drops it, and
+    /// `regions::fired_triggers` matches exited ids only against live rows).
+    /// Plain field, no interior mutability: written only under the room's
+    /// `scene.write()` guard.
+    region_membership: HashMap<Uuid, std::collections::BTreeSet<Uuid>>,
     /// `visible_cells_cached`'s per-`(user, scene)` mask cache for the movement gate.
     /// Keyed `(user, scene)`, NOT `(user, scene, lenient)` — a `lenient` flip is just another
     /// fingerprint field, so it naturally invalidates the entry rather than needing a wider key
@@ -1101,9 +1153,15 @@ struct LightingInputsSnapshot {
     /// Resolved scene lights minus the excluded emitters (empty under `all_bright`).
     lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands (empty under `all_bright`).
-    light_walls: Vec<elevation::BandedWall>,
+    light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
-    sight_walls: Vec<elevation::BandedWall>,
+    sight_walls: Vec<elevation::WallEntry>,
+    /// The composed per-cell ambient-light adjustment map for the field's level
+    /// (`SceneEcs::ambient_light_map` — the AUTHORITATIVE region read). Fingerprinted because
+    /// `cell_light` consumes it: an ambient-light region added, edited, moved between levels,
+    /// or deleted must miss the cache exactly like a light edit (a region doc's engine body is
+    /// not otherwise represented in this fingerprint).
+    ambient: BTreeMap<(i32, i32), regions::AmbientAdjustment>,
 }
 
 /// Whether the changes being mirrored have cleared the authoritative write path.
@@ -1210,9 +1268,9 @@ fn engine_tier_visible_to(doc: &Document, access: &crate::data::permission::Acce
         .permissions
         .property_overrides
         .get("/engine")
-        .copied()
+        .cloned()
         .unwrap_or(crate::data::document::Visibility::All);
-    access.can_see(tier)
+    access.can_see(&tier)
 }
 
 /// Whether `access` receives `doc`'s `/engine` geometry: BOTH gates document egress applies, in
@@ -1230,8 +1288,9 @@ fn engine_geometry_visible_to(doc: &Document, access: &crate::data::permission::
 /// access via `permission::resolve_access` + `effective_owner(doc, None)` — the no-actor-join
 /// form, exact for any doc type that never carries an actor link (wall, region) — and defers the
 /// tier decision itself to `engine_tier_visible_to`. `move_walls` and `region_field` both call
-/// this rather than keep a private copy.
-fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
+/// this rather than keep a private copy, and `ws::room::Room::toggle_door`'s hidden-door refusal
+/// reaches it for the same wall-document decision.
+pub(crate) fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     let Some(user) = viewer else {
         return true;
     };
@@ -1316,8 +1375,10 @@ impl SceneEcs {
             vision_modes: None,
             actors: HashMap::new(),
             combats: HashMap::new(),
+            region_membership: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
             engine_cache: std::sync::Mutex::new(HashMap::new()),
+            occluder_cache: std::sync::Mutex::new(HashMap::new()),
             visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             visible_cells_recompute_count: std::sync::atomic::AtomicU64::new(0),
@@ -1333,7 +1394,7 @@ impl SceneEcs {
     /// hook, is what makes the cache correct). Callers MUST pass the document's OWN id (`doc.id`,
     /// or the equivalent `self.index`/`self.actors` key it was looked up under) so a stale cache
     /// entry can never be read under a DIFFERENT document's id.
-    fn engine_as_cached<T>(&self, id: Uuid, doc: &Document) -> Option<T>
+    pub(crate) fn engine_as_cached<T>(&self, id: Uuid, doc: &Document) -> Option<T>
     where
         T: serde::de::DeserializeOwned + Clone + Send + 'static,
     {
@@ -1612,6 +1673,7 @@ impl SceneEcs {
             Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => *doc_id,
         };
         self.engine_cache.lock().unwrap().remove(&touched_id);
+        self.occluder_cache.lock().unwrap().remove(&touched_id);
 
         // Determine whether this op can affect any cached navmesh's geometry (a `wall` doc's
         // blocksMove/seg fields, or a `scene` doc's bounds) BEFORE applying it — an Update needs
@@ -1688,6 +1750,11 @@ impl SceneEcs {
                     if leaves_scene_runtime {
                         let _ = self.world.despawn(e);
                         self.index.remove(doc_id);
+                        // A token that leaves scene runtime entirely also leaves every
+                        // region: drop its trigger-region membership with it, the same
+                        // rule the Delete arm applies — it has no committed position any
+                        // fire site could diff, so nothing may fire an `Exit` for it.
+                        self.region_membership.remove(doc_id);
                     }
                 }
                 if let Some(a) = self.actors.get_mut(doc_id) {
@@ -1733,6 +1800,11 @@ impl SceneEcs {
                     }
                     "combat" => {
                         self.combats.remove(&doc.id);
+                    }
+                    "token" => {
+                        // A deleted token's trigger-region membership goes with it;
+                        // nothing may fire an `Exit` for a token that no longer exists.
+                        self.region_membership.remove(&doc.id);
                     }
                     _ => {}
                 }
@@ -1798,7 +1870,8 @@ impl SceneEcs {
     /// // No scene document hydrated: resolves to the engine-literal defaults.
     /// let ecs = SceneEcs::new();
     /// let resolved = ecs.resolve_scene(uuid::Uuid::new_v4());
-    /// assert_eq!(resolved.bounds, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(resolved.bounds.cells, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(resolved.bounds.padding_cells, 0.0);
     /// ```
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World and system layers share one overlay shape: each contributes
@@ -1851,6 +1924,22 @@ impl SceneEcs {
             .and_then(|s| s.partial_cell_leniency)
             .or(sd_scene.and_then(|s| s.partial_cell_leniency))
             .unwrap_or(d.partial_cell_leniency);
+        let d_fog_pooling = ws_scene
+            .and_then(|s| s.fog_pooling)
+            .or(sd_scene.and_then(|s| s.fog_pooling))
+            .unwrap_or(d.fog_pooling);
+        let d_auto_rotate = ws_scene
+            .and_then(|s| s.auto_rotate_tokens)
+            .or(sd_scene.and_then(|s| s.auto_rotate_tokens))
+            .unwrap_or(d.auto_rotate_tokens);
+        let d_facing_vision = ws_scene
+            .and_then(|s| s.facing_vision)
+            .or(sd_scene.and_then(|s| s.facing_vision))
+            .unwrap_or(d.facing_vision);
+        let d_turn_rule = ws_scene
+            .and_then(|s| s.facing_turn_rule)
+            .or(sd_scene.and_then(|s| s.facing_turn_rule))
+            .unwrap_or(d.facing_turn_rule);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1876,16 +1965,26 @@ impl SceneEcs {
             .and_then(|v| v.movement_restriction)
             .unwrap_or(d_move);
         let mmodel = vision_ov.and_then(|v| v.movement_model).unwrap_or(d_model);
+        let fog_pooling = vision_ov
+            .and_then(|v| v.fog_pooling)
+            .unwrap_or(d_fog_pooling);
+        let auto_rotate_tokens = vision_ov
+            .and_then(|v| v.auto_rotate_tokens)
+            .unwrap_or(d_auto_rotate);
+        let facing_vision = vision_ov
+            .and_then(|v| v.facing_vision)
+            .unwrap_or(d_facing_vision);
+        let facing_turn_rule = vision_ov
+            .and_then(|v| v.facing_turn_rule)
+            .unwrap_or(d_turn_rule);
 
-        // Scene bounds: per-scene, no world default — a fixed finite fallback. A
-        // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
-        let bounds = s
-            .and_then(|s| s.bounds.as_ref())
-            .filter(|b| {
-                b.width.is_finite() && b.width > 0.0 && b.height.is_finite() && b.height > 0.0
-            })
-            .map(|b| (b.width, b.height))
-            .unwrap_or(DEFAULT_SCENE_BOUNDS_UNITS);
+        // Scene bounds: per-scene, no world default — a fixed finite fallback. A degenerate axis
+        // or margin fails closed inside `SceneBounds::resolve`.
+        let bounds = SceneBounds::resolve(
+            s.and_then(|s| s.bounds.as_ref())
+                .map(|b| (b.width, b.height)),
+            s.and_then(|s| s.padding),
+        );
 
         ResolvedScene {
             los_restriction: los,
@@ -1900,6 +1999,10 @@ impl SceneEcs {
             partial_cell_leniency: d_lenient,
             bounds,
             grid_kind: grid_kind_from(s),
+            fog_pooling,
+            auto_rotate_tokens,
+            facing_vision,
+            facing_turn_rule,
         }
     }
 
@@ -2099,17 +2202,11 @@ impl SceneEcs {
             .and_then(|d| self.engine_as_cached::<eng::VisionModesEngine>(d.id, d));
         match parsed {
             Some(vme) => {
-                for (id, m) in vme.modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                out.extend(vme.modes);
             }
             None => {
-                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it):
-                // read through the SAME `conv_vision_mode` as the authored-doc branch so the two
-                // can never drift.
-                for (id, m) in eng::VisionModesEngine::seed().modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it).
+                out.extend(eng::VisionModesEngine::seed().modes);
             }
         }
         out
@@ -2128,10 +2225,12 @@ impl SceneEcs {
     }
 
     /// The token's current committed position `(x, y)` in scene coordinates.
-    /// `None` if `token` is not a token entity or has no `(x, y)` in its `engine` band.
-    /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
-    /// authoritative ECS state; `Room::execute_move` calls it to read the committed start
-    /// position before dispatching to the executor.
+    /// `None` if `token` is not a token or has no committed `engine` band that decodes as a
+    /// `TokenEngine`.
+    ///
+    /// `move_exec::execute_move` compares `path[0]` with it. For a non-GM requester,
+    /// `Room::toggle_door` measures the distance from it to the toggled wall's segment for each
+    /// token the requester effectively owns in the wall's scene that has a position.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
@@ -2142,20 +2241,23 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish`'s sole caller: the refusal predicate compares this call's pre- and
-    /// post-image to reject any non-GM `Update` that changes a token's position (players move
-    /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
-    /// inert against this `/engine`-only read; see the
-    /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
-    ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
-    /// post_image_end)`. The end is the committed `engine` band with **all** changes applied in
-    /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
-    /// `/engine` write or duplicate `/engine/x` changes cannot evade the collision check by
-    /// presenting a safe target while committing an unsafe one. A `/system/x` write on a token
-    /// (game-system data) never reaches this gate — position lives exclusively in `/engine`.
-    /// `None` if `token_id` is not a token with `(x,y)`. Reads the authoritative ECS state,
-    /// never the client's `old`.
+    /// post_image_end)`.
+    ///
+    /// The end is the committed `engine` band with **all** changes applied in array order
+    /// (last-write-wins) — exactly what `apply_intent` commits — so a wholesale `/engine` write
+    /// or duplicate `/engine/x` changes cannot evade the collision check by presenting a safe
+    /// target while committing an unsafe one. Reads the authoritative ECS state, never the
+    /// client's `old`. `None` if `token_id` is not a token, the token has no `parent_id`, it has
+    /// no committed `engine` band that decodes as a `TokenEngine`, the document cannot be read or
+    /// serialized, or the post-image lacks a numeric `/engine/x` or `/engine/y`.
+    ///
+    /// `Room::publish` refuses a non-GM `Update` whose committed start and post-image end
+    /// differ, and reads this a second time to collect placement-trigger candidates.
+    /// `Room::execute_move` and `SceneEcs::token_footprint_cells` call it with no changes to
+    /// read the token's scene and committed position. A `/system/x` write on a token is
+    /// structurally inert against this `/engine`-only read; see the
+    /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// # Examples
     ///
@@ -2311,7 +2413,8 @@ impl SceneEcs {
                 .into_iter()
                 .map(|s| {
                     let walls = elevation::walls_at_elevation(&sight_walls, s.elevation);
-                    let poly = source_los_poly(s.vp, &walls, settings.los_restriction, extent);
+                    let poly =
+                        source_los_poly(s.vp, &walls, settings.los_restriction, extent, s.facing);
                     SightSource {
                         id: s.id,
                         vp: s.vp,
@@ -2320,6 +2423,7 @@ impl SceneEcs {
                         senses: s.senses,
                         walls,
                         poly,
+                        facing: s.facing,
                     }
                 })
                 .collect()
@@ -2459,6 +2563,28 @@ impl SceneEcs {
         out
     }
 
+    /// Each scene's resolved `FogPooling` mode (`resolve_scene(scene).fog_pooling`) — the ONE
+    /// axis `ws::conn::enrich_vision_explored` reads to pick `scene::explored::explored_fog_key`'s
+    /// bucket. Captured under the ECS read lock alongside `scene_grid_sizes`/`scene_grid_shapes`,
+    /// since `enrich_vision_explored` itself runs after that lock is dropped (async DB I/O).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.scene_fog_pooling().is_empty());
+    /// ```
+    pub fn scene_fog_pooling(&self) -> std::collections::HashMap<Uuid, eng::FogPooling> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "scene" {
+                continue;
+            }
+            out.insert(e.doc.id, self.resolve_scene(e.doc.id).fog_pooling);
+        }
+        out
+    }
+
     /// The scene's `blocksMove` wall segments with their elevation bands — the raw collector
     /// behind `move_walls`. Two-value secrecy contract identical to `region_field`'s, and never a
     /// third mode: `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM
@@ -2471,15 +2597,25 @@ impl SceneEcs {
     /// INVARIANT: same wall filter as `blocks_move` (doc_type "wall", parent = scene,
     /// `engine.blocksMove == true`, endpoints at `engine.seg.{x1,y1,x2,y2}`) — any divergence
     /// would allow the pathfinder to route through walls the movement gate would then reject.
+    /// The flag read goes through `WallEngine::effective_flags` — the ONE resolver over the
+    /// authored flags and the wall's door state — so an open door never blocks movement even
+    /// when every authored flag is set.
     ///
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
     /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
     /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
+    ///
+    /// The segment carries `vision::Seg::one_way` from `WallEngine::direction` (movement
+    /// honors a one-way wall, filtered per step against the mover's PRE-STEP position by
+    /// `move_exec::execute_move`/by `pathfinding::cell_enterable` from the from-cell center —
+    /// both through the shared `vision::Seg::transparent_from`). `limited` is always `false`
+    /// here: the partial-blocking tier is sight-only (`WallSightTier`), so a `Limited` wall
+    /// still fully blocks movement when its resolved `blocksMove` flag is set.
     pub(crate) fn move_wall_entries(
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
-    ) -> Vec<elevation::BandedWall> {
+    ) -> Vec<elevation::WallEntry> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -2488,19 +2624,22 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_move != Some(true) {
+            if !wall.effective_flags().blocks_move {
                 continue;
             }
             if !engine_tier_visible(&w.doc, viewer) {
                 continue;
             }
-            out.push((
-                vision::Seg {
+            out.push(elevation::WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: wall.direction.map(|d| d.blocking_side),
+                    limited: false,
+                    open_within: None,
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         out
     }
@@ -2627,7 +2766,7 @@ impl SceneEcs {
     ///     world_defaults: &defaults,
     ///     explored: None,
     /// };
-    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0 };
+    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0, token: None };
     /// // No scene document exists: the route is refused, not routed against a synthesized grid.
     /// let result = ecs.pathfind(requester, uuid::Uuid::new_v4(), (0.0, 0.0), &[], mover);
     /// assert!(result.is_err());
@@ -2652,6 +2791,7 @@ impl SceneEcs {
             budget_cells,
             traits,
             elevation,
+            token: mover_token,
         } = mover;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
@@ -2722,9 +2862,12 @@ impl SceneEcs {
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
-                let Some(regions) =
-                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
-                else {
+                let Some(regions) = self.region_field(
+                    scene,
+                    if is_gm { None } else { Some(user) },
+                    elevation,
+                    mover_token,
+                ) else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
                 pathfinding::find(
@@ -2750,9 +2893,12 @@ impl SceneEcs {
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
                 // paths. The per-requester field omits any region a non-GM cannot see (secret
                 // regions spring only at `move_exec`).
-                let Some(regions) =
-                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
-                else {
+                let Some(regions) = self.region_field(
+                    scene,
+                    if is_gm { None } else { Some(user) },
+                    elevation,
+                    mover_token,
+                ) else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
                 // An exempt mover's terrain does not force the weighted sub-path: the
@@ -2762,7 +2908,7 @@ impl SceneEcs {
                 let needs_weighted = if traits.ignore_terrain {
                     regions.has_impassable()
                 } else {
-                    regions.has_terrain_or_impassable()
+                    regions.has_terrain_or_impassable(&traits.tags)
                 };
                 if needs_weighted {
                     // Euclidean base metric: the grid's step cost AND its admissible
@@ -2796,7 +2942,7 @@ impl SceneEcs {
                         waypoints,
                         pathfinding::PathInputs {
                             shape: &*euclid_shape,
-                            ..inputs
+                            ..inputs.clone()
                         },
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
@@ -2893,14 +3039,53 @@ impl SceneEcs {
     /// The composed field additionally excludes any region whose elevation band does not contain
     /// `elevation` (`elevation::band_contains`) — the mover's floor, never the viewer's.
     ///
+    /// An `ambient_light` region contributes to the field's AMBIENT facet only
+    /// (`regions::RegionField::ambient_at` — never a movement effect); the lighting field reads
+    /// that facet through `ambient_light_map`, ALWAYS from the authoritative (`None`-viewer)
+    /// field, so a secret region's light edit applies to every viewer even though its geometry
+    /// stays out of their per-requester field — mirroring how `move_exec` springs secret
+    /// regions at execution. A `"ambient_light"` behavior carrying no `ambient_override` (or a
+    /// non-finite level that slipped past ingress) contributes nothing — the harmless no-op a
+    /// disabled region already is.
+    ///
     /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
     /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
     /// mirroring `pathfind`'s `PathFail::Invalid`.
+    ///
+    /// `mover` names the token whose movement the field is built for (`None` for a viewer-only
+    /// or token-less read): a region anchored to `mover` that leaves `include_carrier` unset is
+    /// omitted, so a carrier is never taxed or blocked by its own aura. A region anchored to a
+    /// carrier that does not resolve is dormant and contributes nothing.
     pub(crate) fn region_field(
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
         elevation: f64,
+        mover: Option<Uuid>,
+    ) -> Option<regions::RegionField> {
+        self.region_field_if(scene, viewer, mover, false, |band| {
+            elevation::band_contains(band, elevation)
+        })
+    }
+
+    /// `region_field` with the per-region elevation-band membership test passed as a predicate:
+    /// the movement/router consumers test the MOVER's point elevation (`band_contains`), while
+    /// the lighting field's per-LEVEL ambient read tests the level's whole span
+    /// (`elevation::band_overlaps_level`). One iteration body feeds both, so the doc-type/
+    /// parent/enabled/visibility/shape-parse filtering can never drift between the two.
+    ///
+    /// `ambient_only` skips every region whose behavior is not `ambient_light` BEFORE any
+    /// geometry work (`anchored_region_parts` and the rasterization in `add_parts`): the lighting
+    /// caches' fingerprint reads only the ambient facet, so rasterizing terrain, impassable and
+    /// arrest regions there is pure waste. The skipped regions are exactly the ones whose
+    /// contribution `RegionField::into_ambient_map` discards.
+    fn region_field_if(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+        mover: Option<Uuid>,
+        ambient_only: bool,
+        elevation_ok: impl Fn(Option<&eng::ElevationBand>) -> bool,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
@@ -2916,29 +3101,75 @@ impl SceneEcs {
             if !region_eng.enabled {
                 continue;
             }
+            if ambient_only && region_eng.behavior != "ambient_light" {
+                continue;
+            }
             if !engine_tier_visible(doc, viewer) {
                 continue;
             }
-            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
+            if !elevation_ok(region_eng.elevation.as_ref()) {
                 continue;
             }
-            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
+            if anchored_regions::exempts_mover(&region_eng, mover) {
+                continue;
+            }
+            let Some(parts) = self.anchored_region_parts(scene, &region_eng) else {
                 continue;
             };
             let behavior = match region_eng.behavior.as_str() {
                 "impassable" => regions::RegionBehavior::Impassable,
                 "arrest" => regions::RegionBehavior::Arrest,
+                "ambient_light" => match region_eng.ambient_override {
+                    Some(ambient) if ambient.level.is_finite() => {
+                        regions::RegionBehavior::AmbientLight(ambient)
+                    }
+                    // A behavior with no override authored yet (or a non-finite level that
+                    // slipped past ingress) is a harmless no-op: contributes nothing.
+                    _ => continue,
+                },
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
-            builder.add(&shape, behavior, cost, cell, &*grid);
+            // Identical clamp/validation site to the flat `cost` above (never a second,
+            // independently authored bound): `cost_by_tag` values are clamped read-side here,
+            // never rejected at `RegionEngine::validate` — `cost` itself carries no ingress
+            // check either, only this same `.max(1.0)` read-side floor. `f64::max` returns the
+            // non-NaN operand when either side is NaN, so a NaN authored value floors to 1.0
+            // exactly like a NaN flat `cost` does.
+            let cost_by_tag: std::collections::BTreeMap<String, f64> = region_eng
+                .cost_by_tag
+                .iter()
+                .map(|(tag, v)| (tag.clone(), v.max(1.0)))
+                .collect();
+            builder.add_parts(&parts, behavior, cost, &cost_by_tag, cell, &*grid);
         }
         Some(builder.build())
     }
 
+    /// The per-cell ambient-light adjustment map for one lighting field (a scene's `level`):
+    /// the ambient facet of the AUTHORITATIVE region field (`viewer: None` — a `gm_only`
+    /// region's light edit applies to every viewer, exactly like a hidden wall still blocks
+    /// sight; the region's GEOMETRY follows the ordinary per-requester rule unchanged).
+    /// Level membership is `elevation::band_overlaps_level` (a region whose band touches any
+    /// elevation of the level's span applies to that level's field), never the per-requester
+    /// mover-elevation point test. Empty when the scene declares no enabled `ambient_light`
+    /// region (the common case — `cell_light`'s fast path) or has no live document.
+    pub(crate) fn ambient_light_map(
+        &self,
+        scene: Uuid,
+        levels: &[eng::SceneLevel],
+        level: &str,
+    ) -> BTreeMap<(i32, i32), regions::AmbientAdjustment> {
+        self.region_field_if(scene, None, None, true, |band| {
+            elevation::band_overlaps_level(band, levels, level)
+        })
+        .map(regions::RegionField::into_ambient_map)
+        .unwrap_or_default()
+    }
+
     /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
-    /// per ENABLED region carrying at least one trigger, each row's cells rasterized through the
-    /// SAME `regions::rasterize` the composed `region_field` above uses — one geometry
+    /// per ENABLED region carrying at least one trigger, each row's cells composed through the
+    /// SAME `regions::rasterize_compound` the composed `region_field` above uses — one geometry
     /// derivation feeds both consumers, so this table and the authoritative field cannot
     /// disagree about a region's coverage (the parity battery pins that agreement). There is no
     /// per-requester form: triggers fire on the server's authoritative view, springing secret
@@ -2953,43 +3184,130 @@ impl SceneEcs {
     /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
     /// Rows are sorted by region id so downstream effect application order is deterministic
     /// (entity-query order is unspecified).
+    ///
+    /// `mover` is the token the table is built for: a region anchored to it with
+    /// `include_carrier` unset is omitted, so a carrier standing in its own region fires
+    /// nothing and records no membership.
     pub(crate) fn trigger_regions(
         &self,
         scene: Uuid,
         elevation: f64,
+        mover: Option<Uuid>,
     ) -> Option<Vec<regions::TriggerRegion>> {
-        let cell = self.scene_grid_sizes().get(&scene).copied()?;
-        let grid = self.resolve_grid_shape(scene, cell);
-        let mut out = Vec::new();
-        for e in self.world.query::<&SceneEntity>().iter() {
-            let doc = &e.doc;
-            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
-                continue;
-            }
-            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
-                continue;
-            };
-            if !region_eng.enabled || region_eng.triggers.is_empty() {
-                continue;
-            }
-            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
-                continue;
-            }
-            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
-                continue;
-            };
-            let Some(cells) = regions::rasterize(&shape, cell, &*grid) else {
-                continue;
-            };
-            out.push(regions::TriggerRegion {
-                region_id: doc.id,
-                visible_to_all: engine_geometry_visible_to_world(doc),
-                triggers: region_eng.triggers,
-                cells: cells.into_iter().collect(),
-            });
-        }
+        // The `Option` contract (refuse a scene with no live document) is this
+        // method's own; the shared builder refuses per-row on the same lookup.
+        self.scene_grid_sizes().get(&scene)?;
+        let mut out: Vec<_> = self
+            .world
+            .query::<&SceneEntity>()
+            .iter()
+            .filter(|e| e.doc.doc_type == "region" && e.doc.parent_id == Some(scene))
+            .filter_map(|e| self.build_trigger_region(&e.doc, Some(elevation), mover))
+            .collect();
         out.sort_by_key(|r| r.region_id);
         Some(out)
+    }
+
+    /// The one `regions::TriggerRegion` row for a single region document, looked up BY ID
+    /// with no scene or elevation filter. It has exactly two consumers, both of which must
+    /// NOT re-filter by the token's CURRENT scene or floor because the token's recorded
+    /// membership is already the occupancy proof:
+    /// `TriggerEvent::Exit` firing (`Room::fire_region_triggers`'s stale-row plan — a region
+    /// the token LEFT must fire
+    /// its `Exit` triggers even when the report's per-scene, elevation-filtered table no
+    /// longer selects it — a cross-scene portal carries the token off the region's scene,
+    /// and an elevation-changing teleport carries it off the region's floor, while the
+    /// stored `region_membership` entry still names the region) and the turn/round fire
+    /// site's row resolution (`Room::fire_turn_round_triggers` — a clock boundary fires
+    /// against the same recorded membership, which a scene/elevation re-filter would only
+    /// wrongly narrow). Never an Enter/
+    /// Arrest source: the movement site passes an empty `entered` to `regions::fired_triggers`
+    /// for these rows, so no cell-crossing event can fire from them.
+    ///
+    /// Returns `None` when the id names no live, enabled, trigger-bearing region
+    /// (fail-closed — a deleted or disabled region fires nothing, and the stored
+    /// membership entry self-heals on the same pass).
+    pub(crate) fn trigger_region_row(&self, region: Uuid) -> Option<regions::TriggerRegion> {
+        let &e = self.index.get(&region)?;
+        let doc = &self.world.get::<&SceneEntity>(e).ok()?.doc;
+        if doc.doc_type != "region" {
+            return None;
+        }
+        self.build_trigger_region(doc, None, None)
+    }
+
+    /// The shared row-construction behind `trigger_regions` and `trigger_region_row` —
+    /// ONE builder so the per-scene table and the by-id exit lookup can never drift on
+    /// what makes a region trigger-bearing (enabled, triggers non-empty, parseable shape,
+    /// rasterizable on its parent scene's live grid). `mover_elevation: Some(e)` applies
+    /// the mover's-floor band filter (`elevation::band_contains`); `None` skips it (see
+    /// `trigger_region_row` for why Exit firing must not re-filter). Returns `None` for
+    /// any document that fails those checks (fail-closed), including an anchored region whose
+    /// carrier does not resolve (dormant) and one `anchored_regions::exempts_mover` exempts
+    /// `mover` from.
+    fn build_trigger_region(
+        &self,
+        doc: &Document,
+        mover_elevation: Option<f64>,
+        mover: Option<Uuid>,
+    ) -> Option<regions::TriggerRegion> {
+        let scene = doc.parent_id?;
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
+        let region_eng = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc)?;
+        if !region_eng.enabled || region_eng.triggers.is_empty() {
+            return None;
+        }
+        if let Some(elevation) = mover_elevation {
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
+                return None;
+            }
+        }
+        if anchored_regions::exempts_mover(&region_eng, mover) {
+            return None;
+        }
+        let parts = self.anchored_region_parts(scene, &region_eng)?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let cells = regions::rasterize_compound(&parts, cell, &*grid)?;
+        Some(regions::TriggerRegion {
+            region_id: doc.id,
+            visible_to_all: engine_geometry_visible_to_world(doc),
+            triggers: region_eng.triggers,
+            cells: cells.into_iter().collect(),
+        })
+    }
+
+    /// Replace `token`'s stored trigger-region membership with `now` and return the ids
+    /// that LEFT (stored minus `now`, sorted) — the `TriggerEvent::Exit` candidate list
+    /// for the report being fired. THE single writer of `region_membership`, so the
+    /// diff-and-update rule lives in exactly one place: an empty `now` drops the entry
+    /// outright, keeping the table bounded to tokens currently inside at least one
+    /// trigger-bearing region, and a stale id (a region since deleted or disabled) is
+    /// dropped by the same replacement. Called unconditionally after every move and
+    /// every placement/teleport fire by `Room::fire_region_triggers`.
+    pub(crate) fn diff_region_membership(
+        &mut self,
+        token: Uuid,
+        now: std::collections::BTreeSet<Uuid>,
+    ) -> Vec<Uuid> {
+        let old = self.region_membership.remove(&token).unwrap_or_default();
+        let exited = old.difference(&now).copied().collect();
+        if !now.is_empty() {
+            self.region_membership.insert(token, now);
+        }
+        exited
+    }
+
+    /// The stored trigger-region membership set for `token` (`None` when the token is
+    /// inside no trigger-bearing region, including after a fresh hydration — the
+    /// ephemeral-table restart residual the field's own doc states). Read by
+    /// `Room::fire_turn_round_triggers` as the occupancy proof for the
+    /// turn/round-scoped trigger family (its only production caller besides the
+    /// firing funnel's own diff).
+    pub(crate) fn region_membership_of(
+        &self,
+        token: Uuid,
+    ) -> Option<&std::collections::BTreeSet<Uuid>> {
+        self.region_membership.get(&token)
     }
 
     /// The user this token effectively belongs to — the SAME rule the write-authz
@@ -3082,42 +3400,99 @@ impl SceneEcs {
         Some((scene, self.token_effective_owner(&ent.doc)))
     }
 
-    /// The token's effective vision assignments — the ONE linked/instanced/override precedence
-    /// walk, shared by `token_vision_floors` (the terrain-floor view) and
-    /// `senses::SceneEcs::token_creature_senses` (the creature-sense view) so the two consumers
-    /// can never disagree on which assignments a token carries. Precedence (mirrors
-    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and
-    /// applies `overrides.vision` as a wholesale replacement when present; a dangling link
-    /// (actor absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`)
-    /// uses its `embedded.actor[0].engine.vision` without overrides.
+    /// Every token entity parented to `scene` — the raw enumeration behind a per-token
+    /// qualification scan, with NO filtering beyond doc_type/parent_id: ownership, distance, and
+    /// visibility are the CALLER's concern (the same separation `audibility`'s emitter loop
+    /// keeps between "which tokens exist here" and "does this one qualify").
+    /// `ws::room::Room::toggle_door` enumerates the scene's tokens this way before filtering to
+    /// the requester's own via `token_scene_and_effective_owner`.
+    pub(crate) fn scene_token_ids(&self, scene: Uuid) -> Vec<Uuid> {
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type == "token" && e.doc.parent_id == Some(scene) {
+                out.push(e.doc.id);
+            }
+        }
+        out
+    }
+
+    /// The full mirrored document of the scene entity `id` (any doc_type the ECS hydrates:
+    /// scenes and anything parented to one), CLONED, or `None` when no such entity exists.
+    /// Read-only: the ECS is a derived read-model, never a write target, and the clone cannot
+    /// alias it. `ws::room::Room::toggle_door` reads a wall's stored document this way (its
+    /// `/engine/door` state, its segment, and its `permissions.property_overrides` for the
+    /// `engine_tier_visible` decision).
+    pub(crate) fn scene_entity_doc(&self, id: Uuid) -> Option<Document> {
+        let &e = self.index.get(&id)?;
+        let ent = self.world.get::<&SceneEntity>(e).ok()?;
+        Some(ent.doc.clone())
+    }
+
+    /// The token's effective vision assignments, shared by `token_vision_floors` (the
+    /// terrain-floor view) and `senses::SceneEcs::token_creature_senses` (the creature-sense
+    /// view) so the two consumers can never disagree on which assignments a token carries. The
+    /// precedence is `resolve_token_actor_field`'s: a LINKED token applies `overrides.vision` as
+    /// a wholesale replacement when present; an INSTANCED token uses its
+    /// `embedded.actor[0].engine.vision` without overrides.
     fn token_vision_assignments(&self, token: &Document) -> Option<Vec<eng::VisionAssignment>> {
+        self.resolve_token_actor_field(token, |o| o.vision.clone(), |a| a.vision, |_| None)
+    }
+
+    /// The token's effective facing-limited field of view (`None` = unrestricted), through the
+    /// SAME linked/instanced/override walk as `token_vision_assignments`
+    /// (`resolve_token_actor_field`). An actorless token (no `actor_id`, no embedded actor) reads
+    /// its own `TokenEngine::facing_vision`; that is the only field the two views differ on,
+    /// because an actorless token has no vision assignments at all.
+    fn token_facing_vision(&self, token: &Document) -> Option<eng::FacingVision> {
+        self.resolve_token_actor_field(
+            token,
+            |o| o.facing_vision,
+            |a| a.facing_vision,
+            |t| t.facing_vision,
+        )
+    }
+
+    /// THE linked/instanced/override precedence walk for a token's actor-sourced field: every
+    /// field that follows it (`token_vision_assignments`, `token_facing_vision`) calls this, so
+    /// two such fields can never resolve through different rules. Precedence (mirrors
+    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and a
+    /// present `pick_override` value REPLACES the actor's wholesale; a dangling link (actor
+    /// absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
+    /// embedded actor's value without overrides; with no embedded actor either, `pick_raw` reads
+    /// the token's own engine band.
+    fn resolve_token_actor_field<T>(
+        &self,
+        token: &Document,
+        pick_override: impl Fn(&eng::TokenOverrides) -> Option<T>,
+        pick_actor: impl Fn(eng::ActorEngine) -> Option<T>,
+        pick_raw: impl Fn(&eng::TokenEngine) -> Option<T>,
+    ) -> Option<T> {
         let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
-        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
-        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
-        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
-        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
         match token_eng.as_ref().and_then(|t| t.actor_id) {
             Some(id) => match self.actors.get(&id) {
                 Some(actor) => token_eng
                     .as_ref()
                     .and_then(|t| t.overrides.as_ref())
-                    .and_then(|o| o.vision.clone())
+                    .and_then(&pick_override)
                     .or_else(|| {
                         self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
-                            .and_then(|a| a.vision)
+                            .and_then(&pick_actor)
                     }),
                 None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
             },
             // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
             // `apply_op`'s invalidation removes on a token mutation — caching under the
             // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
-            None => token
+            None => match token
                 .embedded
                 .get("actor")
                 .and_then(|v| v.first())
                 .and_then(engine_as::<eng::ActorEngine>)
-                .and_then(|a| a.vision),
+            {
+                Some(a) => pick_actor(a),
+                None => token_eng.as_ref().and_then(&pick_raw),
+            },
         }
     }
 
@@ -3125,7 +3500,7 @@ impl SceneEcs {
     /// triples, resolved from the assignments `token_vision_assignments` walks (that shared
     /// resolver owns the linked/instanced/override precedence; this function owns only the
     /// per-mode terrain-floor projection). `range_cells == 0.0` ⇒ unlimited. `render_hint`
-    /// mirrors `VisionMode.render_hint` (e.g. `Some("desaturate")` for darkvision).
+    /// mirrors `VisionMode.render_hint` (`Some(RenderHint::Desaturate)` for darkvision).
     /// An unknown mode id is dropped (fail-closed: it contributes no vision floor). A
     /// `Perception::Creatures` mode is likewise
     /// absent here — creature senses perceive tokens, not terrain
@@ -3161,11 +3536,14 @@ impl SceneEcs {
     /// let floors = ecs.token_vision_floors(&token);
     /// assert_eq!(floors.len(), 1);
     /// ```
-    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
+    pub fn token_vision_floors(
+        &self,
+        token: &Document,
+    ) -> Vec<(f64, f64, Option<std::sync::Arc<eng::RenderHint>>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
+        let mut out: Vec<(f64, f64, SharedRenderHint)> = Vec::new();
         if let Some(arr) = self.token_vision_assignments(token) {
             for a in arr {
                 let Some(vm) = modes.get(&a.mode) else {
@@ -3184,7 +3562,7 @@ impl SceneEcs {
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     a.range.unwrap_or(vm.default_range),
-                    vm.render_hint.clone(),
+                    vm.render_hint.clone().map(std::sync::Arc::new),
                 ));
             }
         }
@@ -3283,6 +3661,26 @@ impl SceneEcs {
                 None
             }
         }
+    }
+
+    /// The token's live footprint cells at its COMMITTED position, paired with the
+    /// token-derived scene id: the SAME `token_move` + `resolve_token_footprint` +
+    /// `GridShape::footprint_cells` chain the move gate and every region-trigger fire
+    /// site (`Room::fire_placement_triggers`'s report building and
+    /// `Room::fire_region_triggers`'s teleport re-fire) uses — ONE formula, never a
+    /// second footprint derivation. The scene is derived from the token's own document,
+    /// never from a caller's claim. Returns `None` when the token, its scene's live
+    /// grid, or its footprint resolution fails (the fire sites' fail-closed "fires
+    /// nothing" refusal).
+    pub(crate) fn token_footprint_cells(&self, token: Uuid) -> Option<(Uuid, Vec<regions::Cell>)> {
+        let (scene, pos, _) = self.token_move(token, &[])?;
+        let &cell = self.scene_grid_sizes().get(&scene)?;
+        let radius = self.resolve_token_footprint(token, scene)?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        Some((
+            scene,
+            grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell),
+        ))
     }
 
     /// The scene's running combat, if any: the first `combats` entry (see that field's doc
@@ -3686,10 +4084,10 @@ impl SceneEcs {
                     .permissions
                     .property_overrides
                     .get("/engine/resources")
-                    .copied()
+                    .cloned()
                     .unwrap_or(Visibility::All);
                 let host = self.combatant_formula_host(&cengine.kind);
-                let resources = if c_access.can_see(resources_visible) {
+                let resources = if c_access.can_see(&resources_visible) {
                     let mut resolved: BTreeMap<String, ResolvedResourceView> = BTreeMap::new();
                     if let Some(reg) = &registry {
                         for (key, def) in &reg.resources {
@@ -3776,7 +4174,8 @@ impl SceneEcs {
     /// with nothing excluded, memoised the same way. `level` scopes the field to one floor: a
     /// light contributes only to the level `elevation::level_of(light.elevation)` resolves to,
     /// so the mask for a floor never brightens from another floor's lamps. `all_bright`
-    /// short-circuits light raycasts under lighting-off or globalIllumination.
+    /// short-circuits light raycasts under lighting-off or globalIllumination — never the
+    /// ambient-region layer (`LightingInputs::ambient`), which applies under either mode.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
@@ -3798,7 +4197,8 @@ impl SceneEcs {
     /// run once per frame per scene per level rather than once per recipient, and the lit mask,
     /// the movement gate and the clip share one computation. Reuse is decided by comparing a
     /// freshly gathered `LightingInputsSnapshot` (cheap document decodes, no geometry) against
-    /// the stored one — a changed light, wall, setting or cell size misses and recomputes.
+    /// the stored one — a changed light, wall, setting, cell size or ambient-light region misses
+    /// and recomputes.
     pub(crate) fn lighting_inputs_excluding(
         &self,
         scene: Uuid,
@@ -3831,6 +4231,12 @@ impl SceneEcs {
             self.light_wall_entries(scene)
         };
         let sight_walls = self.sight_wall_entries(scene);
+        // The ambient-region layer is gathered REGARDLESS of `all_bright`: the short-circuit
+        // skips gathering placed lights and light walls (the raycast work), never the per-cell
+        // ambient adjustment — an ambient-light region applies even under
+        // `LightMode::GlobalIllumination`. Read once per inputs build (cached by the snapshot
+        // below), never per cell.
+        let ambient = self.ambient_light_map(scene, &levels, level);
         let mut excluded: Vec<Uuid> = exclude_emitters.to_vec();
         excluded.sort_unstable();
         excluded.dedup();
@@ -3841,6 +4247,7 @@ impl SceneEcs {
             lights,
             light_walls,
             sight_walls,
+            ambient,
         };
         {
             let cache = self.lighting_inputs_cache.lock().unwrap();
@@ -3859,9 +4266,9 @@ impl SceneEcs {
             snapshot.lights.clone(),
             &snapshot.light_walls,
             snapshot.sight_walls.clone(),
-            grid.world_extent(settings.bounds),
+            snapshot.ambient.clone(),
+            grid,
             cell,
-            grid.world_units_per_cell(),
         ));
         let mut cache = self.lighting_inputs_cache.lock().unwrap();
         if cache.len() >= MAX_LIGHTING_INPUTS_CACHE_ENTRIES {
@@ -3886,28 +4293,33 @@ impl SceneEcs {
     /// skips `env_light_polys` outright: `cell_illumination_from` admits the environment only
     /// for a positive intensity, so an empty polygon set is the identical field at zero
     /// raycasts. `settings.all_bright()` skips every raycast (lighting off or
-    /// `GlobalIllumination`).
+    /// `GlobalIllumination`) — but never the ambient-region layer: `ambient` (the
+    /// AUTHORITATIVE per-cell adjustments, already computed by the caller) travels into the
+    /// field unchanged, so a `Darken`/`Override` region edits the flat all-bright baseline too.
     ///
-    /// `extent` is the scene's WORLD-unit envelope, produced by
-    /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
-    /// units (cells), continuous, and must never reach `env_light_polys`, which measures against
-    /// wall coordinates in world units.
+    /// `grid` is the scene's resolved `GridShape`: `env_light_polys` reads its WORLD-unit
+    /// envelope (`GridShape::world_extent` of the authored grid-unit `bounds` — those are
+    /// measured in grid units (cells), continuous, and must never reach `env_light_polys`,
+    /// which measures against wall coordinates in world units) and `LightingInputs::cell_light`
+    /// reads its `cell_of` to snap an ambient-region lookup to the sampled cell.
     ///
-    /// `world_units_per_cell` is `GridShape::world_units_per_cell` for the same scene, used ONLY to
-    /// convert each light's authored (cell) radii into the world-unit reach `bound_for_reach` grows
-    /// its occlusion polygon's bound to cover — it is NOT the indexing scale `cell`/`extent` carry,
-    /// which differ from it on hex. Without this, a placed light's occlusion polygon is bounded by
-    /// wall endpoints and `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the
-    /// light was authored with.
+    /// `GridShape::world_units_per_cell` is used ONLY to convert each light's authored (cell)
+    /// radii into the world-unit reach `bound_for_reach` grows its occlusion polygon's bound to
+    /// cover — it is NOT the indexing scale `cell`/`extent` carry, which differ from it on hex.
+    /// Without this, a placed light's occlusion polygon is bounded by wall endpoints and
+    /// `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the light was
+    /// authored with.
     fn lighting_inputs_from(
         settings: &ResolvedScene,
         lights: Vec<lighting::Light>,
-        light_walls: &[elevation::BandedWall],
-        sight_walls: Vec<elevation::BandedWall>,
-        extent: grid_shape::WorldExtent,
+        light_walls: &[elevation::WallEntry],
+        sight_walls: Vec<elevation::WallEntry>,
+        ambient: BTreeMap<(i32, i32), regions::AmbientAdjustment>,
+        grid: Box<dyn grid_shape::GridShape + Send + Sync>,
         cell: f64,
-        world_units_per_cell: f64,
     ) -> LightingInputs {
+        let extent = grid.world_extent(settings.bounds);
+        let world_units_per_cell = grid.world_units_per_cell();
         // Each light raycasts against the light walls whose elevation band covers the LIGHT's
         // own elevation (`wall_occludes`): a lamp above a wall's band shines over it. The
         // raycast itself is `emitters::light_polygon` — the same function the carried-light
@@ -3929,7 +4341,7 @@ impl SceneEcs {
         let env_polys = if all_bright || settings.env_intensity <= 0.0 {
             Vec::new()
         } else {
-            let full: Vec<vision::Seg> = light_walls.iter().map(|(s, _)| *s).collect();
+            let full: Vec<vision::Seg> = light_walls.iter().map(|w| w.seg).collect();
             lighting::env_light_polys(extent, cell, &full)
         };
         LightingInputs {
@@ -3938,6 +4350,8 @@ impl SceneEcs {
             lit_polys,
             env_polys,
             sight_walls,
+            ambient,
+            grid,
         }
     }
 
@@ -3977,9 +4391,9 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         bands: &[Band],
     ) -> Vec<LitScene> {
-        // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
-        //    called exactly once per scene rather than once per token. Collect
-        //    scene ids in a first pass (drops the query borrow before the resolve calls).
+        // Pre-resolve scene settings for every scene that has a token, so resolve_scene is
+        // called exactly once per scene rather than once per token. The scene ids are collected
+        // in a loop of their own, which drops the query borrow before the resolve calls.
         let mut all_scene_ids: Vec<Uuid> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type == "token" {
@@ -3990,12 +4404,13 @@ impl SceneEcs {
         }
         all_scene_ids.sort();
         all_scene_ids.dedup();
-        // Point-lookup only; never iterated into output so HashMap order doesn't affect determinism.
-        let scene_settings: HashMap<Uuid, ResolvedScene> = all_scene_ids
+        // Kept in `all_scene_ids` order (sorted), so the per-scene loop below is deterministic and
+        // reads each scene's settings without a lookup that could miss.
+        let scene_settings: Vec<(Uuid, ResolvedScene)> = all_scene_ids
             .iter()
             .map(|&sid| (sid, self.resolve_scene(sid)))
             .collect();
-        // The declared levels per scene, resolved in the same first pass: each source's cells
+        // The declared levels per scene, resolved from the same scene ids: each source's cells
         // accumulate under the level its own elevation resolves to (`elevation::level_of`), and
         // the illumination field is the level-filtered one (`lighting_inputs`), so a lamp on
         // another floor brightens nothing here.
@@ -4004,28 +4419,22 @@ impl SceneEcs {
             .map(|&sid| (sid, self.scene_levels(sid)))
             .collect();
 
-        // 1. Per scene, gather this user's vision sources through the ONE admission decision
-        //    (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
-        //    movement gate can never disagree about what counts as a source), then accumulate
-        //    that scene's visible cells. `all_scene_ids` is sorted, so scene iteration here is
-        //    deterministic.
+        // Per scene, gather this user's vision sources through the ONE admission decision
+        // (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
+        // movement gate can never disagree about what counts as a source), then accumulate
+        // that scene's visible cells. `all_scene_ids` is sorted, so scene iteration here is
+        // deterministic.
         let grid = self.scene_grid_sizes();
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
-        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, SharedRenderHint)>;
         // (scene, level id) -> (the scene's `cell` indexing scale, per-cell best): one entry per
         // level a source occupies — `""` for ground/a level-less scene.
         let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
 
-        for scene in all_scene_ids {
-            // Use the memoized settings; fall back to resolve (unreachable in practice since
-            // `scene_settings` was populated from every source scene, but keeps the code correct
-            // if the map misses).
-            let settings = match scene_settings.get(&scene) {
-                Some(s) => s,
-                None => continue,
-            };
+        for (scene, settings) in &scene_settings {
+            let scene = *scene;
             let sources = self.gather_vision_sources_in_scene(
                 user,
                 world_role,
@@ -4071,6 +4480,7 @@ impl SceneEcs {
                     &src_walls,
                     settings.los_restriction,
                     cell_grid.world_extent(settings.bounds),
+                    src.facing,
                 );
                 if poly.len() < 3 {
                     continue;
@@ -4125,7 +4535,7 @@ impl SceneEcs {
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
                     // and is reused verbatim by the movement gate (anti-drift).
                     let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
-                    let mut admit_hint: Option<String> = None;
+                    let mut admit_hint: SharedRenderHint = None;
                     for (fmin, range, hint) in &src.floors {
                         let in_range = *range == 0.0 || dist_cells <= *range;
                         if !in_range {
@@ -4267,9 +4677,10 @@ impl SceneEcs {
     /// a prior call for the same `(user, scene)` only when a freshly rebuilt
     /// `VisibilityInputsSnapshot` — built from the SAME `gather_vision_sources_in_scene` call and
     /// the SAME raw `resolve_scene`/`scene_grid_sizes`/`scene_lights` and banded wall-collector
-    /// (`sight_wall_entries`/`light_wall_entries`)
+    /// (`sight_wall_entries`/`light_wall_entries`) and ambient-region (`ambient_light_map`)
     /// reads the uncached path uses — compares EQUAL to the snapshot stored alongside the cached
-    /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, a
+    /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, an
+    /// ambient-light region add/edit/delete, a
     /// token gaining or losing owner/source status in this scene, or `lenient` itself
     /// changing) is a snapshot mismatch and forces a full recompute — fails toward recompute,
     /// never toward serving a stale wider mask. The only work skipped on a cache HIT is the two
@@ -4332,7 +4743,9 @@ impl SceneEcs {
         // Deterministic snapshot order: `sources`' emission order follows hecs entity iteration,
         // which is not a stable contract across unrelated entity churn. Sorting avoids a spurious
         // fingerprint mismatch (over-invalidation is merely a perf cost, never a safety one, but
-        // a stable order is what makes the reuse test in Step 6 meaningful).
+        // a stable order is what makes the cache-reuse test
+        // `movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change`
+        // meaningful).
         sources.sort_by_key(|s| s.id);
 
         let all_bright = settings.all_bright();
@@ -4354,7 +4767,7 @@ impl SceneEcs {
             cell,
             sources: sources
                 .iter()
-                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
+                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone(), s.facing))
                 .collect(),
             // The scene's declared levels decide each source's level (`elevation::level_of`)
             // and therefore which level-filtered illumination field its cells are judged
@@ -4365,6 +4778,11 @@ impl SceneEcs {
             lights,
             light_walls,
             sight_walls,
+            // The mask reads the ambient-region layer through `cell_light`, so the region set
+            // is a genuine mask input: fingerprint it (the AUTHORITATIVE read, same value the
+            // lighting-inputs cache keys on) or an ambient-region edit would serve a stale
+            // mask until some unrelated input changed.
+            ambient: self.ambient_light_map(scene, &levels, &mover_level),
         };
 
         {
@@ -4423,6 +4841,16 @@ impl SceneEcs {
         settings: &ResolvedScene,
     ) -> Vec<VisSrc> {
         let mut sources: Vec<VisSrc> = Vec::new();
+        // One grid step's world distance, resolved only when the facing switch is on: the bubble
+        // radius is authored in cells and converts through it (the same scale a source's vision
+        // range uses).
+        let world_units_per_cell = if settings.facing_vision {
+            self.scene_grid_sizes()
+                .get(&scene)
+                .map(|&cell| self.resolve_grid_shape(scene, cell).world_units_per_cell())
+        } else {
+            None
+        };
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
                 continue;
@@ -4444,6 +4872,12 @@ impl SceneEcs {
                     elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
                     senses: self.token_creature_senses(&e.doc),
+                    // An observer-vision source (a non-owned readable token) uses ITS OWN
+                    // rotation and arc: one admission decision, one geometry per source.
+                    facing: world_units_per_cell.and_then(|wupc| {
+                        self.token_facing_vision(&e.doc)
+                            .and_then(|fv| facing_arc_for(&fv, t.rotation, wupc))
+                    }),
                 });
             }
         }
@@ -4453,7 +4887,9 @@ impl SceneEcs {
     /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
     /// wall in `scene` whose elevation band contains `mover_elevation`
     /// (`elevation::walls_at_elevation` — the same band filter the production `move_walls`
-    /// applies). A no-op move (`a0 == a1`) never blocks.
+    /// applies), honoring a one-way wall only when its blocking side faces `a0`
+    /// (`vision::Seg::transparent_from` — the same pre-step-side filter `execute_move` applies
+    /// per step). A no-op move (`a0 == a1`) never blocks.
     ///
     /// This is the REFERENCE implementation of wall-crossing semantics — one home for it, per the
     /// module's own INVARIANT on `move_wall_entries`. `move_exec::execute_move`'s per-cell wall
@@ -4473,7 +4909,7 @@ impl SceneEcs {
         if a0 == a1 {
             return false;
         }
-        let mut banded: Vec<elevation::BandedWall> = Vec::new();
+        let mut banded: Vec<elevation::WallEntry> = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -4481,18 +4917,29 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_move != Some(true) {
+            // The ONE resolver over authored flags + door state — `move_wall_entries`'s
+            // production read — so the anti-drift pair cannot disagree on a door.
+            if !wall.effective_flags().blocks_move {
                 continue;
             }
-            banded.push((
-                vision::Seg {
+            banded.push(elevation::WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: wall.direction.map(|d| d.blocking_side),
+                    limited: false,
+                    open_within: None,
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         for w in elevation::walls_at_elevation(&banded, mover_elevation) {
+            // The one-way filter this reference owes the anti-drift pair: a wall whose
+            // transparent side faces the segment's START is absent for the crossing, exactly
+            // as `move_exec`'s per-step filter drops it against the pre-step point.
+            if w.transparent_from(a0) {
+                continue;
+            }
             if segments_cross(a0, a1, w.a, w.b) {
                 return true;
             }
@@ -4514,6 +4961,24 @@ impl SceneEcs {
         };
         let eng = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc);
         elevation::elevation_or_ground(eng.and_then(|t| t.elevation))
+    }
+
+    /// A token's stored `(rotation, lock_rotation)` pair, read in one decode of its engine body.
+    /// `Room::execute_move` captures it under the scene read guard it already holds, so the
+    /// rotation pre-image of its auto-rotate `FieldChange` is as fresh as the position
+    /// pre-image. `None` when the token or its engine body is unreadable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.token_rotation_state(uuid::Uuid::new_v4()).is_none());
+    /// ```
+    pub fn token_rotation_state(&self, token: Uuid) -> Option<(f64, bool)> {
+        let &e = self.index.get(&token)?;
+        let ent = self.world.get::<&SceneEntity>(e).ok()?;
+        let t = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc)?;
+        Some((t.rotation, t.lock_rotation))
     }
 }
 

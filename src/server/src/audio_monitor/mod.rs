@@ -1,25 +1,21 @@
-//! `shadowcat audio-monitor`: a localhost-only subcommand serving the peak audio level of
-//! watched OS processes (Discord, any voice app) to the ducking module's `OsMonitorSource`
-//! over a WebSocket. Never a second executable — a `CliCommand::AudioMonitor` branch of the
-//! single `shadowcat` binary.
+//! `shadowcat audio-monitor` is a localhost-only subcommand serving OS audio peak levels.
+//!
+//! The ducking module's `OsMonitorSource` consumes the levels over a WebSocket. The levels of the
+//! watched processes (Discord, any voice app) come from the OS audio sessions: Windows WASAPI,
+//! the macOS Core Audio process tap and Linux PipeWire. The subcommand is a
+//! `CliCommand::AudioMonitor` branch of the single `shadowcat` binary, never a second executable.
 
-// Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// The two deny attributes below reject any item in this module that lacks a doc comment.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// A scripted in-memory backend for tests — never compiled into the release binary.
 #[cfg(test)]
 pub mod fake;
-/// Linux backend (PipeWire).
 #[cfg(target_os = "linux")]
 pub mod linux;
-/// macOS backend (Core Audio process tap, macOS 14.2+).
 #[cfg(target_os = "macos")]
 pub mod macos;
-/// The localhost WebSocket server: origin allowlist, hello/levels/watch frames, the 10 Hz loop.
 pub mod server;
-/// Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -66,8 +62,9 @@ pub enum MonitorError {
 /// Polled at 10 Hz by `server::run`'s loop. Every platform backend implements this the same
 /// poll-shape way: each backend runs its own dedicated background thread internally
 /// (COM-apartment-safe on Windows, event-loop-driven on Linux/PipeWire) and publishes its
-/// latest reading into shared state; `poll` just reads the latest published value, so the
-/// caller never branches on OS and never blocks waiting on a platform API call.
+/// latest reading into shared state; `poll` reads the latest published state (the Linux
+/// backend's `poll` also resets each node's peak window), so the caller never branches on OS and
+/// never blocks waiting on a platform API call.
 ///
 /// # Examples
 ///

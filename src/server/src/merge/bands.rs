@@ -1,6 +1,7 @@
-//! Merge band types and snapshot builders: the `MergeBase` stored on a
-//! stamped document, the `MergeBands` a merge produces, the synthetic
-//! name/engine/system tree adapters, and the placement exclusion set.
+//! This module defines the merge band types and snapshot builders.
+//!
+//! Its contents are the `MergeBase` stored on a stamped document, the `MergeBands` a merge
+//! produces, the synthetic name/engine/system tree adapters, and the placement exclusion set.
 
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
@@ -221,7 +222,7 @@ pub(crate) fn recorded_overrides(doc: &Document) -> BTreeMap<String, Visibility>
         .property_overrides
         .iter()
         .filter(|(p, _)| writes_a_content_band(p))
-        .map(|(p, v)| (p.clone(), *v))
+        .map(|(p, v)| (p.clone(), v.clone()))
         .collect()
 }
 
@@ -333,7 +334,7 @@ pub fn propagate_overrides(instance: &mut Document, template: &Document) -> bool
     changed
 }
 
-/// Per-`doc_type` instance-local paths that never merge. Currently only
+/// Per-`doc_type` instance-local paths that never merge. Only
 /// `token`'s placement fields are excluded; every other doc type gets an
 /// empty set. INVARIANT: equals the client's `placementExclusions` set — the
 /// client's `syncState` badge excludes the same paths from its comparison,

@@ -36,6 +36,7 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
     setBackground: (spec) => { onDirty(); backend.setBackground(spec); },
     setClearColor: (color) => { onDirty(); backend.setClearColor(color); },
     drawGrid: (lines, color) => { onDirty(); backend.drawGrid(lines, color); },
+    drawBoundsOutline: (lines, color) => { onDirty(); backend.drawBoundsOutline(lines, color); },
     setVisibility: (input) => { onDirty(); backend.setVisibility(input); },
     setVisibilityBlend: backend.setVisibilityBlend
       ? (from, to, factor) => { onDirty(); backend.setVisibilityBlend!(from, to, factor); }
@@ -58,6 +59,7 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
     clearMeasure: () => { onDirty(); backend.clearMeasure(); },
     drawPings: (rings) => { onDirty(); backend.drawPings(rings); },
     drawEmotes: (glyphs) => { onDirty(); backend.drawEmotes(glyphs); },
+    drawRulers: (rulers) => { onDirty(); backend.drawRulers(rulers); },
     setLighting: (frame) => { onDirty(); backend.setLighting(frame); },
     startTicker: (cb) => backend.startTicker(cb),
     resize: (width, height) => { onDirty(); backend.resize(width, height); },

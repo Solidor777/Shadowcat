@@ -3,6 +3,7 @@ import { render } from "@testing-library/svelte";
 import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
   ContributionRegistry,
+  WsClient,
   silentLogger,
   buildTokenDoc,
   buildActorDoc,
@@ -23,6 +24,7 @@ import {
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers, CombatClientError } from "@shadowcat/core";
+import { shareRulerStorageKey } from "@shadowcat/ui-kit";
 import { getWorldSnapshot } from "./api";
 import { getViewedLevel } from "./sessionState.svelte";
 import { reactiveRead } from "./__testHelpers__/reactivityProbe.svelte";
@@ -71,14 +73,15 @@ const welcomeFrame = {
   capability_requirements: [],
   contract_declarations: [],
   schema_declarations: [],
+  online_users: [],
 };
 
 // Deliver the Welcome `count` times to exercise reconnect-idempotency (the
 // server re-sends Welcome on every (re)connect).
-function mockConnect(count = 1): Connect {
+function mockConnect(count = 1, role: "gm" | "player" = "player"): Connect {
   return (handlers) => {
     queueMicrotask(() => {
-      for (let i = 0; i < count; i++) handlers.onMessage(JSON.stringify(welcomeFrame));
+      for (let i = 0; i < count; i++) handlers.onMessage(JSON.stringify({ ...welcomeFrame, user_role: role }));
     });
     return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
   };
@@ -485,7 +488,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-1");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
@@ -512,7 +515,7 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
   session.leave(); // tears down the socket → no transport
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-x");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-x");
   expect(session.dispatchIntent([{ op: "create", doc }])).toBe(false);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
@@ -541,6 +544,112 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   // Mutated in place, never reassigned — the captured snapshot sees the update.
   expect(session.members).toBe(captured);
   expect(captured.get("u9")).toBe("Zara");
+});
+
+test("a Welcome fills memberProfiles in place from the roster, with the world-scoped avatar URL", async () => {
+  vi.mocked(listWorldMembers).mockResolvedValueOnce([
+    { user: "u9", username: "Zara", role: "player", colour: "#336699", pronouns: "she/her", has_avatar: true },
+    { user: "u8", username: "Bo", role: "player", colour: null, pronouns: null, has_avatar: false },
+  ]);
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.memberProfiles;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(true));
+  expect(session.memberProfiles.get("u9")).toEqual({
+    colour: "#336699",
+    pronouns: "she/her",
+    avatar: `/api/worlds/${welcomeFrame.world}/members/u9/avatar`,
+  });
+  // A member with nothing set has no entry; the map is mutated in place.
+  expect(session.memberProfiles.has("u8")).toBe(false);
+  expect(session.memberProfiles).toBe(captured);
+});
+
+test("presence frames update the reactive presence map in place (stable reference)", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.presence;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.presence.has("u9")).toBe(false);
+
+  push({ type: "presence", user: "u9", online: true });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(true));
+  push({ type: "presence", user: "u9", online: false });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
+  expect(session.presence).toBe(captured);
+});
+
+test("a late-joining Welcome seeds presence from online_users, marks other members offline, and a reconnect replaces the snapshot", async () => {
+  const roster = [
+    { user: "u9", username: "Zara", role: "player" as const },
+    { user: "u8", username: "Bo", role: "player" as const },
+  ];
+  vi.mocked(listWorldMembers).mockResolvedValueOnce(roster).mockResolvedValueOnce(roster);
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.presence;
+  await session.enter("w1");
+  push({ ...welcomeFrame, online_users: ["u9"] });
+  await vi.waitFor(() => expect(session.presence.get("u8")).toBe(false));
+  expect(session.presence.get("u9")).toBe(true);
+  expect(session.presence).toBe(captured);
+
+  // A later Welcome (reconnect) replaces the snapshot instead of merging into it.
+  push({ ...welcomeFrame, online_users: ["u8"] });
+  await vi.waitFor(() => expect(session.presence.get("u8")).toBe(true));
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
+});
+
+test("a member_profile frame updates memberProfiles in place with a cache-busted avatar URL, and clears an emptied profile", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.memberProfiles;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: "#336699", pronouns: "they/them", has_avatar: true });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(true));
+  expect(session.memberProfiles.get("u9")).toEqual({
+    colour: "#336699",
+    pronouns: "they/them",
+    avatar: expect.stringMatching(new RegExp(`^/api/worlds/w1/members/u9/avatar\\?v=\\d+$`)),
+  });
+  const first = session.memberProfiles.get("u9")!.avatar;
+
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: "#336699", pronouns: null, has_avatar: true });
+  await vi.waitFor(() => expect(session.memberProfiles.get("u9")!.pronouns).toBeNull());
+  expect(session.memberProfiles.get("u9")!.avatar).not.toBe(first);
+
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: null, pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(false));
+  expect(session.memberProfiles).toBe(captured);
+});
+
+test("a member_profile frame for an unlisted member adds it to members and the roster as offline, and keeps a known presence", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const capturedMembers = session.members;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.members.has("u7")).toBe(false);
+
+  push({ type: "member_profile", user: "u7", username: "Newcomer", colour: null, pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.members.get("u7")).toBe("Newcomer"));
+  expect(session.presence.get("u7")).toBe(false);
+  expect(session.members).toBe(capturedMembers);
+
+  // A later frame (a profile change) never resets a presence the member's own frame set.
+  push({ type: "presence", user: "u7", online: true });
+  await vi.waitFor(() => expect(session.presence.get("u7")).toBe(true));
+  push({ type: "member_profile", user: "u7", username: "Newcomer", colour: "#336699", pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u7")).toBe(true));
+  expect(session.presence.get("u7")).toBe(true);
 });
 
 test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {
@@ -576,7 +685,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 
   // Transport drops but the client stays running → reconnecting.
   handlers.onClose();
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-off");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-off");
   session.dispatchIntent([{ op: "create", doc }]);
   // Predicted immediately, but NOT transmitted while offline.
   expect(capturedClient!.get("tok-off")).toBeTruthy();
@@ -626,7 +735,7 @@ test("canEdit: effective token ownership (inherited from the linked actor) unloc
   const linked = buildTokenDoc(
     "w1",
     "s1",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
     "tok-linked",
   );
   session.dispatchIntent([
@@ -752,6 +861,44 @@ test("canDelete: a GM may always delete; the author of a grantAuthor'd document 
   expect(session.canDelete(observed)).toBe(false);
 });
 
+test("canDelete: a token's effective owner may delete it; a non-owner, and an owner's actor or wall, may not", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty grants
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const actor = actorWith({});
+  actor.owner = "u-self";
+  const tokenBody = { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
+  const linked = buildTokenDoc("w1", "s1", tokenBody, "tok-linked");
+  const direct = buildTokenDoc("w1", "s1", { ...tokenBody, actor_id: null }, "tok-direct");
+  const wall = { ...actorWith({ default: "observer" }), id: "wall1", doc_type: "wall", owner: "u-self" };
+  session.dispatchIntent([
+    { op: "create", doc: actor },
+    { op: "create", doc: linked },
+    { op: "create", doc: direct },
+  ]);
+
+  // Owner through the linked actor.
+  expect(session.canDelete(session.documents.get("tok-linked")!)).toBe(true);
+  // A token with no owner at all: not deletable by this player.
+  expect(session.canDelete(session.documents.get("tok-direct")!)).toBe(false);
+  // Owner through the per-token override.
+  session.dispatchIntent([
+    { op: "update", doc_id: "tok-direct", changes: [{ path: "/owner", old: null, new: "u-self" }] },
+  ]);
+  expect(session.canDelete(session.documents.get("tok-direct")!)).toBe(true);
+  // Re-owning the actor away revokes the inherited grant.
+  session.dispatchIntent([
+    { op: "update", doc_id: "act1", changes: [{ path: "/owner", old: "u-self", new: "u-other" }] },
+  ]);
+  expect(session.canDelete(session.documents.get("tok-linked")!)).toBe(false);
+  // The owner's actor and wall carry no delete.
+  expect(session.canDelete(session.documents.get("act1")!)).toBe(false);
+  expect(session.canDelete(wall as WireDocument)).toBe(false);
+});
+
 test("canDelete: a GM bypasses the capability check", async () => {
   const { connect, push } = pushConnect([]);
   const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
@@ -844,6 +991,47 @@ test("the session subscribes to footprints itself and publishes each frame's res
   // Leaving drops the extents with the connection they came from.
   session.leave();
   expect(session.footprints.token("tok1")).toBeNull();
+});
+
+test("the session subscribes to bars itself and publishes each frame's delivered nameplates and bars", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Nothing is drawn before the server states a value.
+  expect(session.bars.token("tok1")).toBeNull();
+
+  const req = await vi.waitFor(() => {
+    const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "bars");
+    expect(m).toBeDefined();
+    return m!;
+  });
+  push({
+    type: "scene_derived",
+    request_id: req.request_id,
+    channel: "bars",
+    computed_at_seq: 0,
+    payload: {
+      scenes: {
+        "scene-1": {
+          tokens: { tok1: { nameplate: "Goblin", nameplate_mode: "always", bars: [{ label: "HP", current: 4, max: 10, color: "#cc2222", mode: "always" }] } },
+        },
+      },
+    },
+  });
+  await vi.waitFor(() => expect(session.bars.token("tok1")?.nameplate).toBe("Goblin"));
+  expect(session.bars.token("tok1")?.bars).toHaveLength(1);
+
+  // Leaving drops the values with the connection they came from.
+  session.leave();
+  expect(session.bars.token("tok1")).toBeNull();
 });
 
 test("defineCombatHooks ran: a module's combat:start listener fires on a start command", async () => {
@@ -994,6 +1182,9 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     setActiveTool: () => {},
     snap: (p) => p,
     setSnapEnabled: () => {},
+    setSnapMode: () => {},
+    panToPoint: () => {},
+    panToToken: () => {},
     setDraggingToken: () => {},
     previewOverlay: () => {},
     clearOverlay: () => {},
@@ -1173,7 +1364,7 @@ test("viewedLevel: a player tracks their primary token's elevation, no explicit 
       "s0",
     ),
   }]);
-  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok1");
   token.owner = "u1";
   session.dispatchIntent([{ op: "create", doc: token }]);
   expect(session.viewedLevel).toBe("l1");
@@ -1357,6 +1548,33 @@ test("onMoveOutcome: a move_error rejection fires 'rejected'", async () => {
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected" });
 });
 
+test("onMoveOutcome: a move_error carrying the paused reason fires 'rejected' flagged paused", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string; paused?: boolean }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [100, 0]]);
+  resolved.catch(() => {});
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  push({ type: "move_error", request_id: reqId, message: "the game is paused", reason: "paused" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected", paused: true });
+});
+
+test("onMoveOutcome: a move requested with no live transport fires 'rejected' and rejects", async () => {
+  const session = new WorldSession({ selfId: "u1", connect: () => { throw new Error("unused"); }, modules: [coreUiStub], logger: silentLogger });
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  await expect(session.moveRequest("s1", "tok1", [[0, 0], [100, 0]])).rejects.toThrow("not connected");
+  expect(got).toEqual([{ tokenId: "tok1", outcome: "rejected" }]);
+});
+
 test("sendPing targets the viewed scene", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
@@ -1440,6 +1658,92 @@ test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, dro
   push({ type: "emote", scene: "sceneB", token: "tok1", user: "u1", emote: "😀" }); // the GM's own viewed scene — accepted
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0].scene).toBe("sceneB");
+});
+
+test("onRuler cross-scene guard: a GM roaming scene B sees a ruler for B, drops one for A, and every field reaches the listener", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB"); // roaming B while players stay on A
+
+  const got: unknown[] = [];
+  session.onRuler((m) => got.push(m));
+
+  push({ type: "ruler", from: "u9", scene: sceneA, points: [[1, 2]], active: true, origin: "o9" }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "ruler", from: "u9", scene: "sceneB", points: [[3, 4], [5, 6]], active: true, origin: "o9" }); // the GM's viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ from: "u9", scene: "sceneB", points: [[3, 4], [5, 6]], active: true, origin: "o9" });
+
+  // A stop for the scene being left is dropped like any other frame for it.
+  push({ type: "ruler", from: "u9", scene: sceneA, points: [], active: false, origin: "o9" });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(1);
+});
+
+test("onRuler drops only the frame this connection sent: the same user's other connection renders it", async () => {
+  // Two sessions of ONE user (selfId "u1"), each over its own WsClient and socket: the way a
+  // GM measuring on one device is also connected on a second.
+  const sentA: Array<Record<string, unknown>> = [];
+  const sentB: Array<Record<string, unknown>> = [];
+  const a = pushConnect(sentA);
+  const b = pushConnect(sentB);
+  const sessionA = new WorldSession({ selfId: "u1", connect: a.connect, modules: [coreUiStub], logger: silentLogger });
+  const sessionB = new WorldSession({ selfId: "u1", connect: b.connect, modules: [coreUiStub], logger: silentLogger });
+  await sessionA.enter("w1");
+  await sessionB.enter("w1");
+  a.push({ ...welcomeFrame, user_role: "gm" });
+  b.push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sentA).length).toBe(1));
+  await vi.waitFor(() => expect(sceneCreates(sentB).length).toBe(1));
+  const scene = "sceneShared";
+  for (const session of [sessionA, sessionB]) {
+    session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, scene) }]);
+    session.setGmViewedScene(scene);
+  }
+  const gotA: unknown[] = [];
+  const gotB: unknown[] = [];
+  sessionA.onRuler((m) => gotA.push(m));
+  sessionB.onRuler((m) => gotB.push(m));
+
+  // Session A sends; the server relays the frame to every connection, carrying A's origin.
+  sessionA.sendRulerUpdate(scene, [[0, 0], [70, 70]], true);
+  const sent = sentA.find((m) => m.type === "ruler_update")!;
+  const relayed = { type: "ruler", from: "u1", scene, points: sent.points, active: true, origin: sent.origin };
+  a.push(relayed);
+  b.push(relayed);
+
+  await vi.waitFor(() => expect(gotB).toHaveLength(1));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(gotA, "the originating connection draws its own preview, not a remote duplicate").toHaveLength(0);
+  expect(gotB[0]).toMatchObject({ from: "u1", points: [[0, 0], [70, 70]], active: true });
+});
+
+test("sendRulerUpdate transmits the explicit scene, points and active flag; a stop reaches the scene it was started on", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  session.sendRulerUpdate("scene-started-on", [[0, 0], [70, 70]], true);
+  session.sendRulerUpdate("scene-started-on", [], false);
+  const rulers = sent.filter((m) => m.type === "ruler_update");
+  expect(rulers).toEqual([
+    { type: "ruler_update", scene: "scene-started-on", points: [[0, 0], [70, 70]], active: true, origin: expect.any(String) },
+    { type: "ruler_update", scene: "scene-started-on", points: [], active: false, origin: expect.any(String) },
+  ]);
+  expect(rulers[0].origin).toBe(rulers[1].origin);
+  expect(rulers[0].origin).not.toBe("");
 });
 
 test("playVfx forwards to WsClient.playVfx; onVfx fires only for the viewed scene; a disconnected session no-ops", async () => {
@@ -1533,6 +1837,7 @@ test("resolves an enabled folder id to its installed entry even when the manifes
       entry_url: "/modules/folder-name/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   const warnings: unknown[][] = [];
@@ -1553,6 +1858,37 @@ test("resolves an enabled folder id to its installed entry even when the manifes
   expect(
     warnings.some((a) => String(a[0]).includes("folder-name") && String(a[0]).includes("is not installed")),
   ).toBe(false);
+});
+
+test("an external module's entry is imported through the route prefix", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const core = await import("@shadowcat/core");
+    vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "folder-one", validators_enabled: false }]);
+    vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+      {
+        id: "folder-one",
+        manifest: { id: "mod-one", version: "1.0.0", dependencies: {}, provides: [] },
+        entry_url: "/modules/folder-one/index.js",
+        has_validators: false,
+        validator_load_error: null,
+        engine_compat_ok: true,
+      },
+    ]);
+    const importModule = vi.fn().mockRejectedValue(new Error("not under test"));
+    const session = new WorldSession({
+      selfId: "u1",
+      connect: mockConnect(),
+      modules: [coreUiStub],
+      logger: silentLogger,
+      importModule,
+    });
+    await session.enter("w1");
+    await vi.waitFor(() => expect(importModule).toHaveBeenCalled());
+    expect(importModule).toHaveBeenCalledWith("/ttrpg/modules/folder-one/index.js");
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
 });
 
 test("Welcome degrades gracefully when external module discovery fails (network error)", async () => {
@@ -1755,6 +2091,7 @@ test("reconcileInstalledModules loads a newly-enabled module and activates it", 
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
 
@@ -1777,6 +2114,7 @@ test("reconcileInstalledModules unloads (cascade) a module no longer in the enab
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1801,6 +2139,7 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ];
 
@@ -1821,6 +2160,63 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1); // no duplicate
 });
 
+test("a modules_changed frame reconciles the session against the freshly fetched enabled set", async () => {
+  const core = await import("@shadowcat/core");
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ]);
+  push({ type: "modules_changed" });
+
+  await vi.waitFor(() =>
+    expect(session.contributions.contributionsFor(MARKER_CONTRACT).map((c) => c.id)).toEqual([
+      "ext-module-a-marker",
+    ]),
+  );
+});
+
+test("two overlapping reconcileInstalledModules calls load a newly-enabled module exactly once", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+  const installed = [
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ];
+  const before = await registerCallsOf(FIXTURE_A_URL);
+  for (let i = 0; i < 2; i++) {
+    vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+    vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
+  }
+
+  // The saving GM's post-save call and the modules_changed broadcast's call start together.
+  await Promise.all([session.reconcileInstalledModules(), session.reconcileInstalledModules()]);
+
+  expect(await registerCallsOf(FIXTURE_A_URL)).toBe(before + 1);
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
+  // A second concurrent load of the same module would report a load failure for it.
+  expect(session.moduleStatus.has("ext-a-folder")).toBe(false);
+});
+
 test("reconcileInstalledModules leaves a module present in BOTH the old and new enabled set untouched", async () => {
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
@@ -1833,6 +2229,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
     {
       id: "ext-b-folder",
@@ -1840,6 +2237,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_B_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1856,6 +2254,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_B_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1932,6 +2331,96 @@ test("a snapshot-fetch failure does not throw out of enter() and does not preven
   expect(connectCalled).toBe(true);
 });
 
+describe("WorldSession.leave during enter", () => {
+  const leftSnapshotDoc = buildActorDoc(
+    "w1",
+    "L",
+    {
+      displayName: "L",
+      visual: { kind: "image", asset: "a" },
+      size: { w: 1, h: 1 },
+      shape: "square",
+      faction: null,
+      conditions: [],
+      prototype: false,
+      vision: null,
+      light: null,
+      movement: [],
+      aura: null,
+      sound: null,
+      vfx: null,
+    },
+    "left-actor",
+  );
+
+  test("leave() while the snapshot is pending: no socket, no seeding, state stays closed", async () => {
+    let resolveSnapshot!: (v: { documents: WireDocument[]; seq: number }) => void;
+    vi.mocked(getWorldSnapshot).mockReturnValueOnce(
+      new Promise((r) => {
+        resolveSnapshot = r;
+      }),
+    );
+    const connect = vi.fn<Connect>(() => Promise.resolve({ send: () => {}, close: () => {} }));
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+    const entering = session.enter("w1");
+    session.leave();
+    resolveSnapshot({ documents: [leftSnapshotDoc], seq: 3 });
+    await entering;
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(session.store.get("left-actor")).toBeUndefined();
+    expect(session.documents.get("left-actor")).toBeUndefined();
+    expect(session.state).toBe("closed");
+  });
+
+  test("leave() during the socket start: state stays closed and the client is stopped once", async () => {
+    const stopSpy = vi.spyOn(WsClient.prototype, "stop");
+    try {
+      let releaseConnect!: () => void;
+      const connect: Connect = () =>
+        new Promise((resolve) => {
+          releaseConnect = () => resolve({ send: () => {}, close: () => {} });
+        });
+      const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+      const entering = session.enter("w1");
+      await vi.waitFor(() => expect(releaseConnect).toBeTypeOf("function"));
+      session.leave();
+      releaseConnect();
+      await entering;
+
+      expect(session.state).toBe("closed");
+      expect(stopSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stopSpy.mockRestore();
+    }
+  });
+
+  test("a join refusal frame before the Welcome reaches opts.onJoinRefused", async () => {
+    const { connect, push } = pushConnect([]);
+    const onJoinRefused = vi.fn();
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger, onJoinRefused });
+
+    await session.enter("w1");
+    push({ type: "error", code: "forbidden", message: "not a member of this world" });
+
+    expect(onJoinRefused).toHaveBeenCalledExactlyOnceWith("forbidden");
+    session.leave();
+  });
+
+  test("enter() after leave() returns without constructing a socket", async () => {
+    const connect = vi.fn<Connect>(() => Promise.resolve({ send: () => {}, close: () => {} }));
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+    session.leave();
+    await session.enter("w1");
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(session.state).toBe("closed");
+  });
+});
+
 // An external module's declared stylesheet (`ModuleManifest.style`) follows
 // the module's activation lifecycle: injected as a <link> once the module has
 // activated, removed when it unloads or the session leaves the world.
@@ -1952,6 +2441,7 @@ async function enterWithStyledModule(): Promise<WorldSession> {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   const externalModule: Module = {
@@ -1999,6 +2489,7 @@ test("a reconcile unload removes the module's stylesheet", async () => {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -2016,6 +2507,7 @@ test("a module whose activation fails gets no stylesheet link", async () => {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   // The import succeeds (so the load result lists the module) but activation
@@ -2037,6 +2529,146 @@ test("a module whose activation fails gets no stylesheet link", async () => {
   await vi.waitFor(() => expect(core.getEnabledModules).toHaveBeenCalled());
   await new Promise((r) => setTimeout(r, 0));
   expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+  session.leave();
+});
+
+/** Mocks one installed, enabled external module (folder `folder-one`, manifest `mod-one`) and
+ * enters a session whose import resolves to `importModule`'s outcome.
+ * @param importModule The session's `importModule` stub.
+ * @param onModuleStatus Optional status callback spy.
+ * @returns The entered session, after the external-module pipeline settled.
+ * @example
+ * ```
+ * // private test helper; not part of the public API
+ * const session = await enterWithModuleImport(vi.fn().mockRejectedValue(new Error("x")));
+ * ```
+ */
+async function enterWithModuleImport(
+  importModule: (url: string) => Promise<unknown>,
+  onModuleStatus?: (id: string, status: string, detail: string | null) => void,
+  role: "gm" | "player" = "gm",
+): Promise<WorldSession> {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ]);
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(1, role),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    importModule,
+    ...(onModuleStatus ? { onModuleStatus } : {}),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(core.getEnabledModules).toHaveBeenCalled());
+  await vi.waitFor(() => expect(importModule).toHaveBeenCalled());
+  await new Promise((r) => setTimeout(r, 0));
+  return session;
+}
+
+test("a module whose register() throws reaches onModuleStatus and the persistent moduleStatus map", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockResolvedValue({
+      manifest: { ...styledModuleManifest },
+      register: vi.fn().mockRejectedValue(new Error("boom")),
+    }),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledWith("folder-one", "failed", "boom");
+  expect(session.moduleStatus.get("folder-one")).toEqual({
+    id: "folder-one",
+    status: "failed",
+    error: "boom",
+  });
+  session.leave();
+});
+
+test("a module whose import fails reaches onModuleStatus as load-failed under its folder id", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockRejectedValue(new Error("import blew up")),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledWith(
+    "folder-one",
+    "load-failed",
+    expect.stringContaining("import blew up"),
+  );
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  session.leave();
+});
+
+test("a player's session records a module failure but never calls onModuleStatus", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockRejectedValue(new Error("import blew up")),
+    onModuleStatus,
+    "player",
+  );
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  expect(onModuleStatus).not.toHaveBeenCalled();
+  session.leave();
+});
+
+test("a later activation pass does not announce an unchanged module problem again", async () => {
+  const core = await import("@shadowcat/core");
+  const onModuleStatus = vi.fn();
+  const failing = (manifestId: string) => ({
+    manifest: { ...styledModuleManifest, id: manifestId },
+    register: vi.fn().mockRejectedValue(new Error("boom")),
+  });
+  const session = await enterWithModuleImport(
+    vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(failing(url.includes("folder-two") ? "mod-two" : "mod-one")),
+    ),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledTimes(1);
+  // Enabling a second module runs another activation pass, which retries and re-reports the
+  // still-failing first module.
+  vi.mocked(core.getEnabledModules).mockResolvedValue([
+    { id: "folder-one", validators_enabled: false },
+    { id: "folder-two", validators_enabled: false },
+  ]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue(
+    ["folder-one", "folder-two"].map((id) => ({
+      id,
+      manifest: { ...styledModuleManifest, id: id === "folder-one" ? "mod-one" : "mod-two" },
+      entry_url: `/modules/${id}/index.js`,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    })),
+  );
+  await session.reconcileInstalledModules();
+  expect(onModuleStatus.mock.calls.map((c) => c[0])).toEqual(["folder-one", "folder-two"]);
+  session.leave();
+});
+
+test("moduleStatus is populated even when no onModuleStatus callback is set", async () => {
+  const session = await enterWithModuleImport(vi.fn().mockRejectedValue(new Error("nope")));
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  session.leave();
+});
+
+test("a module that activates cleanly leaves no moduleStatus entry and never calls onModuleStatus", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockResolvedValue({ manifest: { ...styledModuleManifest }, register: vi.fn() }),
+    onModuleStatus,
+  );
+  expect(session.moduleStatus.size).toBe(0);
+  expect(onModuleStatus).not.toHaveBeenCalled();
   session.leave();
 });
 
@@ -2128,6 +2760,73 @@ describe("WorldSession.audio", () => {
     }
   });
 
+  test("audio.needsGesture is reactive: a change the engine announces re-runs a reader of the getter", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    let needsGesture = false;
+    vi.spyOn(AudioEngine.prototype, "needsGesture", "get").mockImplementation(() => needsGesture);
+    const subscribe = vi.spyOn(AudioEngine.prototype, "subscribe");
+    const session = audioSession();
+    const { before, after } = reactiveRead(
+      () => session.audio.needsGesture,
+      () => {
+        needsGesture = true;
+        // The subscription `createSubscriber` opened on the first read names the engine as `this`.
+        (subscribe.mock.contexts[0] as InstanceType<typeof AudioEngine>).notifyAudioChanged();
+      },
+    );
+    expect(before).toBe(false);
+    expect(after).toBe(true);
+    session.leave();
+  });
+
+  test("the AudioEngine's timer opt is the window's timers", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      audioSession();
+      const { timer } = ctorSpy.mock.calls[0][0];
+      const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+      const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+      const setIntervalSpy = vi.spyOn(window, "setInterval");
+      const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+      const callback = vi.fn();
+      const timeout = timer.setTimeout(callback, 500);
+      expect(setTimeoutSpy).toHaveBeenCalledWith(callback, 500);
+      timer.clearTimeout(timeout);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timeout);
+      const interval = timer.setInterval(callback, 1000);
+      expect(setIntervalSpy).toHaveBeenCalledWith(callback, 1000);
+      timer.clearInterval(interval);
+      expect(clearIntervalSpy).toHaveBeenCalledWith(interval);
+      expect(callback).not.toHaveBeenCalled();
+    } finally {
+      ctorSpy.mockRestore();
+    }
+  });
+
+  test("the AudioEngine's visibility opt reads document visibility and observes visibilitychange", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      audioSession();
+      const { visibility } = ctorSpy.mock.calls[0][0];
+      const state = vi.spyOn(document, "visibilityState", "get");
+      state.mockReturnValue("visible");
+      expect(visibility.isVisible()).toBe(true);
+      state.mockReturnValue("hidden");
+      expect(visibility.isVisible()).toBe(false);
+      const observer = vi.fn();
+      const unsubscribe = visibility.subscribe(observer);
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(observer).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(observer).toHaveBeenCalledTimes(1);
+    } finally {
+      ctorSpy.mockRestore();
+    }
+  });
+
   test("an audio-state document-store update drives AudioEngine.applyState", async () => {
     const { AudioEngine } = await import("@shadowcat/audio");
     const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});
@@ -2163,6 +2862,7 @@ describe("WorldSession.audio", () => {
           loop: false,
           startedAt: 0,
           pausedAt: null,
+          sessionPaused: false,
         }],
         shuffleSeed: 0,
       },
@@ -2245,13 +2945,13 @@ describe("WorldSession.audio", () => {
           scene: "scene-1",
           listener: "tok-1",
           spatial: true,
-          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true }],
         },
         {
           scene: "scene-2",
           listener: "tok-2",
           spatial: true,
-          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, muffled: false, loop: false }],
         },
       ],
     };
@@ -2286,7 +2986,7 @@ describe("WorldSession.audio", () => {
         scene: "scene-1",
         listener: "tok-1",
         spatial: true,
-        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true }],
       }),
     );
     expect(applyAudibility).not.toHaveBeenCalledWith(
@@ -2329,8 +3029,52 @@ describe("WorldSession.audio", () => {
       scene: "scene-2",
       listener: "tok-2",
       spatial: true,
-      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, muffled: false, loop: false }],
     });
     session.leave();
   });
+});
+
+test("the share-ruler preference a session exposes is keyed by that session's user and persists in this device's storage", () => {
+  localStorage.clear();
+  const connect = (() => Promise.reject(new Error("unused"))) as never;
+  const alice = new WorldSession({ selfId: "alice", connect, modules: [], logger: silentLogger });
+  expect(alice.shareRuler.enabled).toBe(false);
+  alice.shareRuler.set(true);
+  expect(localStorage.getItem(shareRulerStorageKey("alice"))).toBe("1");
+  expect(localStorage.getItem(shareRulerStorageKey("bob"))).toBeNull();
+
+  // A second session for another user on the same browser profile does not inherit the opt-in;
+  // a new session for the same user restores it.
+  expect(new WorldSession({ selfId: "bob", connect, modules: [], logger: silentLogger }).shareRuler.enabled).toBe(false);
+  expect(new WorldSession({ selfId: "alice", connect, modules: [], logger: silentLogger }).shareRuler.enabled).toBe(true);
+  localStorage.clear();
+});
+
+test("onWelcome fires for the first welcome and again for each reconnect's welcome", async () => {
+  const onWelcome = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(2),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onWelcome,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(onWelcome).toHaveBeenCalledTimes(2));
+  session.leave();
+});
+
+test("connection failures before the first Welcome are forwarded with their running count", async () => {
+  const counts: number[] = [];
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: () => Promise.reject(new Error("wss refused")),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onConnectFailure: (n) => counts.push(n),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(counts.slice(0, 2)).toEqual([1, 2]), { timeout: 5000 });
+  session.leave();
 });

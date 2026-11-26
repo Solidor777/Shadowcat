@@ -448,7 +448,7 @@ test("live region: opening a panel that starts minimized announces its docked de
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -481,7 +481,7 @@ test("live region: opening a panel that starts closed (never placed) announces i
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -511,7 +511,7 @@ test("live region: opening a panel that starts popped-out announces its docked d
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -569,7 +569,7 @@ test("live region: opening an already-docked panel that becomes the active tab d
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -614,7 +614,7 @@ test("live region: opening an already-floating panel that gets bumped in z-order
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -734,7 +734,7 @@ test("a reload-restored popout's notice reaches the live region", async () => {
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -877,7 +877,7 @@ test("focus wiring (FakeEngine): reopening an already-docked, present-but-inacti
     contributions: registry,
     role: "gm",
     panels: bridge,
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
@@ -902,7 +902,7 @@ test("focus wiring (DockviewEngine): reopening an already-docked, present-but-in
     contributions: registry,
     role: "gm",
     panels: bridge,
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {}, getChatHistory: () => [], pushChatHistory: () => {} },
   });
   render(PanelHost, { props: { engine }, context });
   await Promise.resolve();

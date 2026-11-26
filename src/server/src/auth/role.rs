@@ -1,3 +1,5 @@
+//! This module defines `ServerRole`, the server-tier role (admin or user).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

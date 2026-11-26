@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { TokenSelection } from "@shadowcat/ui-kit";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildCombatantDoc, type CombatantEngine } from "@shadowcat/core";
+import { DocumentStore, buildCombatantDoc, buildCombatantGroupDoc, type CombatantEngine, type WireDocument } from "@shadowcat/core";
 import AddCombatants from "./AddCombatants.svelte";
 import { fakeCombatApi } from "./__fixtures__/fakeCombatApi";
 import type { Row } from "./model";
@@ -10,8 +10,8 @@ import type { Row } from "./model";
 afterEach(() => cleanup());
 
 function actorRow(id: string, tokenId: string | null): Row {
-  const engine: CombatantEngine = { kind: { type: "actor", token_id: tokenId, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
-  return { doc: buildCombatantDoc("w1", "combat-1", engine, { id }), kind: "actor", view: null, name: id, art: {} };
+  const engine: CombatantEngine = { kind: { type: "actor", token_id: tokenId, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
+  return { doc: buildCombatantDoc("w1", "combat-1", engine, { id }), kind: "actor", view: null, name: id, group: null, art: {} };
 }
 
 // A fixture-driven `plural` stub, distinct from the identity-echo `t` default: it names both
@@ -20,14 +20,14 @@ function actorRow(id: string, tokenId: string | null): Row {
 // `i18n` singleton's actual English catalog text.
 const fixturePlural = (key: string, count: number): string => `${key}=${count}`;
 
-function renderAdd(rows: Row[], selectedTokenIds: string[]) {
+function renderAdd(rows: Row[], selectedTokenIds: string[], groups: WireDocument[] = []) {
   const store = new DocumentStore();
   const combat = fakeCombatApi(store);
   const tokenSelection = new TokenSelection();
   tokenSelection.set(selectedTokenIds);
   return {
     ...render(AddCombatants, {
-      props: { combatId: "combat-1", rows },
+      props: { combatId: "combat-1", rows, groups },
       context: setAppContextForTest({ store, documents: store, combat, tokenSelection, plural: fixturePlural }),
     }),
     combat,
@@ -57,6 +57,31 @@ describe("AddCombatants", () => {
     await fireEvent.click(checkbox);
     await fireEvent.click(getByTestId("combat-tracker:add-selected"));
     expect(combat.calls.addCombatants).toEqual([["combat-1", [{ tokenId: "token-1", hidden: true }, { tokenId: "token-2", hidden: true }]]]);
+  });
+
+  it("an existing group picked in the picker is stamped on every added combatant", async () => {
+    const { getByTestId, combat } = renderAdd([], ["token-1"], [buildCombatantGroupDoc("w1", "combat-1", "Wolves", undefined, "g1")]);
+    await fireEvent.change(getByTestId("combat-tracker:group-picker"), { target: { value: "g1" } });
+    await fireEvent.click(getByTestId("combat-tracker:add-selected"));
+    expect(combat.calls.addCombatants).toEqual([["combat-1", [{ tokenId: "token-1", hidden: false, group: "g1" }]]]);
+    expect(combat.calls.createGroup).toBeUndefined();
+  });
+
+  it("the new-group choice creates the group first, then stamps its id on the batch", async () => {
+    const { getByTestId, getByLabelText, combat } = renderAdd([], ["token-1"]);
+    await fireEvent.change(getByTestId("combat-tracker:group-picker"), { target: { value: "new" } });
+    await fireEvent.input(getByLabelText("combatTracker.groupName"), { target: { value: "Wolves" } });
+    await fireEvent.click(getByTestId("combat-tracker:add-selected"));
+    expect(combat.calls.createGroup?.[0].slice(0, 2)).toEqual(["combat-1", "Wolves"]);
+    expect(combat.calls.addCombatants).toEqual([["combat-1", [{ tokenId: "token-1", hidden: false, group: "new-group" }]]]);
+  });
+
+  it("the new-group choice with a blank name adds nothing", async () => {
+    const { getByTestId, combat } = renderAdd([], ["token-1"]);
+    await fireEvent.change(getByTestId("combat-tracker:group-picker"), { target: { value: "new" } });
+    await fireEvent.click(getByTestId("combat-tracker:add-selected"));
+    expect(combat.calls.createGroup).toBeUndefined();
+    expect(combat.calls.addCombatants).toBeUndefined();
   });
 
   it("is disabled when there are no addable selected tokens, and calls ctx.plural with count 0", () => {

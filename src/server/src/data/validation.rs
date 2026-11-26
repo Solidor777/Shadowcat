@@ -1,3 +1,8 @@
+//! This module validates documents and field changes: size caps, ids and names, field paths, engine
+//! bodies, system schemas, property overrides and containment.
+//!
+//! `derive_engine_side_effects` derives the engine side-effect field changes.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -21,10 +26,9 @@ pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 /// Maximum UTF-8 byte length of `Document.name` — the ONE envelope field
 /// exempt from the `MAX_SYSTEM_BYTES`-style band caps (it lives outside all
 /// three opaque/typed bodies `validate_system_size` bounds). 512 bytes is
-/// generous for a display name — no client editor imposes its own cap today
-/// (checked: no `maxlength` attribute exists on a document-name input in the
-/// tree), so this is sized purely to bound the field rather than to match an
-/// existing client limit; ordinary usage never approaches it, so it should
+/// generous for a display name — no client document-name input declares a
+/// `maxlength`, so this is sized purely to bound the field rather than to match a
+/// client limit; ordinary usage never approaches it, so it should
 /// never surface as a rejected-intent toast.
 pub const MAX_DOCUMENT_NAME_BYTES: usize = 512;
 
@@ -202,7 +206,7 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// is the single chokepoint every persistence path (Create; Update
 /// post-image; embedded mutation) calls before storing a document.
 ///
-/// For `Update`, `apply_intent`'s Phase 2 additionally re-derives every
+/// For `Update`, `apply_intent`'s apply pass additionally re-derives every
 /// `/engine`(/*) `FieldChange.new` from this SAME normalized `doc` before the
 /// `world_events` INSERT, so the normalized form reaches not just the
 /// persisted row but also the broadcast delta and the permanent event log
@@ -260,6 +264,9 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// ```
 pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     doc.engine = engine::normalize_engine_opt(&doc.doc_type, doc.engine.as_ref())?;
+    if doc.doc_type == engine::NOTE_DOC_TYPE {
+        stamp_note_secret_overrides(doc)?;
+    }
     if let Some(mut base) = doc.base.take() {
         // `doc.base` is detached for the walk so the live tree can be read
         // for embedded-child correlation while the snapshot is mutated.
@@ -271,6 +278,26 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
             validate_engine_tree(child)?;
         }
     }
+    Ok(())
+}
+
+/// Rewrites the override keys a note's secret blocks own. A note's `body` is server-derived, so
+/// the property overrides that hide its `Segment::Secret` content are server-derived too: every
+/// stored `/engine/source` and `/engine/body`-rooted key is dropped (whatever a client wrote
+/// there is untrusted) and replaced by `NoteEngine::secret_property_overrides` of the freshly
+/// normalized engine band. Runs on every Create and Update post-image through
+/// `validate_engine_tree`, so the stored set always matches the stored body.
+fn stamp_note_secret_overrides(doc: &mut Document) -> Result<(), DataError> {
+    let Some(engine_value) = &doc.engine else {
+        return Ok(());
+    };
+    let note: engine::note::NoteEngine = serde_json::from_value(engine_value.clone())
+        .map_err(|e| DataError::BadEngine(format!("note: {e}")))?;
+    let overrides = &mut doc.permissions.property_overrides;
+    overrides.retain(|path, _| {
+        path != "/engine/source" && path != "/engine/body" && !path.starts_with("/engine/body/")
+    });
+    overrides.extend(note.secret_property_overrides());
     Ok(())
 }
 
@@ -364,11 +391,11 @@ pub fn derive_engine_side_effects(
 /// input: an absent `Option` field is re-serialized as an explicit `null`, so
 /// a client pre-image built from its own optimistic view (carrying only the
 /// keys it set) differs from the stored value by key count alone even when
-/// it is faithful. `SqliteRepository::apply_intent`'s Phase-1 OCC check
+/// it is faithful. `SqliteRepository::apply_intent`'s validation-pass OCC check
 /// therefore reads the pre-image through the SAME normalizer the stored value
 /// came from, by splicing it into a copy of the stored document at `path`
 /// and running `validate_engine_tree` on the result — the very function
-/// Phase 2 runs to produce what gets stored, which also normalizes an
+/// the apply pass runs to produce what gets stored, which also normalizes an
 /// embedded child's band under the CHILD's `doc_type` (a bare
 /// `normalize_engine_opt(root doc_type, …)` would misread
 /// `/embedded/actor/0/engine`). The value at `path` is then re-extracted.
@@ -785,7 +812,7 @@ fn check_value(
 /// Validate the POST-IMAGE `system` band against the world's registered
 /// structural schemas, recursing embedded descendants — each
 /// looked up by its OWN `doc_type`. READ-ONLY: unlike `validate_engine_tree`,
-/// there is no normalization; tier-2 only accepts/rejects and must not reshape
+/// there is no normalization; the structural-schema check only accepts/rejects and must not reshape
 /// the opaque `system` body. A subtree registered but absent in this document is
 /// NOT a violation (registering a schema governs shape-when-present, never
 /// compels presence). `subtree_pointer` is a strict `/system/…` descendant
@@ -883,12 +910,11 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
 /// meaning. Rejecting it is defence in depth for a real divergence class: `new` is
 /// checked by NEITHER the OCC pre-image comparison (which reads `old`) NOR
 /// `required_cap_for_path`, so any consumer that mirrors a change by unconditionally
-/// setting `new` — instead of branching on `remove` as `apply_intent` Phase 2 does —
-/// lands an attacker-chosen value while the store lands absence. The derived scene ECS
-/// had exactly that bug; `command::apply_field_change` is now the single store-equal
-/// rule, called by every authoritative path and every mirror. Denying the shape at
-/// ingress means no future mirror can be forked this way even if it re-introduces the
-/// same mistake.
+/// setting `new` — instead of branching on `remove` as `apply_intent`'s apply pass does —
+/// lands an attacker-chosen value while the store lands absence.
+/// `command::apply_field_change` is the store-equal rule the repository's apply paths
+/// share. Denying the shape at ingress means a mirror that sets `new` unconditionally
+/// cannot land a value the store does not.
 ///
 /// # Examples
 ///
@@ -986,8 +1012,10 @@ pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
 }
 
 /// Placement rules that need no database: a `combat` is never parented and
-/// never embedded; a `table` is likewise never parented and never embedded;
-/// a `combatant`/`combat-history` is always parented (its
+/// never embedded; a `table` and a `table_folder` are never embedded (their
+/// optional parent must be a `table_folder`, checked at the persistence
+/// chokepoint, `SqliteRepository::check_table_folder_parent`);
+/// a `combatant`/`combat-history`/`combatant-group` is always parented (its
 /// parent must be a `combat`, checked at the persistence chokepoint where
 /// the parent can be loaded) and never embedded; an `asset_folder` is never
 /// embedded (its parent-type rule lives at the persistence chokepoint,
@@ -1031,12 +1059,9 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
                 "a combat document cannot have a parent".into(),
             ));
         }
-        t if t == engine::TABLE_DOC_TYPE && doc.parent_id.is_some() => {
-            return Err(DataError::OpFailed(
-                "a table document cannot have a parent".into(),
-            ));
-        }
-        t if (t == engine::COMBATANT_DOC_TYPE || t == engine::COMBAT_HISTORY_DOC_TYPE)
+        t if (t == engine::COMBATANT_DOC_TYPE
+            || t == engine::COMBAT_HISTORY_DOC_TYPE
+            || t == engine::COMBATANT_GROUP_DOC_TYPE)
             && doc.parent_id.is_none() =>
         {
             return Err(DataError::OpFailed(format!(
@@ -1050,7 +1075,9 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
             if child.doc_type == engine::COMBAT_DOC_TYPE
                 || child.doc_type == engine::COMBATANT_DOC_TYPE
                 || child.doc_type == engine::COMBAT_HISTORY_DOC_TYPE
+                || child.doc_type == engine::COMBATANT_GROUP_DOC_TYPE
                 || child.doc_type == engine::ASSET_FOLDER_DOC_TYPE
+                || child.doc_type == engine::TABLE_FOLDER_DOC_TYPE
                 || child.doc_type == engine::TABLE_DOC_TYPE
                 || child.doc_type == engine::NOTE_DOC_TYPE
             {

@@ -25,6 +25,7 @@ Community modules follow the same model — see
 | [sheet-fallback](/modules/sheet-fallback) | The always-available generic document sheet |
 | [stage](/modules/stage) | The PixiJS scene canvas |
 | [dice-3d](/modules/dice-3d) | 3D dice tumble overlay over the stage |
+| [chat-bubbles](/modules/chat-bubbles) | Auto-fading speech bubble over the speaking token |
 | [scene-tools](/modules/scene-tools) | Scene tool rail: place/select/move/draw/measure/ping/wall/region |
 | [actors](/modules/actors) | Actor browser panel (live search, open sheet) |
 | [factions](/modules/factions) | Faction registry panel |
@@ -40,6 +41,7 @@ Community modules follow the same model — see
 | [sheet-note](/modules/sheet-note) | Note sheet: title/visibility/body/tree (priority 0) |
 | [sheet-table](/modules/sheet-table) | Rollable-table sheet: rows, draw rule, draw-to-chat (priority 0) |
 | [ducking](/modules/ducking) | Voice ducking: mic VAD, OS audio-session monitor, push-to-duck key |
+| [onboarding](/modules/onboarding) | Guided tours: offer toast, spotlight overlay, replay list |
 
 The table covers this repository's first-party modules only. An out-of-tree
 module documents itself in its own repository, wherever its checkout sits.

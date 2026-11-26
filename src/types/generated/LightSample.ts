@@ -32,6 +32,8 @@ import type { FalloffCurve } from "./engine/FalloffCurve";
  *     intensity: 1.0,
  *     falloff: FalloffCurve::Linear,
  *     color: 0xffcc00,
+ *     angle: None,
+ *     rotation: None,
  *     polygons: vec![],
  * };
  * let json = serde_json::to_value(&sample).unwrap();
@@ -67,6 +69,17 @@ falloff: FalloffCurve,
  * Packed `0xRRGGBB` light color.
  */
 color: number, 
+/**
+ * Cone width in degrees (`LightEmission.angle`); absent for a radial light.
+ */
+angle?: number, 
+/**
+ * Effective cone direction in degrees at this instant — present exactly when `angle` is,
+ * so a sample is self-describing: for a token-following cone it already holds the
+ * bearer's rotation plus the authored offset. Refines how an already-admitted glow is
+ * shaped; it never changes whether the glow is admitted.
+ */
+rotation?: number, 
 /**
  * The light's `blocksLight`-occluded illumination polygon(s) at this instant (scene
  * coords), each an ordered list of [x, y] vertices.

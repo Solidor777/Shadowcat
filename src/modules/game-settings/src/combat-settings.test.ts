@@ -107,6 +107,27 @@ describe("CombatSettings (world chain editor)", () => {
     ]);
   });
 
+  it("the expiry-note select writes the chosen audience and Inherit removes the key", async () => {
+    const dispatchIntent = vi.fn();
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws({ expiryNotice: "visible" })), dispatchIntent }) });
+    const sel = screen.getByLabelText("gameSettings.combat.expiryNotice") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "gm_only" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/combat", old: { expiryNotice: "visible" }, new: { expiryNotice: "gm_only" } }] },
+    ]);
+    await fireEvent.change(sel, { target: { value: "__inherit" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/combat", old: { expiryNotice: "visible" }, new: null }] },
+    ]);
+  });
+
+  it("the expiry-note provenance and effective-rules row follow the world layer", () => {
+    const scene = buildSceneDoc("w1", {}, "s1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws({ expiryNotice: "gm_only" }), scene), dispatchIntent: vi.fn() }) });
+    expect(screen.getByTestId("provenance:combat.expiryNotice").textContent).toBe("gameSettings.source.world");
+    expect(screen.getByTestId("gameSettings:combat-effective-combat.expiryNotice").textContent).toBe('"gm_only"');
+  });
+
   it("the provenance hint reflects the world source and the reset button appears only for a world leaf", () => {
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws({ enforcement: "hard" })), dispatchIntent: vi.fn() }) });
     expect(screen.getByTestId("provenance:combat.enforcement").textContent).toBe("gameSettings.source.world");

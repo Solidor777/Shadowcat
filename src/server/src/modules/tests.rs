@@ -39,7 +39,8 @@ fn a_declared_id_that_is_not_the_folder_name_still_loads_under_the_folder_name()
     );
     let found = scan_installed_modules(dir.path());
     // The folder name wins everywhere the id is used as a key, and the mismatch does not
-    // reject the module — it is reported, so a module that works today keeps working.
+    // reject the module — it is reported, so a module whose declared id differs from its
+    // folder keeps loading.
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, "on-disk-name");
     assert_eq!(found[0].entry_url, "/modules/on-disk-name/index.js");
@@ -115,6 +116,157 @@ fn manifest_invalid_system_defaults_are_dropped_but_the_module_still_loads() {
         "fail-open discovery: the modules still load"
     );
     assert!(found.iter().all(|m| m.system_defaults.is_none()));
+}
+
+const PLACEMENT_TRIGGER: &str =
+    r#"[{"on":"enter","effect":{"type":"condition_add","condition":"burning"}}]"#;
+
+#[test]
+fn manifest_placements_are_extracted_with_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "spells",
+        &format!(
+            r#"{{"id":"spells","version":"1.0.0","placements":[{{"id":"ball","who":"caster_owner","shapes":["circle"],"maxExtent":12,"triggers":{PLACEMENT_TRIGGER}}}]}}"#
+        ),
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(found[0].placements.len(), 1);
+    let p = &found[0].placements[0];
+    assert_eq!(p.id, "ball");
+    assert_eq!(p.who, PlacementWho::CasterOwner);
+    assert_eq!(p.behavior, "terrain");
+    assert_eq!(p.cost, 1.0);
+    assert_eq!(p.triggers.len(), 1);
+}
+
+#[test]
+fn manifest_invalid_and_duplicate_placements_are_dropped_but_the_module_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "spells",
+        &format!(
+            r#"{{"id":"spells","version":"1.0.0","placements":[
+              {{"id":"ok","who":"player","shapes":["circle"],"maxExtent":5,"triggers":{PLACEMENT_TRIGGER}}},
+              {{"id":"ok","who":"gm","shapes":["circle"],"maxExtent":5}},
+              {{"id":"unknown-field","who":"gm","shapes":["circle"],"maxExtent":5,"bogus":1}},
+              {{"id":"no-shapes","who":"gm","shapes":[],"maxExtent":5}},
+              {{"id":"bad-shape","who":"gm","shapes":["blob"],"maxExtent":5}},
+              {{"id":"zero-extent","who":"gm","shapes":["circle"],"maxExtent":0}},
+              {{"id":"bad-who","who":"everyone","shapes":["circle"],"maxExtent":5}},
+              "not an object"
+            ]}}"#
+        ),
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(
+        found.len(),
+        1,
+        "fail-open discovery: the module still loads"
+    );
+    let ids: Vec<&str> = found[0].placements.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["ok"], "only the first valid declaration survives");
+    assert_eq!(found[0].placements[0].who, PlacementWho::Player);
+}
+
+#[test]
+fn a_placement_admits_only_its_declared_kinds_within_its_extent() {
+    let decl: PlacementDecl = serde_json::from_str(
+        r#"{"id":"z","who":"player","shapes":["circle","rect"],"maxExtent":10}"#,
+    )
+    .unwrap();
+    let circle = |r: f64| crate::data::engine::RegionShape {
+        kind: "circle".into(),
+        points: vec![0.0, 0.0, r],
+    };
+    assert!(decl.admits(&circle(5.0)), "diameter 10 is at the limit");
+    assert!(!decl.admits(&circle(5.1)), "diameter 10.2 exceeds it");
+    let rect = crate::data::engine::RegionShape {
+        kind: "rect".into(),
+        points: vec![0.0, 0.0, 10.0, 4.0],
+    };
+    assert!(decl.admits(&rect));
+    let polygon = crate::data::engine::RegionShape {
+        kind: "polygon".into(),
+        points: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+    };
+    assert!(!decl.admits(&polygon), "polygon is not declared");
+}
+
+#[test]
+fn placement_duration_and_range_are_validated_at_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "spells",
+        r#"{"id":"spells","version":"1.0.0","placements":[
+          {"id":"ok","who":"player","shapes":["circle"],"maxExtent":5,"durationSecs":30,"maxRangeCells":6},
+          {"id":"zero-duration","who":"gm","shapes":["circle"],"maxExtent":5,"durationSecs":0},
+          {"id":"huge-duration","who":"gm","shapes":["circle"],"maxExtent":5,"durationSecs":99999999},
+          {"id":"zero-range","who":"gm","shapes":["circle"],"maxExtent":5,"maxRangeCells":0},
+          {"id":"negative-range","who":"gm","shapes":["circle"],"maxExtent":5,"maxRangeCells":-2}
+        ]}"#,
+    );
+    let found = scan_installed_modules(dir.path());
+    let ids: Vec<&str> = found[0].placements.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["ok"]);
+    assert_eq!(found[0].placements[0].duration_secs, Some(30));
+    assert_eq!(found[0].placements[0].max_range_cells, Some(6.0));
+}
+
+#[test]
+fn a_placement_expires_duration_after_placement_and_never_without_a_duration() {
+    let timed: PlacementDecl = serde_json::from_str(
+        r#"{"id":"z","who":"player","shapes":["circle"],"maxExtent":10,"durationSecs":90}"#,
+    )
+    .unwrap();
+    let forever: PlacementDecl =
+        serde_json::from_str(r#"{"id":"z","who":"player","shapes":["circle"],"maxExtent":10}"#)
+            .unwrap();
+    assert_eq!(timed.expires_at(10_000), Some(100_000));
+    assert_eq!(forever.expires_at(10_000), None);
+}
+
+#[test]
+fn range_is_measured_to_the_area_centre_in_cells_and_a_malformed_area_is_out_of_range() {
+    let ranged: PlacementDecl = serde_json::from_str(
+        r#"{"id":"z","who":"player","shapes":["circle","rect","polygon"],"maxExtent":50,"maxRangeCells":2}"#,
+    )
+    .unwrap();
+    let unlimited: PlacementDecl =
+        serde_json::from_str(r#"{"id":"z","who":"player","shapes":["circle"],"maxExtent":50}"#)
+            .unwrap();
+    let at = |x: f64| crate::data::engine::RegionShape {
+        kind: "circle".into(),
+        points: vec![x, 0.0, 1.0],
+    };
+    // Two cells of 100 units: exactly at the limit is in range, a hair past it is not.
+    assert!(ranged.within_range((0.0, 0.0), &at(200.0), 100.0));
+    assert!(!ranged.within_range((0.0, 0.0), &at(200.5), 100.0));
+    // The measure is cells: the same span at a smaller cell size is farther.
+    assert!(!ranged.within_range((0.0, 0.0), &at(200.0), 50.0));
+    // A rect and a polygon are measured to their bounding-box centre.
+    let rect = crate::data::engine::RegionShape {
+        kind: "rect".into(),
+        points: vec![100.0, -50.0, 300.0, 50.0],
+    };
+    assert!(ranged.within_range((0.0, 0.0), &rect, 100.0));
+    let polygon = crate::data::engine::RegionShape {
+        kind: "polygon".into(),
+        points: vec![300.0, 0.0, 500.0, 0.0, 500.0, 100.0],
+    };
+    assert!(!ranged.within_range((0.0, 0.0), &polygon, 100.0));
+    let malformed = crate::data::engine::RegionShape {
+        kind: "circle".into(),
+        points: vec![0.0],
+    };
+    assert!(!ranged.within_range((0.0, 0.0), &malformed, 100.0));
+    assert!(
+        unlimited.within_range((0.0, 0.0), &at(1e9), 100.0),
+        "no range declared"
+    );
 }
 
 #[test]

@@ -1,13 +1,16 @@
-//! Tokens → `Expr`. Twin of the client package's `parser.ts`: the same
-//! recursive-descent grammar, node cap, depth cap and `detail` wording.
-//! Grammar: `additive := multiplicative (('+'|'-') multiplicative)*`;
-//! `multiplicative := unary (('*'|'/'|'%') unary)*`; `unary := '-' unary | primary`;
-//! `primary := num | '(' additive ')' | word ('(' args ')')? ('.' word)*`.
-//! A word immediately followed by `(` must be a known function name; a dotted
-//! segment is never a call. INVARIANT: `depth` counts structural-nesting
-//! boundaries only (paren-open, call-argument, unary-minus), so a flat operator
-//! chain never trips the depth cap and the parser's own recursion is bounded
-//! by that cap plus the constant depth of the production chain.
+//! This module parses tokens into an `Expr`.
+//!
+//! It is the twin of the client package's `parser` module, with the same recursive-descent
+//! grammar, node cap, depth cap and `detail` wording.
+//!
+//! The grammar is `additive := multiplicative (('+'|'-') multiplicative)*`, then
+//! `multiplicative := unary (('*'|'/'|'%') unary)*`, then `unary := '-' unary | primary`, then
+//! `primary := num | '(' additive ')' | word ( '(' args ')' | ('.' word)* )`. A word followed by
+//! the token `(` must be a known function name; a dotted segment is never a call.
+//!
+//! INVARIANT: `depth` counts structural-nesting boundaries only (paren-open, call-argument,
+//! unary-minus), so a flat operator chain never trips the depth cap and the parser's own recursion
+//! is bounded by that cap plus the constant depth of the production chain.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -264,7 +267,7 @@ impl Parser {
         self.primary(depth)
     }
 
-    /// `primary := num | '(' additive ')' | word ('(' args ')')? ('.' word)*`.
+    /// `primary := num | '(' additive ')' | word ( '(' args ')' | ('.' word)* )`.
     fn primary(&mut self, depth: usize) -> Result<Expr, FormulaError> {
         let Some(t) = self.peek().cloned() else {
             return Err(parse_err("unexpected end of formula".to_string()));

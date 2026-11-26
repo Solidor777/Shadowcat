@@ -1,0 +1,6 @@
+{
+  "maxPoints": 256,
+  "maxOriginBytes": 64,
+  "ratePerMin": 720,
+  "maxCoord": 1000000000
+}

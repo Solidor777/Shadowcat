@@ -1,10 +1,18 @@
-//! Per-world chat content policy: a single `chat-settings` config `Document`
-//! read by the message sanitizer to decide which enrichment producers are
-//! allowed. Resolution is fail-closed: an absent doc, a query error, or an
-//! `engine` body that does not deserialize into `ChatSettingsEngine` all
-//! yield `ChatContentPolicy::default()` (every toggle absent, i.e. plain
-//! text). The toggles only ever WIDEN enrichment from that safe baseline, so
-//! any failure mode degrades safe rather than open.
+//! This module reads a world's chat content policy, per-channel dice context and channel
+//! registry, and defines the fixed `NOTE_CONTENT_POLICY`.
+//!
+//! `resolve_content_policy` reads the policy from the world's `chat-settings` config `Document`.
+//! The message sanitizer reads the policy to decide which enrichment producers are allowed.
+//! Resolution is fail-closed: an absent doc, a query error, or an `engine` body that does not
+//! deserialize into `ChatSettingsEngine` all yield `ChatContentPolicy::default()` (every toggle
+//! absent, i.e. plain text). Each toggle widens enrichment from that baseline, so these three
+//! failures degrade to plain text rather than to a wider policy.
+//!
+//! `resolve_dice_context` resolves the ambient dice-notation `ParseContext` for a sending channel
+//! from the `dice-settings` document, fail-closed to the default context. `channel_registered`
+//! reports whether a channel is in the world's channel registry; `handle_send_message`, the
+//! combat roll dispatch and `handle_draw_table` call it and refuse a channel the world has not
+//! registered.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -98,6 +106,38 @@ impl ChatContentPolicy {
         self.emails.unwrap_or(false)
     }
 
+    /// Players other than the roller see that a blind roll a player made happened (absent =
+    /// false, fail-closed). Never applies to a GM's blind roll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// assert!(!ChatContentPolicy::default().blind_visible_to_players());
+    /// let policy = ChatContentPolicy { blind_visible_to_players: Some(true), ..Default::default() };
+    /// assert!(policy.blind_visible_to_players());
+    /// ```
+    pub fn blind_visible_to_players(&self) -> bool {
+        self.blind_visible_to_players.unwrap_or(false)
+    }
+
+    /// The owner of the actor a GM's blind roll is attributed to sees that it happened
+    /// (absent = false, fail-closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// assert!(!ChatContentPolicy::default().blind_visible_to_actor_owner());
+    /// let policy = ChatContentPolicy { blind_visible_to_actor_owner: Some(true), ..Default::default() };
+    /// assert!(policy.blind_visible_to_actor_owner());
+    /// ```
+    pub fn blind_visible_to_actor_owner(&self) -> bool {
+        self.blind_visible_to_actor_owner.unwrap_or(false)
+    }
+
     /// Resolved link-preview enablement: previews require
     /// `hyperlinks` to be on (a preview with no rendered link is
     /// meaningless), and within that, `link_previews` defaults ON when
@@ -163,6 +203,8 @@ pub const NOTE_CONTENT_POLICY: ChatContentPolicy = ChatSettingsEngine {
     hyperlinks: Some(true),
     emails: Some(false),
     link_previews: Some(false),
+    blind_visible_to_players: None,
+    blind_visible_to_actor_owner: None,
 };
 
 /// Doc_type for the single per-world dice-settings config `Document`.
@@ -216,8 +258,8 @@ pub async fn resolve_dice_context(
 }
 
 /// Whether `channel` is a registered channel of this world — the ingest gate
-/// for `MessageEngine.channel`, consulted by `handle_send_message` and the
-/// `CombatRoll` dispatch before any content work runs. A message's channel
+/// for `MessageEngine.channel`, consulted by `handle_send_message`, the
+/// `CombatRoll` dispatch and `handle_draw_table` before any content work runs. A message's channel
 /// selects the per-channel dice `ParseContext` (`resolve_dice_context`) and
 /// labels the clients' channel views, so a sender naming a channel that does
 /// not exist is a mistake to refuse, not to file.

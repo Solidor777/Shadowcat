@@ -1,29 +1,39 @@
-//! Pure combat-clock transitions: each public function takes a
-//! `CombatSnapshot` and returns the `Operation`s for ONE command. Nothing
-//! here touches a `Repository` or chooses a `WriteOrigin` — a later
-//! caller commits the returned ops.
+//! This module holds the pure combat-clock transitions.
 //!
-//! `advance`/`start` share one core mechanism (`settle_turn`): entering a
-//! combatant runs its `turn_start` boundary; an `Event` combatant, or a
-//! hidden combatant under `TurnControl::OwnerMayEnd`, immediately resolves
-//! and the walk continues to the next entry. The step budget starts at
-//! `order.len()` and grows by exactly one for every entry the walk
-//! deletes (an exhausted `Event`), rather than resetting to a fresh
-//! full-length guard on each deletion — so an all-auto-resolving order
-//! (e.g. every entry an infinite `Event`) still terminates, in a number of
-//! steps linear in `order`'s initial length, and the walk's last allowed
-//! step always settles the turn wherever it lands, rather than erroring.
-//! INVARIANT: nothing this module does for a hidden combatant is
-//! observable from outside its own document (no message, no distinguishing
-//! op shape) — the SAME `recover`/`tick`/`expire_by_policy` calls run for a
-//! hidden entry as for a visible one, writing only to that combatant's own
-//! (permission-gated) document and its own hosts' effect documents. Every
-//! `Operation::Update` a transition accumulates is folded, by document id,
-//! through `Working::coalesce_updates` once at the end — so a document
-//! written from more than one boundary/phase within the same command
-//! (an auto-resolved entry's start+end pair, or more than one `resolve_event` deletion in
-//! one `settle_turn` walk) always reaches the caller as ONE `Update` per
-//! document, with a correct cumulative OCC pre-image.
+//! Each public transition except `rebuild_order` takes a `CombatSnapshot` and returns the
+//! `Operation`s for ONE command; `rebuild_order` takes the combatant slice and returns the turn
+//! order's ids. Nothing here touches a `Repository` or chooses a `WriteOrigin`, because a later
+//! caller commits the returned ops. The one other thing a transition hands back is a RECORD, not an
+//! effect: `start_with_trigger_plan`/`advance_with_trigger_plan` also return the turn/round
+//! boundaries the walk crossed (`TurnRoundBoundary`), the firing plan the room applies
+//! turn/round-scoped region triggers from. Recording stays pure, since region rows, region
+//! membership and trigger-effect application never reach this module.
+//!
+//! `advance`/`start` share one core mechanism (`settle_turn`). Entering a combatant runs its
+//! `turn_start` boundary; an `Event` combatant, or a hidden combatant under
+//! `TurnControl::OwnerMayEnd`, immediately resolves and the walk continues to the next entry. The
+//! step budget starts at `order.len()` and grows by exactly one for every entry the walk deletes
+//! (an exhausted `Event`), rather than resetting to a fresh full-length guard on each deletion. An
+//! all-auto-resolving order (e.g. every entry an infinite `Event`) therefore still terminates, in
+//! a number of steps linear in `order`'s initial length, and the walk's last allowed step always
+//! settles the turn wherever it lands, rather than erroring.
+//!
+//! INVARIANT: nothing this module does for a hidden combatant is observable from outside its own
+//! document (no message, no distinguishing op shape), with ONE accepted exception: the boundaries
+//! `record_turn_boundary` and `record_round_boundary` record for every combatant, hidden or not,
+//! drive `Room::fire_turn_round_triggers`,
+//! so a region `TurnStart`/`TurnEnd` trigger the hidden combatant's token stands in fires its
+//! effects when that turn begins or ends, and players watching the map can see when a hidden
+//! combatant's turn starts. Game state yields to play experience here (a region's turn trigger
+//! fires for whoever stands in it, hidden or not), and nothing else about a hidden combatant is
+//! disclosed. The SAME `recover`/`tick`/`expire_by_policy`
+//! calls run for a hidden entry as for a visible one, writing only to that combatant's own
+//! (permission-gated) document and its own hosts' effect documents. Every `Operation::Update` that
+//! `start` and `advance` accumulate is folded, by document id, through `Working::coalesce_updates`
+//! once at the end. A document written from more than one boundary/phase within the same command
+//! (an auto-resolved entry's start+end pair, or more than one `resolve_event` deletion in one
+//! `settle_turn` walk) therefore always reaches the caller as ONE `Update` per document, with a
+//! correct cumulative OCC pre-image.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -37,9 +47,10 @@ use crate::chat::{build_message_doc, ActorOwnerRef, Audience, MessageDraft, Mess
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::{DocRole, Document};
 use crate::data::engine::combat::{
-    resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryPoint, Formula,
-    Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
+    resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryNotice, ExpiryPoint,
+    Formula, Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
 };
+use crate::data::permission::is_identity_hidden_token;
 use crate::data::DataError;
 use crate::dice::{RawRoll, RollOutcome, RollSpec};
 
@@ -160,7 +171,7 @@ pub(crate) fn is_hidden(c: &Combatant) -> bool {
 
 /// Which per-boundary `Recovery` formula applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
+pub(crate) enum Phase {
     /// A combatant's turn starting.
     TurnStart,
     /// A combatant's turn ending.
@@ -182,13 +193,60 @@ fn phase_formula(recover: &Recovery, phase: Phase) -> &Formula {
 }
 
 /// The chain-field name of `phase`, used in evaluation-failure details.
-fn phase_name(phase: Phase) -> &'static str {
+pub(crate) fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::TurnStart => "turn_start",
         Phase::TurnEnd => "turn_end",
         Phase::RoundStart => "round_start",
         Phase::RoundEnd => "round_end",
     }
+}
+
+/// The `data::engine::TriggerEvent` a region trigger author picks to fire at
+/// `phase` — the ONE mapping between the clock's phase vocabulary and the
+/// region-trigger event vocabulary, so the two are identical by construction
+/// rather than by two independently-typed spellings (the serde renames on
+/// `TriggerEvent` spell exactly what `phase_name` returns; the
+/// `turn_round_trigger_event_serde_spellings_match_the_phase_vocabulary`
+/// test pins that identity).
+pub(crate) fn phase_trigger_event(phase: Phase) -> crate::data::engine::TriggerEvent {
+    match phase {
+        Phase::TurnStart => crate::data::engine::TriggerEvent::TurnStart,
+        Phase::TurnEnd => crate::data::engine::TriggerEvent::TurnEnd,
+        Phase::RoundStart => crate::data::engine::TriggerEvent::RoundStart,
+        Phase::RoundEnd => crate::data::engine::TriggerEvent::RoundEnd,
+    }
+}
+
+/// One turn/round boundary a transition crossed, recorded for the
+/// turn/round-scoped region-trigger family (`TriggerEvent::TurnStart` & kin).
+/// `combat::transition` stays pure: it RECORDS the boundaries it runs
+/// (alongside the ops it already returns) and nothing more — region rows,
+/// membership, and effect application all live room-side
+/// (`Room::fire_turn_round_triggers`), so this module takes on no
+/// trigger-effect I/O it doesn't otherwise have. The boundaries recorded are
+/// exactly the ones recovery/tick ran for: a `history::fast_forward`
+/// short-circuit runs none and records none, and `roll`/`sort`/`resource`/
+/// `pause`/`end`/`rewind` never reach here either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnRoundBoundary {
+    /// The boundary's event, mapped through `phase_trigger_event`.
+    pub event: crate::data::engine::TriggerEvent,
+    /// The combatant whose TURN boundary this is; `None` for a round-scoped
+    /// boundary (`RoundStart`/`RoundEnd`), which `covered` describes instead.
+    pub combatant: Option<Uuid>,
+    /// Every combatant in `/engine/order` at the moment a ROUND boundary
+    /// crossed (empty for turn-scoped entries) — recorded at crossing time
+    /// because a later phase of the same transition (an exhausted `Event`'s
+    /// deletion) can shrink `order` before the room expands the boundary, and
+    /// the firing must cover exactly the combatants the boundary's own
+    /// recovery sweep covered.
+    pub covered: Vec<Uuid>,
+    /// The round the boundary belongs to: the turn identity for turn-scoped
+    /// entries (a `(round, combatant)` pair is one turn), the NEW round for a
+    /// `round_wrap` crossing. This is the boundary-instance component of the
+    /// room's once-per-turn/round dedup key.
+    pub round: u32,
 }
 
 /// Appends the resource-recovery `FieldChange`s `c` earns at `phase` to
@@ -281,6 +339,14 @@ struct Working {
     /// skipped write each); drained into ONE GM-only chat notice by
     /// `flush_eval_notices`.
     eval_failures: Vec<String>,
+    /// Every effect this transition switched off, in expiry order; drained into at most one
+    /// public and one GM-only chat notice by `flush_expiry_notices`.
+    expired: Vec<ExpiredEffect>,
+    /// The turn/round boundaries this transition crossed, in crossing order —
+    /// the region-trigger firing plan `start_with_trigger_plan`/
+    /// `advance_with_trigger_plan` hand the room alongside the ops. Recording
+    /// is all this module does with region triggers; firing is room-side.
+    trigger_plan: Vec<TurnRoundBoundary>,
     /// Total `settle_turn` loop iterations taken. Test-only instrumentation
     /// for asserting the step budget stays linear in `order`'s initial
     /// length (see `settle_turn`'s own doc comment) — never read outside a
@@ -309,6 +375,8 @@ impl Working {
             registry: snap.registry.clone(),
             ops: Vec::new(),
             eval_failures: Vec::new(),
+            expired: Vec::new(),
+            trigger_plan: Vec::new(),
             #[cfg(test)]
             settle_turn_steps: 0,
         };
@@ -335,21 +403,16 @@ impl Working {
     /// resort `order` for their own reasons (`sort`/`roll`/a restoring
     /// `rewind`).
     ///
-    /// Deliberately DROP-ONLY: it never appends a `combatants` entry
-    /// `order` doesn't name. A combatant re-parented INTO this combat (or
-    /// `Create`d as one of its children from the start) without an `order`
-    /// entry is a genuine, permanent design state — a staged/hidden
-    /// combatant a GM adds to the clock only via an explicit `CombatRoll`/
-    /// `CombatSort`, pinned by an end-to-end scenario asserting such a
-    /// combatant "never enters `order`/`turn`" across an entire round. An
-    /// earlier version of this function reused `reconcile_membership`
-    /// wholesale (append included) and broke that scenario: every
-    /// `advance` silently rolled the staged combatant into the clock
-    /// on its own, which is a real regression, not a fix — an ARRIVAL
-    /// is not itself a defect the way a stale departed id is; it is
-    /// indistinguishable, from `order` alone, from a combatant the GM
-    /// deliberately never rolled in, and only an explicit resort may
-    /// resolve that ambiguity.
+    /// Deliberately DROP-ONLY: it never appends a `combatants` entry `order` doesn't name. A
+    /// combatant re-parented INTO this combat (or `Create`d as one of its children from the
+    /// start) without an `order` entry is a genuine, permanent design state — a staged/hidden
+    /// combatant a GM adds to the clock only via an explicit `CombatRoll`/`CombatSort`, pinned
+    /// by an end-to-end scenario asserting such a combatant "never enters `order`/`turn`"
+    /// across an entire round. Appending (as `reconcile_membership` does) would silently roll
+    /// the staged combatant into the clock on every `advance` — an ARRIVAL is not itself a
+    /// defect the way a stale departed id is; it is indistinguishable, from `order` alone, from
+    /// a combatant the GM deliberately never rolled in, and only an explicit resort may resolve
+    /// that ambiguity.
     ///
     /// A no-op (nothing recorded) when the pruned order already matches;
     /// otherwise stages the correcting `Update` through `commit_combat`,
@@ -386,6 +449,7 @@ impl Working {
             history: None,
             registry: self.registry.clone(),
             other_active: Vec::new(),
+            groups: Vec::new(),
             chain: (None, None, None),
         }
     }
@@ -504,7 +568,7 @@ impl Working {
     /// more than one `resolve_event` deletion in one walk — are folded
     /// into ONE `FieldChange` via `merge_field_changes`, never left as two
     /// separate entries. INVARIANT this exists to satisfy:
-    /// `SqliteRepository::apply_intent`'s Phase 1 snapshots ONE whole-document
+    /// `SqliteRepository::apply_intent`'s validation pass snapshots ONE whole-document
     /// `Value` per `Operation::Update` and checks every `FieldChange` in its
     /// `changes` list against that SAME fixed snapshot — so two separate
     /// entries at one path would have the second checked against the
@@ -543,6 +607,58 @@ impl Working {
         let failures = std::mem::take(&mut self.eval_failures);
         self.ops.extend(eval_notice(failures, world, author, now));
     }
+
+    /// Records `effects` as switched off by combatant `combatant`'s boundary sweep.
+    fn record_expired(&mut self, combatant: Uuid, effects: Vec<EffectRef>) {
+        self.expired.extend(
+            effects
+                .into_iter()
+                .map(|effect| ExpiredEffect { effect, combatant }),
+        );
+    }
+
+    /// Drains `expired` into the expiry notices (`expiry_notices`), or does nothing when no
+    /// effect expired.
+    fn flush_expiry_notices(&mut self, mode: ExpiryNotice, world: Uuid, author: Uuid, now: i64) {
+        let expired = std::mem::take(&mut self.expired);
+        self.ops.extend(expiry_notices(
+            &expired,
+            &self.hosts,
+            &self.combatants,
+            mode,
+            world,
+            author,
+            now,
+        ));
+    }
+
+    /// Records one turn-scoped boundary `id` just crossed at the CURRENT
+    /// `engine.round` (the round is read at call time, so a boundary run
+    /// after `round_wrap`'s commit belongs to the new round — the correct
+    /// turn identity). Round-scoped boundaries call `record_round_boundary`
+    /// instead. Region-trigger firing consumes this record room-side; nothing
+    /// else here reads it.
+    fn record_turn_boundary(&mut self, phase: Phase, id: Uuid) {
+        self.trigger_plan.push(TurnRoundBoundary {
+            event: phase_trigger_event(phase),
+            combatant: Some(id),
+            covered: Vec::new(),
+            round: self.engine.round,
+        });
+    }
+
+    /// Records one round-scoped boundary covering the CURRENT `engine.order`
+    /// (the same list the boundary's own recovery sweep iterates), at the
+    /// CURRENT `engine.round` — `round_wrap` commits the new round BEFORE
+    /// recording, so the entry belongs to the round being entered.
+    fn record_round_boundary(&mut self, phase: Phase) {
+        self.trigger_plan.push(TurnRoundBoundary {
+            event: phase_trigger_event(phase),
+            combatant: None,
+            covered: self.engine.order.clone(),
+            round: self.engine.round,
+        });
+    }
 }
 
 /// ONE GM-only chat notice carrying every DISTINCT failure detail in
@@ -573,10 +689,188 @@ fn eval_notice(failures: Vec<String>, world: Uuid, author: Uuid, now: i64) -> Op
                 ),
             }],
             source: None,
+            system: None,
         },
         now,
     );
     Some(Operation::Create { doc })
+}
+
+/// One effect a command switched off, with the combatant whose boundary sweep did it.
+struct ExpiredEffect {
+    /// The effect as collected before the sweep.
+    effect: EffectRef,
+    /// The combatant whose clock expired it. A hidden one makes the effect GM-only.
+    combatant: Uuid,
+}
+
+/// The expiry-note audience setting for `snap`, resolved through the combat-defaults chain at
+/// the moment of the command (a notification preference, not a rule the combat snapshots).
+fn expiry_mode(snap: &CombatSnapshot) -> ExpiryNotice {
+    resolve_combat_rules(
+        snap.chain.0.as_ref(),
+        snap.chain.1.as_ref(),
+        snap.chain.2.as_ref(),
+    )
+    .expiry_notice
+}
+
+/// The document `id` among `doc` and everything embedded under it, or `None` when it is absent.
+fn find_embedded(doc: &Document, id: Uuid) -> Option<&Document> {
+    if doc.id == id {
+        return Some(doc);
+    }
+    doc.embedded
+        .values()
+        .flatten()
+        .find_map(|child| find_embedded(child, id))
+}
+
+/// Whether the document `host` may be NAMED in a line every world member reads: it grants
+/// access by default, no hidden combatant stands on it, and it does not reveal a secret
+/// identity. A secret-identity token (`is_identity_hidden_token`) withholds its name, and an
+/// actor such a token links is withheld too: naming that actor in a public line would join the
+/// token to it, which egress prevents by withholding the token's `actor_id`. Judged on
+/// `permissions.default` only, like `is_hidden`, so a per-user grant on an otherwise unreadable
+/// document leaves the line GM-only: the note under-discloses and never leaks.
+fn host_is_nameable(
+    host: &Document,
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+) -> bool {
+    if host.permissions.default == DocRole::None || is_identity_hidden_token(host) {
+        return false;
+    }
+    let host_key = host.id.to_string();
+    let linked_by_secret_token = hosts.values().any(|t| {
+        is_identity_hidden_token(t)
+            && t.engine
+                .as_ref()
+                .and_then(|e| e.get("actor_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(host_key.as_str())
+    });
+    if linked_by_secret_token {
+        return false;
+    }
+    !combatants.iter().any(|c| {
+        is_hidden(c)
+            && matches!(
+                &c.engine.kind,
+                CombatantKind::Actor { token_id, actor_id }
+                    if *token_id == Some(host.id) || *actor_id == Some(host.id)
+            )
+    })
+}
+
+/// The display name of an origin's `source` document, looked up among the combat's hosts and
+/// combatants; `None` when it is not among them (deleted, or never part of this combat), or when
+/// a world member who may not read it could not see it named: the source, and the host or
+/// combatant document that holds it, must both be nameable (`host_is_nameable`, `is_hidden`).
+fn source_name(
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+    id: Uuid,
+) -> Option<String> {
+    let from_host = hosts.values().find_map(|h| {
+        let found = find_embedded(h, id)?;
+        (host_is_nameable(h, hosts, combatants) && found.permissions.default != DocRole::None)
+            .then_some(found)
+    });
+    let found = from_host.or_else(|| {
+        combatants.iter().find_map(|c| {
+            let found = find_embedded(&c.doc, id)?;
+            (!is_hidden(c) && found.permissions.default != DocRole::None).then_some(found)
+        })
+    })?;
+    found.name.clone().filter(|n| !n.is_empty())
+}
+
+/// Whether the note naming `e` may reach every world member: the effect document and the
+/// combatant that swept it grant access by default, and its host is nameable
+/// (`host_is_nameable`).
+fn effect_is_public(
+    e: &ExpiredEffect,
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+) -> bool {
+    if !e.effect.default_readable {
+        return false;
+    }
+    let Some(host) = hosts.get(&e.effect.host) else {
+        return false;
+    };
+    host_is_nameable(host, hosts, combatants)
+        && !combatants
+            .iter()
+            .any(|c| is_hidden(c) && c.doc.id == e.combatant)
+}
+
+/// The chat notices naming every effect a command expired, as at most TWO `Create` ops: one
+/// public message for the effects `effect_is_public` admits (only under `ExpiryNotice::Visible`)
+/// and one GM-only message for the rest, so a command never floods chat and an effect nobody
+/// else can read is never named to them. Each line reads "Bless on Seraphine (from Aldric)":
+/// the origin is its label, else its source document's name, else omitted. Written in the
+/// command's own ops list, so the note cannot disagree with the expiry.
+fn expiry_notices(
+    expired: &[ExpiredEffect],
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+    mode: ExpiryNotice,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Vec<Operation> {
+    let line = |e: &ExpiredEffect| {
+        let effect = e
+            .effect
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("An effect");
+        let host = hosts
+            .get(&e.effect.host)
+            .and_then(|h| h.name.as_deref())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("an unnamed host");
+        let origin = e.effect.engine.origin.as_ref().and_then(|o| {
+            o.label
+                .clone()
+                .or_else(|| o.source.and_then(|s| source_name(hosts, combatants, s)))
+        });
+        match origin {
+            Some(origin) => format!("{effect} on {host} (from {origin})"),
+            None => format!("{effect} on {host}"),
+        }
+    };
+    let (public, private): (Vec<&ExpiredEffect>, Vec<&ExpiredEffect>) = expired
+        .iter()
+        .partition(|e| mode == ExpiryNotice::Visible && effect_is_public(e, hosts, combatants));
+    [(Audience::Public, public), (Audience::GmOnly, private)]
+        .into_iter()
+        .filter(|(_, group)| !group.is_empty())
+        .map(|(audience, group)| {
+            let lines: Vec<String> = group.into_iter().map(line).collect();
+            Operation::Create {
+                doc: build_message_doc(
+                    world,
+                    author,
+                    MessageDraft {
+                        channel: "combat".to_string(),
+                        actor_owner: None,
+                        audience,
+                        kind: MessageKind::System,
+                        content: vec![Segment::Text {
+                            text: format!("Expired: {}", lines.join("; ")),
+                        }],
+                        source: None,
+                        system: None,
+                    },
+                    now,
+                ),
+            }
+        })
+        .collect()
 }
 
 /// Folds `incoming` into `existing` in place, in favor of `existing`
@@ -641,9 +935,10 @@ fn run_boundary(
         .filter(|r| seen.insert((r.host, r.path.clone())))
         .collect();
     let defaults = w.engine.effect_lifecycle.clone();
-    let (tick_ops, mut tick_failures) = tick(&w.hosts, &refs, boundary, unit, &defaults)?;
-    w.eval_failures.append(&mut tick_failures);
-    w.commit_host_ops(tick_ops)?;
+    let mut sweep = tick(&w.hosts, &refs, boundary, unit, &defaults)?;
+    w.eval_failures.append(&mut sweep.failures);
+    w.record_expired(id, sweep.expired);
+    w.commit_host_ops(sweep.ops)?;
     Ok(())
 }
 
@@ -658,6 +953,7 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         DurationUnit::Turns,
         &mut HashSet::new(),
     )?;
+    w.record_turn_boundary(Phase::TurnEnd, id);
     if w.engine.effect_cleanup {
         let refs: Vec<EffectRef> = {
             let view = w.view();
@@ -669,10 +965,10 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
             collect_effects(&view, c)
         };
         let defaults = w.engine.effect_lifecycle.clone();
-        let (expire_ops, mut expire_failures) =
-            expire_by_policy(&w.hosts, &refs, |f| f.on_turn_end, &defaults)?;
-        w.eval_failures.append(&mut expire_failures);
-        w.commit_host_ops(expire_ops)?;
+        let mut sweep = expire_by_policy(&w.hosts, &refs, |f| f.on_turn_end, &defaults)?;
+        w.eval_failures.append(&mut sweep.failures);
+        w.record_expired(id, sweep.expired);
+        w.commit_host_ops(sweep.ops)?;
     }
     Ok(())
 }
@@ -686,7 +982,9 @@ fn run_turn_start(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         ExpiryPoint::TurnStart,
         DurationUnit::Turns,
         &mut HashSet::new(),
-    )
+    )?;
+    w.record_turn_boundary(Phase::TurnStart, id);
+    Ok(())
 }
 
 /// `id` ENTERING its turn: its own `turn_start` boundary, `/engine/turn` set
@@ -724,11 +1022,17 @@ fn enter_turn(
 /// recovery/tick for every combatant in the CURRENT order. Each boundary
 /// category (`RoundEnd`, `RoundStart`) gets its OWN dedup set spanning the
 /// whole sweep, so a shared unanchored effect is ticked once per boundary
-/// category, never once per combatant that happens to share its host.
+/// category, never once per combatant that happens to share its host. The
+/// region-trigger plan mirrors that structure exactly: ONE round-scoped
+/// record per boundary category (never one per combatant — the room expands
+/// it across `covered`), recorded after the round commit so it belongs to
+/// the round being entered.
 fn round_wrap(w: &mut Working) -> Result<(), CombatError> {
     let new_round = w.engine.round + 1;
     let change = set_engine(&w.combat, "/engine/round", json!(new_round))?;
     w.commit_combat(vec![change])?;
+    w.record_round_boundary(Phase::RoundEnd);
+    w.record_round_boundary(Phase::RoundStart);
     let mut end_seen = HashSet::new();
     let mut start_seen = HashSet::new();
     for id in w.engine.order.clone() {
@@ -805,6 +1109,7 @@ fn resolve_event(
                 kind: MessageKind::Normal,
                 content: vec![Segment::Text { text }],
                 source: None,
+                system: None,
             },
             now,
         );
@@ -846,9 +1151,10 @@ fn resolve_event(
 
 /// Walks `order` starting at `idx`, entering each combatant's turn
 /// (`enter_turn`: `turn_start`, `/engine/turn`, history record) and, when it
-/// is an `Event` or a hidden combatant under `TurnControl::OwnerMayEnd`,
+/// is an `Event`, a defeated combatant (under every `TurnControl`) or a hidden
+/// combatant under `TurnControl::OwnerMayEnd`,
 /// auto-resolving it in full and continuing to the next entry — every
-/// auto-resolving entry gets its own `run_turn_end` (a hidden actor
+/// auto-resolving entry gets its own `run_turn_end` (a hidden or defeated actor
 /// unconditionally, an `Event` unless its own `resolve_event` deleted it,
 /// leaving no document to write), so the start/end boundary pair is
 /// symmetric for every entry the walk touches. The step budget
@@ -888,7 +1194,7 @@ fn settle_turn(
         }
         idx %= w.engine.order.len();
         let entry_id = w.engine.order[idx];
-        let (is_event, hidden) = {
+        let (is_event, hidden, defeated) = {
             let c = w
                 .combatants
                 .iter()
@@ -897,10 +1203,14 @@ fn settle_turn(
             (
                 matches!(c.engine.kind, CombatantKind::Event { .. }),
                 is_hidden(c),
+                c.engine.defeated,
             )
         };
+        // A defeated combatant has no turn to take, so it auto-resolves under
+        // every `TurnControl`; a hidden one only under `OwnerMayEnd`, where the
+        // policy is about who may end a turn.
         let auto_resolves =
-            is_event || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
+            is_event || defeated || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
 
         enter_turn(w, snap, entry_id, now)?;
         if !auto_resolves {
@@ -977,6 +1287,8 @@ fn settle_turn(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1043,6 +1355,7 @@ fn settle_turn(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1060,6 +1373,21 @@ pub fn start(
     world: Uuid,
     author: Uuid,
 ) -> Result<Vec<Operation>, CombatError> {
+    start_with_trigger_plan(snap, now, world, author).map(|(ops, _)| ops)
+}
+
+/// `start` plus the turn/round boundary record the transition crossed — the
+/// region-trigger firing input `combat::run_intent` hands
+/// `Room::fire_turn_round_triggers` after the transition's own commit. The
+/// public `start` keeps its one-command-ops shape for callers that only
+/// apply the ops (the boundary record is derivable from nothing else — it
+/// exists only because the walk recorded it).
+pub(crate) fn start_with_trigger_plan(
+    snap: &CombatSnapshot,
+    now: i64,
+    world: Uuid,
+    author: Uuid,
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
     let mut w = Working::from_snapshot(snap)?;
     for other in &snap.other_active {
         let change = set_engine(other, "/engine/active", json!(false))?;
@@ -1114,6 +1442,7 @@ pub fn start(
         // One dedup set spans the whole sweep — see `round_wrap`'s identical
         // note: an unanchored effect shared by two combatants on the same
         // host is ticked once for the sweep, not once per combatant.
+        w.record_round_boundary(Phase::RoundStart);
         let mut seen = HashSet::new();
         for id in w.engine.order.clone() {
             run_boundary(
@@ -1130,24 +1459,29 @@ pub fn start(
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
     w.flush_eval_notices(world, author, now);
+    w.flush_expiry_notices(expiry_mode(snap), world, author, now);
     w.coalesce_updates(0);
-    Ok(w.ops)
+    Ok((w.ops, w.trigger_plan))
 }
 
 /// Shared implementation for `advance`: builds the ops for ending the
 /// current turn, advancing to the next combatant (wrapping the round when
 /// the order is exhausted), and settling the new turn. Returns the
-/// `settle_turn` step count alongside the ops so `advance_with_step_count`
-/// (test-only) can assert its linear bound without re-deriving `advance`'s
-/// own wiring separately.
+/// transition's turn/round boundary record (the region-trigger firing plan)
+/// and the `settle_turn` step count alongside the ops so
+/// `advance_with_trigger_plan` and `advance_with_step_count` (test-only) can
+/// expose each without re-deriving `advance`'s own wiring separately. A
+/// `history::fast_forward` short-circuit crosses no boundary, so it returns
+/// an EMPTY plan — recovery/tick do not run on a fast-forward and region
+/// triggers mirror that exactly.
 fn advance_impl(
     snap: &CombatSnapshot,
     world: Uuid,
     author: Uuid,
     now: i64,
-) -> Result<(Vec<Operation>, usize), CombatError> {
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>, usize), CombatError> {
     if let Some(ops) = history::fast_forward(snap, now)? {
-        return Ok((ops, 0));
+        return Ok((ops, Vec::new(), 0));
     }
     if !snap.engine.active {
         return Err(CombatError::NotRunning);
@@ -1167,12 +1501,13 @@ fn advance_impl(
     let next_idx = advance_from(&mut w, start_idx, false)?;
     settle_turn(&mut w, snap, next_idx, world, author, now)?;
     w.flush_eval_notices(world, author, now);
+    w.flush_expiry_notices(expiry_mode(snap), world, author, now);
     w.coalesce_updates(0);
     #[cfg(test)]
     let steps = w.settle_turn_steps;
     #[cfg(not(test))]
     let steps = 0usize;
-    Ok((w.ops, steps))
+    Ok((w.ops, w.trigger_plan, steps))
 }
 
 /// Ends the current turn, advances to the next combatant (wrapping the
@@ -1204,6 +1539,8 @@ fn advance_impl(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1270,6 +1607,7 @@ fn advance_impl(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1285,7 +1623,20 @@ pub fn advance(
     author: Uuid,
     now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
-    advance_impl(snap, world, author, now).map(|(ops, _)| ops)
+    advance_impl(snap, world, author, now).map(|(ops, _, _)| ops)
+}
+
+/// `advance` plus the turn/round boundary record the transition crossed —
+/// the region-trigger firing plan `combat::run_intent` hands
+/// `Room::fire_turn_round_triggers` after the transition's own commit
+/// (`start_with_trigger_plan`'s advance twin).
+pub(crate) fn advance_with_trigger_plan(
+    snap: &CombatSnapshot,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
+    advance_impl(snap, world, author, now).map(|(ops, plan, _)| (ops, plan))
 }
 
 /// Test-only seam: identical to `advance`, but also returns the number of
@@ -1300,7 +1651,7 @@ pub(crate) fn advance_with_step_count(
     author: Uuid,
     now: i64,
 ) -> Result<(Vec<Operation>, usize), CombatError> {
-    advance_impl(snap, world, author, now)
+    advance_impl(snap, world, author, now).map(|(ops, _, steps)| (ops, steps))
 }
 
 /// Pauses a running combat: clears `active` only. `NotRunning` if it is not
@@ -1364,6 +1715,7 @@ pub(crate) fn advance_with_step_count(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1473,6 +1825,7 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1613,6 +1966,7 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1635,19 +1989,41 @@ pub fn end(
         // working copy between combatants) — the second would fail its OCC
         // check against the real repository once the first has applied.
         let mut seen = HashSet::new();
-        let refs: Vec<EffectRef> = collect_all_effects(snap)
+        let claimed: Vec<(Uuid, EffectRef)> = collect_all_effects(snap)
             .into_iter()
-            .map(|(_, r)| r)
-            .filter(|r| seen.insert((r.host, r.path.clone())))
+            .filter(|(_, r)| seen.insert((r.host, r.path.clone())))
             .collect();
-        let (expire_ops, failures) = expire_by_policy(
+        let refs: Vec<EffectRef> = claimed.iter().map(|(_, r)| r.clone()).collect();
+        let sweep = expire_by_policy(
             &snap.hosts,
             &refs,
             |f| f.on_combat_end,
             &snap.engine.effect_lifecycle,
         )?;
-        ops.extend(expire_ops);
-        ops.extend(eval_notice(failures, world, author, now));
+        ops.extend(sweep.ops);
+        ops.extend(eval_notice(sweep.failures, world, author, now));
+        let expired: Vec<ExpiredEffect> = sweep
+            .expired
+            .into_iter()
+            .filter_map(|effect| {
+                let (combatant, _) = claimed
+                    .iter()
+                    .find(|(_, r)| r.host == effect.host && r.path == effect.path)?;
+                Some(ExpiredEffect {
+                    combatant: *combatant,
+                    effect,
+                })
+            })
+            .collect();
+        ops.extend(expiry_notices(
+            &expired,
+            &snap.hosts,
+            &snap.combatants,
+            expiry_mode(snap),
+            world,
+            author,
+            now,
+        ));
     }
     ops.push(Operation::Delete {
         doc: snap.combat.clone(),
@@ -1689,6 +2065,8 @@ pub fn end(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -1755,6 +2133,7 @@ pub fn end(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1793,6 +2172,133 @@ pub fn roll(
     channel: &str,
     now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
+    roll_with_groups(snap, results, &[], world, author, channel, now)
+}
+
+/// `roll` plus group rolls: each `group_results` entry names a
+/// `combatant-group` document and ONE `RollPost`, which is stamped as the
+/// initiative of EVERY member of that group (one dice result, never N rolls
+/// forced equal) and posted as ONE chat message for the whole group, not one
+/// per member. `results` entries behave exactly as in `roll`. A group the
+/// snapshot does not hold, or one with no members, is `NotFound`.
+///
+/// INVARIANT: across `results` and every group's members, each combatant id
+/// appears at most once; the wire-dispatch layer (`build_ops`) enforces it, as
+/// it does for `roll`. The group's message is `Audience::GmOnly` when any
+/// member is hidden (a public message would disclose the hidden member's
+/// initiative), and carries no actor owner.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::{roll_with_groups, RollPost};
+/// use shadowcat::combat::{CombatSnapshot, Combatant, CombatantGroup};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind,
+///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, TurnControl,
+/// };
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::{evaluate, parse, roll as roll_dice, ParseContext};
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let group_id = Uuid::new_v4();
+/// let doc = |id: Uuid, doc_type: &str, engine: serde_json::Value| Document {
+///     id,
+///     scope: Scope::World { world_id },
+///     doc_type: doc_type.to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(engine),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let member = |id: Uuid| {
+///     let engine = CombatantEngine {
+///         kind: CombatantKind::Event { lifespan: None, message: None },
+///         initiative: None,
+///         tiebreak: 0.0,
+///         defeated: false,
+///         group: Some(group_id),
+///         resources: Default::default(),
+///     };
+///     Combatant {
+///         doc: doc(id, "combatant", serde_json::to_value(&engine).unwrap()),
+///         engine,
+///     }
+/// };
+/// let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![a, b],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let mut combat = doc(combat_id, "combat", serde_json::to_value(&combat_engine).unwrap());
+/// combat.parent_id = None;
+/// let group_engine = CombatantGroupEngine { name: "Rats".to_string(), color: None };
+/// let snapshot = CombatSnapshot {
+///     combat,
+///     engine: combat_engine,
+///     combatants: vec![member(a), member(b)],
+///     groups: vec![CombatantGroup {
+///         doc: doc(group_id, "combatant-group", serde_json::to_value(&group_engine).unwrap()),
+///         engine: group_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raw = roll_dice(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raw);
+/// let post = RollPost { formula: "1d20".to_string(), outcome, spec, raw };
+///
+/// let ops = roll_with_groups(&snapshot, &[], &[(group_id, post)], world_id, Uuid::new_v4(), "combat", 0)
+///     .unwrap();
+/// let creates = ops.iter().filter(|op| matches!(op, Operation::Create { .. })).count();
+/// let member_updates = ops
+///     .iter()
+///     .filter(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == a || *doc_id == b))
+///     .count();
+/// assert_eq!(creates, 1);
+/// assert_eq!(member_updates, 2);
+/// ```
+pub fn roll_with_groups(
+    snap: &CombatSnapshot,
+    results: &[(Uuid, RollPost)],
+    group_results: &[(Uuid, RollPost)],
+    world: Uuid,
+    author: Uuid,
+    channel: &str,
+    now: i64,
+) -> Result<Vec<Operation>, CombatError> {
     // INVARIANT: `results` must carry at most one entry per `combatant_id` —
     // a duplicate would build two `FieldChange`s against the same combatant
     // from the SAME unmutated `snap` pre-image, so the second write's OCC
@@ -1800,6 +2306,71 @@ pub fn roll(
     // caller (the wire-dispatch layer) is responsible for this; nothing here
     // re-derives or dedupes it.
     let mut ops = Vec::new();
+    // Every (combatant, total) this call stamps, solo and group members alike,
+    // for the re-sort below.
+    let mut stamped: Vec<(Uuid, f64)> = results
+        .iter()
+        .map(|(id, post)| (*id, post.outcome.total as f64))
+        .collect();
+    for (group_id, post) in group_results {
+        let group = snap
+            .groups
+            .iter()
+            .find(|g| g.doc.id == *group_id)
+            .ok_or(CombatError::NotFound)?;
+        let members: Vec<&Combatant> = snap
+            .combatants
+            .iter()
+            .filter(|c| c.engine.group == Some(*group_id))
+            .collect();
+        if members.is_empty() {
+            return Err(CombatError::NotFound);
+        }
+        for c in &members {
+            let change = set_engine(
+                &c.doc,
+                "/engine/initiative",
+                json!(post.outcome.total as f64),
+            )?;
+            ops.push(Operation::Update {
+                doc_id: c.doc.id,
+                changes: vec![change],
+            });
+            stamped.push((c.doc.id, post.outcome.total as f64));
+        }
+        let msg = build_message_doc(
+            world,
+            author,
+            MessageDraft {
+                channel: channel.to_string(),
+                actor_owner: None,
+                audience: if members.iter().any(|c| is_hidden(c)) {
+                    Audience::GmOnly
+                } else {
+                    Audience::Public
+                },
+                kind: MessageKind::Roll,
+                content: vec![
+                    Segment::Text {
+                        text: group.engine.name.clone(),
+                    },
+                    Segment::RollEmbed {
+                        formula: post.formula.clone(),
+                        outcome: post.outcome.clone(),
+                        roll_id: Uuid::new_v4(),
+                        spec: Some(Box::new(post.spec.clone())),
+                        raw: Some(Box::new(post.raw.clone())),
+                        recalc_history: None,
+                        flavor: None,
+                    },
+                ],
+                source: None,
+                system: None,
+            },
+            now,
+        );
+        ops.push(Operation::Create { doc: msg });
+    }
     for (id, post) in results {
         let c = snap
             .combatants
@@ -1851,8 +2422,10 @@ pub fn roll(
                     spec: Some(Box::new(post.spec.clone())),
                     raw: Some(Box::new(post.raw.clone())),
                     recalc_history: None,
+                    flavor: None,
                 }],
                 source: None,
+                system: None,
             },
             now,
         );
@@ -1864,8 +2437,8 @@ pub fn roll(
         .iter()
         .map(|c| {
             let mut engine = c.engine.clone();
-            if let Some((_, post)) = results.iter().find(|(id, _)| *id == c.doc.id) {
-                engine.initiative = Some(post.outcome.total as f64);
+            if let Some((_, total)) = stamped.iter().find(|(id, _)| *id == c.doc.id) {
+                engine.initiative = Some(*total);
             }
             Combatant {
                 doc: c.doc.clone(),
@@ -1919,6 +2492,8 @@ pub fn roll(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     // No stored entry for "hp" yet: an absent entry reads as full.
 ///     resources: BTreeMap::new(),
 /// };
@@ -2000,6 +2575,7 @@ pub fn roll(
 ///     history: None,
 ///     registry: Some(registry),
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -2092,6 +2668,8 @@ pub fn resource(
 ///         },
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
+///         defeated: false,
+///         group: None,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {
@@ -2160,6 +2738,7 @@ pub fn resource(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -2242,6 +2821,8 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 ///         },
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
+///         defeated: false,
+///         group: None,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {
@@ -2275,22 +2856,69 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 pub fn rebuild_order(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
     let mut ids = reconcile_membership(combatants, existing);
     let lookup = |id: &Uuid| combatants.iter().find(|c| c.doc.id == *id);
+
+    // A group's members share ONE sort slot: the group's initiative is its
+    // members' highest, its tiebreak likewise, and a full tie between two
+    // slots resolves by the slot's first-appearing member's position in the
+    // reconciled list. Every member of a group therefore carries an identical
+    // sort key apart from the stable sort's own tie order, which keeps them
+    // contiguous even when a member's own initiative has drifted from its
+    // siblings'. An ungrouped combatant is its own slot, so its key is its own
+    // initiative/tiebreak/position and ordering for combats without groups is
+    // the plain stable initiative-then-tiebreak sort.
+    let mut slots: HashMap<Uuid, GroupSlot> = HashMap::new();
+    for (pos, id) in ids.iter().enumerate() {
+        let Some(group) = lookup(id).and_then(|c| c.engine.group) else {
+            continue;
+        };
+        let c = lookup(id).expect("id came from the combatants list");
+        let slot = slots.entry(group).or_insert(GroupSlot {
+            initiative: None,
+            tiebreak: c.engine.tiebreak,
+            first_pos: pos,
+        });
+        slot.initiative = match (slot.initiative, c.engine.initiative) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        slot.tiebreak = slot.tiebreak.max(c.engine.tiebreak);
+    }
+    let positions: HashMap<Uuid, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let key = |c: &Combatant| match c.engine.group.and_then(|g| slots.get(&g)) {
+        Some(slot) => (slot.initiative, slot.tiebreak, slot.first_pos),
+        None => (
+            c.engine.initiative,
+            c.engine.tiebreak,
+            positions.get(&c.doc.id).copied().unwrap_or(usize::MAX),
+        ),
+    };
     ids.sort_by(|x, y| {
         let (Some(cx), Some(cy)) = (lookup(x), lookup(y)) else {
             return std::cmp::Ordering::Equal;
         };
-        let init_cmp = match (cx.engine.initiative, cy.engine.initiative) {
+        let (ix, tx, px) = key(cx);
+        let (iy, ty, py) = key(cy);
+        let init_cmp = match (ix, iy) {
             (Some(vx), Some(vy)) => vy.partial_cmp(&vx).unwrap_or(std::cmp::Ordering::Equal),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         };
-        init_cmp.then_with(|| {
-            cy.engine
-                .tiebreak
-                .partial_cmp(&cx.engine.tiebreak)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        init_cmp
+            .then_with(|| ty.partial_cmp(&tx).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| px.cmp(&py))
     });
     ids
+}
+
+/// The sort key a combatant group contributes to `rebuild_order`, derived from
+/// its members: the highest member initiative, the highest member tiebreak,
+/// and the reconciled-list position of its first member.
+struct GroupSlot {
+    /// Highest member initiative, `None` while no member has rolled.
+    initiative: Option<f64>,
+    /// Highest member tiebreak.
+    tiebreak: f64,
+    /// Position of the group's first member in the reconciled id list.
+    first_pos: usize,
 }

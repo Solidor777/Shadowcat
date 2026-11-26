@@ -4,12 +4,18 @@
 // (`validate_engine`), never a client-owned interpretation of an opaque `system` blob. Only
 // genuinely game-system-owned shapes (`item`) and client-only resolution helpers are defined here.
 export type { WireDocument } from "./wire";
-import type { WireDocument } from "./wire";
+import { randomUuid } from "./uuid";
+import type { WireDocument, WireOperation } from "./wire";
+import { DEFAULT_CONE_ANGLE_DEGREES, isDrawableConeAngle, conePoints, linePoints, squarePoints } from "./geometry";
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
 import type {
+  WorldRole,
   MovementRestriction,
   MovementModel,
+  FogPooling,
+  FacingTurnRule,
+  FacingVision,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -22,6 +28,7 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -35,6 +42,8 @@ import type {
   GeneratedCrop,
   GeneratedBorder,
   GeneratedBackground,
+  VisualTransform,
+  TransformAnchor,
   VisionAssignment,
   AuraEmission,
   SoundEmission,
@@ -46,12 +55,19 @@ import type {
   Falloff,
   FalloffCurve,
   RegionShape,
+  RegionGeometry,
+  CompoundShapePart,
+  RegionAnchor,
   RegionEngine,
   RegionTrigger,
   TriggerEvent,
   TriggerEffect,
   PortalTarget,
+  PortalOption,
   NoticeAudience,
+  AmbientLightMode,
+  AmbientLightOverride,
+  RegionOcclusion,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -61,6 +77,7 @@ import type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  RenderHint,
   Perception,
   VisionModesEngine,
   DrawingEngine,
@@ -71,9 +88,15 @@ import type {
   Fill,
   WallEngine,
   Seg,
+  DoorState,
+  WallDirection,
+  WallSightTier,
+  WallProximity,
+  WallSense,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
+  CombatantGroupEngine,
   CombatantKind,
   CombatantResource,
   MovementRules,
@@ -86,6 +109,8 @@ import type {
   Recovery,
   Formula,
   EffectEngine,
+  EffectOrigin,
+  ExpiryNotice,
   Duration,
   DurationUnit,
   ExpiryPoint,
@@ -109,6 +134,9 @@ import type {
 export type {
   MovementRestriction,
   MovementModel,
+  FogPooling,
+  FacingTurnRule,
+  FacingVision,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -121,6 +149,7 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -134,6 +163,8 @@ export type {
   GeneratedCrop,
   GeneratedBorder,
   GeneratedBackground,
+  VisualTransform,
+  TransformAnchor,
   VisionAssignment,
   AuraEmission,
   SoundEmission,
@@ -145,12 +176,19 @@ export type {
   Falloff,
   FalloffCurve,
   RegionShape,
+  RegionGeometry,
+  CompoundShapePart,
+  RegionAnchor,
   RegionEngine,
   RegionTrigger,
   TriggerEvent,
   TriggerEffect,
   PortalTarget,
+  PortalOption,
   NoticeAudience,
+  AmbientLightMode,
+  AmbientLightOverride,
+  RegionOcclusion,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -160,6 +198,7 @@ export type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  RenderHint,
   Perception,
   VisionModesEngine,
   DrawingEngine,
@@ -170,9 +209,15 @@ export type {
   Fill,
   WallEngine,
   Seg,
+  DoorState,
+  WallDirection,
+  WallSightTier,
+  WallProximity,
+  WallSense,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
+  CombatantGroupEngine,
   CombatantKind,
   CombatantResource,
   MovementRules,
@@ -185,6 +230,8 @@ export type {
   Recovery,
   Formula,
   EffectEngine,
+  EffectOrigin,
+  ExpiryNotice,
   Duration,
   DurationUnit,
   ExpiryPoint,
@@ -213,8 +260,10 @@ export type RegionShapeKind = "rect" | "circle" | "polygon";
  * `RegionBehavior`/`RegionEffect`: `"impassable"` blocks the router and the move gate
  * (`RegionField::is_impassable`); `"arrest"` truncates a route at that
  * cell (`RegionField::is_arrest`) without blocking it; `"terrain"` only
- * weights pathfinding cost and never blocks or truncates a route. */
-export type RegionBehavior = "terrain" | "impassable" | "arrest";
+ * weights pathfinding cost and never blocks or truncates a route; `"ambient_light"` never
+ * blocks or weights movement at all — it edits the region's cells' composed illumination via
+ * `RegionEngine.ambient_override`, read by the lighting field rather than the movement gate. */
+export type RegionBehavior = "terrain" | "impassable" | "arrest" | "ambient_light";
 
 /** Recursively `Object.freeze`s `obj` and every nested plain object reachable from it, so a
  * shared default constant (e.g. `DEFAULT_SCENE_BOUNDS`) cannot be mutated in place by a
@@ -241,6 +290,10 @@ function deepFreeze<T>(obj: T): T {
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
 export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
+/** The largest scene margin, in grid cells, the server accepts on `SceneEngine.padding`. MUST match
+ * the server's `data::engine::MAX_SCENE_PADDING_CELLS`; the settings input uses it as its `max`. */
+export const MAX_SCENE_PADDING_CELLS = 100;
+
 /** The engine-literal innermost fallbacks of the settings chain, in the RESOLVED (non-overlay)
  * shape — a MIRROR of the server's definitions (the `WorldSceneDefaults`/`Pathfinding`/
  * `AnimationSettings` `Default` impls), cross-checked field-by-field by a server-side unit
@@ -264,6 +317,10 @@ export const DEFAULT_WORLD_SETTINGS: {
     movementRestriction: "visible",
     movementModel: "grid-stepped",
     partialCellLeniency: true,
+    fogPooling: "individual",
+    autoRotateTokens: false,
+    facingVision: false,
+    facingTurnRule: "free",
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
@@ -288,6 +345,18 @@ export interface ResolvedSceneSettings {
   /** The movement/routing engine this scene uses (grid vs continuous); scene `vision` override,
    * else the world default. */
   movementModel: MovementModel;
+  /** Which `explored_fog` bucket this scene's players accumulate into; scene `vision` override,
+   * else the world default. */
+  fogPooling: FogPooling;
+  /** Whether a completed move rotates the mover to face its movement direction (a token with
+   * `lockRotation` never rotates); scene `vision` override, else the world default. */
+  autoRotateTokens: boolean;
+  /** Whether tokens carrying a `FacingVision` see only their forward arc plus bubble; scene
+   * `vision` override, else the world default. */
+  facingVision: boolean;
+  /** When a player may rotate their own token under facing-limited vision; scene `vision`
+   * override, else the world default. */
+  facingTurnRule: FacingTurnRule;
   /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
@@ -319,6 +388,10 @@ export interface ResolvedSceneSettings {
   /** The scene's playable-area dimensions in grid units; scene `bounds`, else
    * `DEFAULT_SCENE_BOUNDS`. */
   bounds: SceneDimensions;
+  /** The margin around `bounds`, in grid cells; scene `padding`, else `0`. A present but
+   * non-finite or negative value resolves to `0` (no margin), the server's
+   * `sanitize_padding_cells` rule. */
+  padding: number;
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role.
@@ -385,7 +458,7 @@ export function grantAuthor(doc: WireDocument, owner: string): WireDocument {
  * @param parentId The parent document id, or `null` for a top-level document.
  * @param system The opaque `system` body; always present on the wire (`{}` when a
  * doc_type's real data lives entirely in `engine`).
- * @param id An explicit id, or `undefined` to generate one via `crypto.randomUUID()`.
+ * @param id An explicit id, or `undefined` to generate one via `randomUuid()`.
  * @param engine The typed, server-validated engine body, or `undefined` for a
  * non-engine-defined doc_type (omitted from the wire object entirely).
  * @param name The envelope display name, or `null` (default) when the doc_type has none.
@@ -415,7 +488,7 @@ export function envelope(
 ): WireDocument {
   const now = Date.now();
   return {
-    id: id ?? crypto.randomUUID(),
+    id: id ?? randomUuid(),
     scope: { kind: "world", world_id: worldId },
     doc_type: docType,
     schema_version: 1,
@@ -459,7 +532,7 @@ function fnv1a32(str: string, seed: number): number {
  * FNV-1a 32-bit mixes (128 bits total) rather than true SHA-1 UUIDv5, because Web Crypto's
  * `subtle.digest` is async and every doc builder consuming this id — `envelope` included — is
  * synchronous; the version(5)/variant nibbles are set purely for id-shape parity with
- * `crypto.randomUUID()`, not RFC 4122 conformance. Collision risk is not a security boundary:
+ * `randomUuid()`, not RFC 4122 conformance. Collision risk is not a security boundary:
  * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a
  * (practically impossible) id collision would only ever surface as an ordinary id-uniqueness
  * conflict. Reference id scheme for singleton config-doc seeders (`faction-registry`,
@@ -509,6 +582,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     grid: engine.grid ?? { kind: "square", size: 100, distance: null },
     background: engine.background ?? null,
     bounds: engine.bounds ?? null,
+    padding: engine.padding ?? null,
     snapToGrid: engine.snapToGrid ?? null,
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
@@ -562,6 +636,21 @@ function resolveBounds(b: SceneDimensions | null | undefined): SceneDimensions {
     return { width: w, height: h };
   }
   return DEFAULT_SCENE_BOUNDS;
+}
+
+/** Fail-closed padding resolve, the client twin of the server's `sanitize_padding_cells`: a margin
+ * that is absent, non-finite or negative is `0` (no margin), never a larger envelope.
+ * Internal helper — not exported from the package.
+ * @param p A candidate margin in grid cells, possibly absent or malformed.
+ * @returns `p` when it is a finite number `>= 0`; otherwise `0`.
+ * @example
+ * ```
+ * resolvePadding(-3); // 0
+ * resolvePadding(2.5); // 2.5
+ * ```
+ */
+function resolvePadding(p: number | null | undefined): number {
+  return typeof p === "number" && Number.isFinite(p) && p >= 0 ? p : 0;
 }
 
 /** Engine-defined doc_type of the singleton the active system's declared defaults live in
@@ -630,6 +719,10 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     observerVision: v?.observerVision ?? world?.scene?.observerVision ?? system?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision,
     movementRestriction: v?.movementRestriction ?? world?.scene?.movementRestriction ?? system?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction,
     movementModel,
+    fogPooling: v?.fogPooling ?? world?.scene?.fogPooling ?? system?.scene?.fogPooling ?? DEFAULT_WORLD_SETTINGS.scene.fogPooling,
+    autoRotateTokens: v?.autoRotateTokens ?? world?.scene?.autoRotateTokens ?? system?.scene?.autoRotateTokens ?? DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens,
+    facingVision: v?.facingVision ?? world?.scene?.facingVision ?? system?.scene?.facingVision ?? DEFAULT_WORLD_SETTINGS.scene.facingVision,
+    facingTurnRule: v?.facingTurnRule ?? world?.scene?.facingTurnRule ?? system?.scene?.facingTurnRule ?? DEFAULT_WORLD_SETTINGS.scene.facingTurnRule,
     // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
@@ -645,13 +738,51 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     },
     gridDistance: eng?.grid?.distance ?? { perCell: 5, unit: "ft" },
     bounds: resolveBounds(eng?.bounds),
+    padding: resolvePadding(eng?.padding),
   };
+}
+
+/** The one definition of scene order: creation order, `created_at` ascending with `id` as the
+ * tie-break (the store's own iteration order is `id` order over random ids, so it carries no
+ * meaning). Every scene list and `resolveViewedScene`'s fallback read it, so the scene a client
+ * renders by default is the first one a list shows.
+ * @param a The first scene document.
+ * @param b The second scene document.
+ * @returns A negative number when `a` sorts first, positive when `b` does, `0` for the same scene.
+ * @example
+ * ```ts
+ * import { compareScenesByCreation, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const scenes: WireDocument[];
+ * const oldestFirst = [...scenes].sort(compareScenesByCreation);
+ * ```
+ */
+export function compareScenesByCreation(a: WireDocument, b: WireDocument): number {
+  if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+/** Every scene document in creation order (`compareScenesByCreation`).
+ * @param store The document store to query scenes from.
+ * @returns A fresh array of scene documents, oldest first.
+ * @example
+ * ```ts
+ * import { queryScenesInCreationOrder, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const firstScene = queryScenesInCreationOrder(store)[0];
+ * ```
+ */
+export function queryScenesInCreationOrder(store: ReadableDocuments): WireDocument[] {
+  return [...store.query("scene")].sort(compareScenesByCreation);
 }
 
 /** The single client-side answer to "which scene does THIS client render/subscribe to".
  * Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
- * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
- * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
+ * `world-settings.activeScene` (players follow) → the oldest scene (`compareScenesByCreation`,
+ * the first scene a scene list shows). `null` ONLY when no scene exists. Fail-closed by
+ * construction: an id that no longer names a scene is ignored
  * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
  * Players never pass `gmViewedScene`, so they always follow `activeScene`.
  * @param store The document store to query scenes and world-settings from.
@@ -671,13 +802,57 @@ export function resolveViewedScene(
   store: ReadableDocuments,
   opts: { /** The GM's local-roam scene id override, or `undefined`/`null` for a player. */ gmViewedScene?: string | null } = {},
 ): string | null {
-  const scenes = store.query("scene");
+  const scenes = queryScenesInCreationOrder(store);
   if (scenes.length === 0) return null;
   const exists = (id: string | null | undefined): id is string => !!id && scenes.some((s) => s.id === id);
   if (exists(opts.gmViewedScene)) return opts.gmViewedScene;
   const ws = store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined;
   if (exists(ws?.activeScene)) return ws!.activeScene;
   return scenes[0].id;
+}
+
+/** The world's whole-session pause as every client reads it: the `world-settings` singleton's
+ * `session` block with absent fields defaulted. Absent block means not paused. The server
+ * (`ws::session_pause`) is the authority on what a pause refuses; this is the display and
+ * control-gating mirror.
+ * @param store The document store to query the world-settings singleton from.
+ * @returns `paused`, the GM's `message` (`null` when none), and whether audio pauses with it.
+ * @example
+ * ```ts
+ * import { resolveSessionPause, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const { paused, message } = resolveSessionPause(store);
+ * ```
+ */
+export function resolveSessionPause(store: ReadableDocuments): {
+  /** `true` while the GM has the session paused. */
+  paused: boolean;
+  /** The GM's plain-text note shown with the pause, or `null`. */
+  message: string | null;
+  /** Whether the pause also pauses the world's audio. */
+  pauseAudio: boolean;
+} {
+  const s = (store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined)?.session;
+  return { paused: s?.paused ?? false, message: s?.message ?? null, pauseAudio: s?.pauseAudio ?? false };
+}
+
+/** Whether the session pause currently freezes token movement and combat controls for `role`:
+ * paused and not a GM. Every client control that mirrors the server's pause refusal reads this
+ * one decision (`Room::session_refuses` makes the same call: paused and not a GM).
+ * @param store The document store to query the world-settings singleton from.
+ * @param role The caller's world role.
+ * @returns `true` when the controls should be disabled.
+ * @example
+ * ```ts
+ * import { sessionFreezes, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const frozen = sessionFreezes(store, "player");
+ * ```
+ */
+export function sessionFreezes(store: ReadableDocuments, role: WorldRole): boolean {
+  return role !== "gm" && resolveSessionPause(store).paused;
 }
 
 /** The `doc_type` identifying a stored actor document. */
@@ -712,7 +887,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
 /** Client-only `item` doc_type: NOT engine-defined (`data::engine::is_engine_doc_type`
  * excludes "item") — the server stays fully structural for an item's body, same as every
  * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
- * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`
+ * `validate_system_schema_tree` enforces any module-registered structural schema for `"item"`
  * (both run unconditionally on every doc_type). `validate_engine_tree` also runs on an item,
  * but only to REJECT one carrying an `engine` body (`normalize_engine_opt`'s
  * `(false, Some(_))` arm: "not engine-defined; `engine` must be absent") — an item never
@@ -728,7 +903,7 @@ export const ITEM_DOC_TYPE = "item";
  * The server enforces an overall size cap unconditionally
  * (`data::validation::validate_system_size`).
  * A game-system module may ADDITIONALLY register a
- * tier-2 JSON Schema for `doc_type: "item"`; when one is registered,
+ * structural JSON Schema for `doc_type: "item"`; when one is registered,
  * `data::validation::validate_system_schema_tree`
  * validates the shape of the subtree it names — but a
  * subtree it names and this document omits is not a violation (the schema governs shape only when
@@ -803,14 +978,14 @@ export function buildTokenFromActor(
   // the defect this seam exists to remove.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null, elevation: null,
+    visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
   };
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, {}, id, { ...base, actor_id: actor.id }, null);
   }
   // Deep-clone so the embedded copy is independent by value at construction (not just after
   // the wire round-trip) — no aliasing of the source actor's name/engine/system/permissions.
-  const copy: WireDocument = { ...structuredClone(actor), id: crypto.randomUUID(), source: { id: actor.id, pack: null, version: 1 } };
+  const copy: WireDocument = { ...structuredClone(actor), id: randomUuid(), source: { id: actor.id, pack: null, version: 1 } };
   const doc = envelope(worldId, "token", sceneId, {}, id, base, null);
   doc.embedded = { actor: [copy] };
   return doc;
@@ -858,7 +1033,7 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
  *
  * const engine: TokenEngine = {
  *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
- *   visual: null, actor_id: null, overrides: null, face: null, elevation: null,
+ *   visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
  * };
  * const token = buildTokenDoc("world-1", "scene-1", engine);
  * token.doc_type; // "token"
@@ -901,7 +1076,7 @@ export function buildFactionRegistryDoc(worldId: string, factions: Record<string
  * import { buildConditionRegistryDoc } from "@shadowcat/core";
  *
  * const doc = buildConditionRegistryDoc("world-1", {
- *   prone: { name: "Prone", icon: "🔻" },
+ *   prone: { name: "Prone", icon: "🔻", overlay: false },
  * });
  * doc.doc_type; // "condition-registry"
  * ```
@@ -927,7 +1102,9 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
  *
  * const engine: WallEngine = {
  *   seg: { x1: 0, y1: 0, x2: 10, y2: 0 },
- *   blocksSight: true, blocksLight: true, blocksMove: true, elevation: null,
+ *   blocksSight: true, blocksLight: true, blocksMove: true, blocksSound: null, elevation: null,
+ *   door: null,
+ *   direction: null, sightTier: null, proximity: null,
  * };
  * const wall = buildSceneEntityDoc("world-1", "scene-1", "wall", engine);
  * wall.doc_type; // "wall"
@@ -1000,7 +1177,7 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null },
-  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } },
   tremorsense: { id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null },
 });
 
@@ -1058,7 +1235,10 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  *
  * const engine: LightEngine = {
  *   x: 0, y: 0, elevation: null,
- *   emission: { color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+ *   emission: {
+ *     color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true,
+ *     rotation: 0, followTokenRotation: false,
+ *   },
  * };
  * const light = buildLightDoc("world-1", "scene-1", engine);
  * light.doc_type; // "light"
@@ -1080,6 +1260,8 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
   dimRadius: 6,
   falloff: null,
   enabled: true,
+  rotation: 0,
+  followTokenRotation: false,
 });
 
 // --- Region doc type ---
@@ -1088,7 +1270,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this region is parented to.
- * @param engine The full `RegionEngine` body (shape, behavior, cost, enabled).
+ * @param engine The full `RegionEngine` body (shape, behavior, cost, cost_by_tag, enabled).
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "region"`, parented to `sceneId`.
  * @example
@@ -1097,9 +1279,12 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true,
+ *   behavior: "impassable", cost: 1, cost_by_tag: {}, enabled: true,
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  *   elevation: null,
+ *   ambient_override: null,
+ *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1107,6 +1292,250 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  */
 export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionEngine, id?: string): WireDocument {
   return envelope(worldId, "region", sceneId, {}, id, engine, null);
+}
+
+/** A region carrier token's committed (or animated) pose: the token's centre in scene units and
+ * its rotation in degrees, clockwise on the y-down canvas. */
+export interface RegionCarrierPose {
+  /** The carrier's centre x, scene units. */
+  x: number;
+  /** The carrier's centre y, scene units. */
+  y: number;
+  /** The carrier's rotation, degrees (`TokenEngine.rotation`). */
+  rotation: number;
+}
+
+/** Maps one wire shape through `place` (a point -> point function) for the anchor translation.
+ * `keepRect` keeps a `rect` a `rect` (translation only); otherwise a `rect` becomes a
+ * four-vertex `polygon`, because a rotated rectangle is not axis-aligned. A `circle` keeps its
+ * radius and moves its centre. A shape whose `points` count does not match its `kind` (or an
+ * unknown `kind`) is returned unchanged so the downstream outline rule still rejects it.
+ * @param shape The wire shape to map.
+ * @param place Maps a point to its new position.
+ * @param keepRect Whether a `rect` stays a `rect`.
+ * @returns The mapped shape.
+ * @example
+ * ```
+ * // module-private; reached through `anchoredRegionGeometry`/`offsetRegionGeometry`
+ * mapRegionShape({ kind: "circle", points: [0, 0, 5] }, (x, y) => [x + 10, y], true);
+ * ```
+ */
+function mapRegionShape(shape: RegionShape, place: (x: number, y: number) => [number, number], keepRect: boolean): RegionShape {
+  const pts = shape?.points;
+  if (!Array.isArray(pts)) return shape;
+  const placed = (flat: number[]): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < flat.length; i += 2) out.push(...place(flat[i], flat[i + 1]));
+    return out;
+  };
+  switch (shape.kind) {
+    case "rect":
+      if (pts.length !== 4) return shape;
+      if (keepRect) return { ...shape, points: placed(pts) };
+      return { ...shape, kind: "polygon", points: placed([pts[0], pts[1], pts[2], pts[1], pts[2], pts[3], pts[0], pts[3]]) };
+    case "circle":
+      if (pts.length !== 3) return shape;
+      return { ...shape, points: [...place(pts[0], pts[1]), pts[2]] };
+    case "polygon":
+      if (pts.length < 6 || pts.length % 2 !== 0) return shape;
+      return { ...shape, points: placed(pts) };
+    default:
+      return shape;
+  }
+}
+
+/** Applies `mapRegionShape` to every part of a region geometry, keeping the bare-shape or
+ * compound-list form and each part's hole flag.
+ * @param geometry The region geometry (bare shape or compound part list).
+ * @param place Maps a point to its new position.
+ * @param keepRect Whether a `rect` stays a `rect`.
+ * @returns The mapped geometry in the same form.
+ * @example
+ * ```
+ * // module-private; reached through `anchoredRegionGeometry`/`offsetRegionGeometry`
+ * mapRegionGeometry({ kind: "circle", points: [0, 0, 5] }, (x, y) => [x, y], true);
+ * ```
+ */
+function mapRegionGeometry(geometry: RegionGeometry, place: (x: number, y: number) => [number, number], keepRect: boolean): RegionGeometry {
+  if (Array.isArray(geometry)) {
+    return geometry.map((part) => (part ? { ...part, shape: mapRegionShape(part.shape, place, keepRect) } : part));
+  }
+  return mapRegionShape(geometry, place, keepRect);
+}
+
+/** Rotates `(x, y)` about the origin by `degrees`, clockwise on a y-down canvas (the standard
+ * rotation matrix applied with `+y` pointing down the screen). The same convention as the
+ * server's `rotate_point`.
+ * @param x The point's x.
+ * @param y The point's y.
+ * @param degrees The clockwise rotation.
+ * @returns The rotated point.
+ * @example
+ * ```
+ * // module-private
+ * rotateClockwise(10, 0, 90); // [~0, 10]: the +x axis turns toward +y (down)
+ * ```
+ */
+function rotateClockwise(x: number, y: number, degrees: number): [number, number] {
+  const rad = (degrees * Math.PI) / 180;
+  const sin = Math.sin(rad);
+  const cos = Math.cos(rad);
+  return [x * cos - y * sin, x * sin + y * cos];
+}
+
+/** Carrier-centre offsets -> absolute scene coordinates for an anchored region: the optional
+ * rotation about the carrier's centre, then the translation to its position. The client twin of
+ * the server's `anchored_parts` (`scene::regions`): same rotation direction, same
+ * rect -> polygon conversion under `followRotation`, same circle handling. A non-finite pose
+ * yields non-finite coordinates, which the outline rule rejects (the region draws nothing).
+ * @param geometry The region's stored geometry (offsets from the carrier's centre).
+ * @param pose The carrier's pose.
+ * @param followRotation Whether the shape turns with the carrier (`RegionAnchor.follow_rotation`).
+ * @returns The geometry in absolute scene coordinates.
+ * @example
+ * ```ts
+ * import { anchoredRegionGeometry } from "@shadowcat/core";
+ *
+ * const offsets = { kind: "circle", points: [0, 0, 100] };
+ * anchoredRegionGeometry(offsets, { x: 300, y: 200, rotation: 0 }, false); // circle at (300, 200)
+ * ```
+ */
+export function anchoredRegionGeometry(geometry: RegionGeometry, pose: RegionCarrierPose, followRotation: boolean): RegionGeometry {
+  const place = (x: number, y: number): [number, number] => {
+    const [rx, ry] = followRotation ? rotateClockwise(x, y, pose.rotation) : [x, y];
+    return [rx + pose.x, ry + pose.y];
+  };
+  return mapRegionGeometry(geometry, place, !followRotation);
+}
+
+/** The inverse of `anchoredRegionGeometry`: absolute scene coordinates -> offsets from the
+ * carrier's centre (translate by the negated position, then rotate by the negated rotation under
+ * `followRotation`). Used when a region is attached to or detached from a carrier so its place on
+ * the canvas does not change.
+ * @param geometry The region geometry in absolute scene coordinates.
+ * @param pose The carrier's pose.
+ * @param followRotation Whether the offsets are expressed in the carrier's rotated frame.
+ * @returns The geometry as carrier-centre offsets.
+ * @example
+ * ```ts
+ * import { offsetRegionGeometry } from "@shadowcat/core";
+ *
+ * const absolute = { kind: "circle", points: [300, 200, 100] };
+ * offsetRegionGeometry(absolute, { x: 300, y: 200, rotation: 0 }, false); // circle at (0, 0)
+ * ```
+ */
+export function offsetRegionGeometry(geometry: RegionGeometry, pose: RegionCarrierPose, followRotation: boolean): RegionGeometry {
+  const place = (x: number, y: number): [number, number] => {
+    const dx = x - pose.x;
+    const dy = y - pose.y;
+    return followRotation ? rotateClockwise(dx, dy, -pose.rotation) : [dx, dy];
+  };
+  return mapRegionGeometry(geometry, place, !followRotation);
+}
+
+/** A carrier token document's pose, or `null` when the document is not a usable carrier for
+ * `region`: it must be a `token` document parented to the SAME scene as the region (the
+ * server's dormant rule — a deleted carrier, a non-token id and a carrier on another scene all
+ * read as `null`) and carry a numeric position.
+ * @param region The anchored region document.
+ * @param carrier The document the region's anchor names, or `undefined` when unknown.
+ * @returns The carrier's committed pose, or `null` when the region is dormant.
+ * @example
+ * ```ts
+ * import { carrierPoseFor, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const carrier: WireDocument | undefined;
+ * carrierPoseFor(region, carrier); // { x, y, rotation } or null
+ * ```
+ */
+export function carrierPoseFor(region: WireDocument, carrier: WireDocument | undefined): RegionCarrierPose | null {
+  if (!carrier || carrier.doc_type !== "token" || carrier.parent_id !== region.parent_id) return null;
+  const t = carrier.engine as Partial<TokenEngine> | undefined;
+  if (typeof t?.x !== "number" || typeof t.y !== "number") return null;
+  return { x: t.x, y: t.y, rotation: typeof t.rotation === "number" ? t.rotation : 0 };
+}
+
+/** The absolute-coordinate geometry of a region document, or `null` when it has none to draw. A
+ * static region returns its stored shape unchanged. An anchored region (`RegionEngine.anchor`)
+ * resolves its carrier in `store` (`carrierPoseFor`): a carrier that does not resolve makes the
+ * region DORMANT (`null`, drawing and hit-testing nothing, the server's rule); otherwise the
+ * stored offsets are translated by the carrier's pose through `anchoredRegionGeometry`. The one
+ * resolution the render view and the hit-test both read.
+ * @param region The region document.
+ * @param store The document store to resolve the carrier in.
+ * @param poseOf Optional live pose of a token id (the animated transform); when it returns a
+ * pose it replaces the carrier document's committed one, so the region rides the token's tween.
+ * @returns The geometry in absolute scene coordinates, or `null` for a dormant or shapeless region.
+ * @example
+ * ```ts
+ * import { resolveRegionGeometry, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const store: ReadableDocuments;
+ * resolveRegionGeometry(region, store); // absolute geometry, or null when dormant
+ * ```
+ */
+export function resolveRegionGeometry(
+  region: WireDocument,
+  store: ReadableDocuments,
+  poseOf?: (tokenId: string) => RegionCarrierPose | undefined,
+): RegionGeometry | null {
+  const eng = region.engine as RegionEngine | undefined;
+  if (!eng?.shape) return null;
+  const anchor = eng.anchor;
+  if (!anchor) return eng.shape;
+  const committed = carrierPoseFor(region, store.get(anchor.token));
+  if (!committed) return null;
+  const live = poseOf?.(anchor.token);
+  return anchoredRegionGeometry(eng.shape, live ?? committed, anchor.follow_rotation);
+}
+
+/** The two engine-band values `reanchorRegion` produces: written together so a region's anchor
+ * and the coordinate frame of its shape never disagree. */
+export interface RegionAnchorWrites {
+  /** The value for `/engine/anchor` (`null` detaches). */
+  anchor: RegionAnchor | null;
+  /** The value for `/engine/shape`, in the frame `anchor` implies. */
+  shape: RegionGeometry;
+}
+
+/** The engine-band writes that attach a region to `next` (or detach it with `null`) without
+ * moving it on the canvas: the new `/engine/anchor` value and the `/engine/shape` re-expressed
+ * for it. The current absolute shape is resolved through the current anchor (when any), then
+ * converted to offsets of the new carrier (when any). Returns `null` when the conversion cannot
+ * be done: the new carrier does not resolve (no centre to offset from), or the region is dormant
+ * and is being detached (no absolute shape to keep). A dormant region attached to a resolving
+ * carrier keeps its stored offsets.
+ * @param region The region document being edited.
+ * @param store The document store to resolve both carriers in.
+ * @param next The new anchor, or `null` to detach.
+ * @returns The new `anchor` and `shape` values, or `null` when a carrier does not resolve.
+ * @example
+ * ```ts
+ * import { reanchorRegion, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const store: ReadableDocuments;
+ * const writes = reanchorRegion(region, store, { token: "t1", include_carrier: false, follow_rotation: false });
+ * writes?.anchor; // the value to write at /engine/anchor
+ * ```
+ */
+export function reanchorRegion(
+  region: WireDocument,
+  store: ReadableDocuments,
+  next: RegionAnchor | null,
+): RegionAnchorWrites | null {
+  const eng = region.engine as RegionEngine | undefined;
+  if (!eng?.shape) return null;
+  const absolute = resolveRegionGeometry(region, store);
+  if (!next) return absolute ? { anchor: null, shape: absolute } : null;
+  const pose = carrierPoseFor(region, store.get(next.token));
+  if (!pose) return null;
+  // A dormant region (its carrier no longer resolves) has no absolute place to preserve: the
+  // stored offsets are kept, so pointing it at a new carrier re-attaches the same aura shape.
+  if (!absolute) return { anchor: next, shape: eng.shape };
+  return { anchor: next, shape: offsetRegionGeometry(absolute, pose, next.follow_rotation) };
 }
 
 /** Set/clear the secrecy override on a region doc's permissions. Hiding sets BOTH:
@@ -1128,8 +1557,11 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
+ *   behavior: "impassable", cost: 1, cost_by_tag: {}, enabled: true, triggers: [],
  *   elevation: null,
+ *   ambient_override: null,
+ *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);
@@ -1148,12 +1580,140 @@ export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDoc
   return doc;
 }
 
+// --- Template to region conversion ---
+
+/** Why a template cannot become a region: `"zero_width_line"` is a `"line"` with an absent or
+ * non-positive `width` (a zero-width polygon covers no cell centre, so the region would never
+ * contain anything); `"unknown_shape"` is a `kind` no region geometry matches, or a `"cone"`
+ * whose `angle` is not drawable (`isDrawableConeAngle`), which the render layer does not draw. */
+export type TemplateRegionRefusal = "zero_width_line" | "unknown_shape";
+
+/** Result of {@link templateToRegionShape}: the region geometry covering exactly what the
+ * template draws, or the reason there is none. */
+export type TemplateRegionShapeResult = TemplateRegionShape | TemplateRegionRefused;
+
+/** A successful {@link templateToRegionShape}. */
+export interface TemplateRegionShape {
+  /** Discriminant: the conversion succeeded. */
+  ok: true;
+  /** The region geometry covering the template's area. */
+  shape: RegionShape;
+}
+
+/** A template conversion that has no region equivalent. */
+export interface TemplateRegionRefused {
+  /** Discriminant: the conversion was refused. */
+  ok: false;
+  /** Why the template cannot become a region. */
+  reason: TemplateRegionRefusal;
+}
+
+/** Result of {@link buildRegionFromTemplate}: the new region document plus the one-batch
+ * operation list (create the region, delete the template), or the refusal reason. */
+export type TemplateRegionBatchResult = TemplateRegionBatch | TemplateRegionRefused;
+
+/** A successful {@link buildRegionFromTemplate}. */
+export interface TemplateRegionBatch {
+  /** Discriminant: the conversion succeeded. */
+  ok: true;
+  /** The region document the batch creates. */
+  region: WireDocument;
+  /** The batch: create the region, then delete the template (full pre-image). */
+  ops: WireOperation[];
+}
+
+/**
+ * Converts a template's shape to the region geometry covering the same area. A circle becomes
+ * an exact region `circle` (`[x, y, size]`, no polygon approximation). A cone, rect or thick line
+ * becomes a region `polygon` of the SAME points the render layer draws (`conePoints`,
+ * `squarePoints`, `linePoints` from the shared tessellation module), so the region covers exactly
+ * the cells the template showed. A line whose `width` is absent or not positive is refused:
+ * its polygon is a bare segment that covers no cell centre.
+ * @param shape The template's `engine.shape`.
+ * @returns The region shape, or a refusal reason.
+ * @example
+ * ```ts
+ * import { templateToRegionShape } from "@shadowcat/core";
+ *
+ * const result = templateToRegionShape({ kind: "circle", x: 100, y: 200, size: 50, direction: 0, angle: null, width: null });
+ * result.ok && result.shape.kind; // "circle"
+ * ```
+ */
+export function templateToRegionShape(shape: TemplateShape): TemplateRegionShapeResult {
+  const { kind, x, y, size, direction, angle, width } = shape;
+  switch (kind) {
+    case "circle":
+      return { ok: true, shape: { kind: "circle", points: [x, y, size] } };
+    case "cone":
+      if (!isDrawableConeAngle(angle)) return { ok: false, reason: "unknown_shape" };
+      return { ok: true, shape: { kind: "polygon", points: conePoints(x, y, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES) } };
+    case "rect":
+      return { ok: true, shape: { kind: "polygon", points: squarePoints(x, y, size, direction, width ?? size) } };
+    case "line":
+      if (!(width != null && width > 0)) return { ok: false, reason: "zero_width_line" };
+      return { ok: true, shape: { kind: "polygon", points: linePoints(x, y, size, direction, width) } };
+    default:
+      return { ok: false, reason: "unknown_shape" };
+  }
+}
+
+/**
+ * Builds the batch that turns a template into a region: create a region parented to the
+ * template's scene with the template's area and elevation band, and delete the template. The
+ * region is a plain terrain region (cost 1, no triggers) with the world-default visibility; the
+ * GM then adds behavior and triggers in the region editor. The template's color is not carried.
+ * The delete op carries the full template as its pre-image.
+ * @param worldId The owning world's id.
+ * @param template The `template` document to convert.
+ * @param id An explicit region id, or `undefined` to generate one.
+ * @returns The region and the `[create, delete]` ops, or a refusal reason.
+ * @example
+ * ```ts
+ * import { buildRegionFromTemplate, buildSceneEntityDoc } from "@shadowcat/core";
+ *
+ * const template = buildSceneEntityDoc("world-1", "scene-1", "template", {
+ *   shape: { kind: "circle", x: 100, y: 100, size: 50, direction: 0, angle: null, width: null },
+ *   color: "#3388ff", elevation: null,
+ * });
+ * const batch = buildRegionFromTemplate("world-1", template);
+ * batch.ok && batch.ops.length; // 2
+ * ```
+ */
+export function buildRegionFromTemplate(worldId: string, template: WireDocument, id?: string): TemplateRegionBatchResult {
+  const engine = template.engine as TemplateEngine;
+  const converted = templateToRegionShape(engine.shape);
+  if (!converted.ok) return converted;
+  const regionEngine: RegionEngine = {
+    shape: converted.shape,
+    behavior: "terrain",
+    cost: 1,
+    cost_by_tag: {},
+    enabled: true,
+    triggers: [],
+    elevation: engine.elevation ?? null,
+    ambient_override: null,
+    occludes: null,
+    anchor: null,
+  };
+  const region = buildRegionDoc(worldId, template.parent_id as string, regionEngine, id);
+  return {
+    ok: true,
+    region,
+    ops: [
+      { op: "create", doc: region },
+      { op: "delete", doc: template },
+    ],
+  };
+}
+
 // --- Combat documents ---
 
 /** Engine-defined doc_type of a combat (`data::engine::COMBAT_DOC_TYPE`). */
 export const COMBAT_DOC_TYPE = "combat";
 /** Engine-defined doc_type of a combatant, always a child of a combat. */
 export const COMBATANT_DOC_TYPE = "combatant";
+/** Engine-defined doc_type of a combatant group, always a child of a combat. */
+export const COMBATANT_GROUP_DOC_TYPE = "combatant-group";
 /** Engine-defined doc_type of the singleton turn-resource registry. */
 export const RESOURCE_REGISTRY_DOC_TYPE = "resource-registry";
 /** Engine-defined doc_type of an effect. */
@@ -1183,6 +1743,8 @@ export interface ResolvedCombatDefaults {
   rewindRestore: boolean;
   /** Whether redo-ing past the cursor restores documents from history. */
   forwardRestore: boolean;
+  /** Who reads the chat note posted when effects expire. */
+  expiryNotice: ExpiryNotice;
 }
 
 /** The engine-fallback `CombatDefaults` — `resolve_combat_rules(None, None, None)`'s resolved
@@ -1202,6 +1764,7 @@ export const ENGINE_COMBAT_DEFAULTS: ResolvedCombatDefaults = {
   effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
   rewindRestore: true,
   forwardRestore: false,
+  expiryNotice: "visible",
 };
 
 /** A fresh combat's engine body at `ENGINE_COMBAT_DEFAULTS`, bound to `sceneId`: `active: false`,
@@ -1287,7 +1850,7 @@ export interface CombatantDocOptions {
  *
  * const engine: CombatantEngine = {
  *   kind: { type: "event", lifespan: 3, message: "The floor shakes" },
- *   initiative: 20, tiebreak: 0, resources: {},
+ *   initiative: 20, tiebreak: 0, defeated: false, group: null, resources: {},
  * };
  * buildCombatantDoc("world-1", "combat-1", engine, { hidden: true }).permissions.default; // "none"
  * ```
@@ -1306,6 +1869,28 @@ export function buildCombatantDoc(worldId: string, combatId: string, engine: Com
   // widening deliberately overwrites this entry after building.
   doc.permissions.property_overrides["/engine/resources"] = "owner_or_gm";
   return doc;
+}
+
+/** A `combatant-group` document parented to `combatId`: a named set of combatants (members name
+ * it through `CombatantEngine.group`) that share one initiative slot. Readable by everyone who
+ * can read the combat; a member's own hidden state stays on the member.
+ * @param worldId The owning world's id.
+ * @param combatId The parent combat document's id.
+ * @param name The group's display name.
+ * @param color Optional css `#rrggbb` accent, or `undefined` for none.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "combatant-group"` and `parent_id: combatId`.
+ * @example
+ * ```ts
+ * import { buildCombatantGroupDoc } from "@shadowcat/core";
+ *
+ * const doc = buildCombatantGroupDoc("world-1", "combat-1", "Rat swarm", "#3fb950");
+ * doc.doc_type; // "combatant-group"
+ * ```
+ */
+export function buildCombatantGroupDoc(worldId: string, combatId: string, name: string, color?: string, id?: string): WireDocument {
+  const engine: CombatantGroupEngine = { name, color: color ?? null };
+  return envelope(worldId, COMBATANT_GROUP_DOC_TYPE, combatId, {}, id, engine, null);
 }
 
 /** A top-level (world-scoped, parentless) resource-registry document.
@@ -1406,7 +1991,7 @@ export type SettingPath =
   | `scene.${keyof WorldSceneDefaults}`
   | "pathfinding.diagonalRule"
   | `animation.${"speedCellsPerSec" | "easing"}`
-  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl" | "effectCleanup" | "rewindRestore" | "forwardRestore"}`
+  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl" | "effectCleanup" | "rewindRestore" | "forwardRestore" | "expiryNotice"}`
   | `combat.effectLifecycle.${"onCombatEnd" | "onTurnEnd" | "onAdvance"}`;
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers
@@ -1509,6 +2094,14 @@ export function resolveSettingProvenance(
       return resolvePick(v?.movementRestriction, world?.scene?.movementRestriction, system?.scene?.movementRestriction, DEFAULT_WORLD_SETTINGS.scene.movementRestriction);
     case "scene.movementModel":
       return resolvePick(v?.movementModel, world?.scene?.movementModel, system?.scene?.movementModel, DEFAULT_WORLD_SETTINGS.scene.movementModel);
+    case "scene.fogPooling":
+      return resolvePick(v?.fogPooling, world?.scene?.fogPooling, system?.scene?.fogPooling, DEFAULT_WORLD_SETTINGS.scene.fogPooling);
+    case "scene.autoRotateTokens":
+      return resolvePick(v?.autoRotateTokens, world?.scene?.autoRotateTokens, system?.scene?.autoRotateTokens, DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens);
+    case "scene.facingVision":
+      return resolvePick(v?.facingVision, world?.scene?.facingVision, system?.scene?.facingVision, DEFAULT_WORLD_SETTINGS.scene.facingVision);
+    case "scene.facingTurnRule":
+      return resolvePick(v?.facingTurnRule, world?.scene?.facingTurnRule, system?.scene?.facingTurnRule, DEFAULT_WORLD_SETTINGS.scene.facingTurnRule);
     case "scene.partialCellLeniency":
       return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":
@@ -1551,6 +2144,8 @@ export function resolveSettingProvenance(
       return resolvePick(combat?.rewindRestore, world?.combat?.rewindRestore, system?.combat?.rewindRestore, ENGINE_COMBAT_DEFAULTS.rewindRestore);
     case "combat.forwardRestore":
       return resolvePick(combat?.forwardRestore, world?.combat?.forwardRestore, system?.combat?.forwardRestore, ENGINE_COMBAT_DEFAULTS.forwardRestore);
+    case "combat.expiryNotice":
+      return resolvePick(combat?.expiryNotice, world?.combat?.expiryNotice, system?.combat?.expiryNotice, ENGINE_COMBAT_DEFAULTS.expiryNotice);
     case "combat.effectLifecycle.onCombatEnd":
       return resolvePick(combat?.effectLifecycle?.onCombatEnd, world?.combat?.effectLifecycle?.onCombatEnd, system?.combat?.effectLifecycle?.onCombatEnd, ENGINE_COMBAT_DEFAULTS.effectLifecycle.onCombatEnd);
     case "combat.effectLifecycle.onTurnEnd":

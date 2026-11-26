@@ -7,40 +7,27 @@
 // identity check goes silently to a no-op whenever the two spellings fail to normalize
 // identically, and silence is indistinguishable from "no exemptions".
 // Cross-platform: node:path/node:fs only.
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-
-// Build/vendor subtrees a `typedoc*.json` never legitimately lives under; also keeps the walk
-// from descending into node_modules (which can itself contain files matching the name pattern).
-const IGNORED_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "dist-docs",
-  "target",
-  ".docs-tmp",
-  "coverage",
-]);
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { repoFiles } from "./lib/gate-corpus.mjs";
 
 /**
- * Recursively finds every `typedoc*.json` file under `root`, skipping build/vendor directories.
- * @param {string} root - Directory to scan from.
+ * Finds every `typedoc*.json` file in the repository corpus (`repoFiles`: tracked plus untracked,
+ * non-ignored files). This COUNTS exemptions, so an untracked config is included: an exemption in
+ * a file git has not yet seen would otherwise be an uncounted one. Ignored build output never
+ * counts.
+ * @param {string} root - The repository root to scan from.
+ * @param {(line: string) => void} [log] - Receives the corpus size line; silent when omitted,
+ *   because this is a library function (see `repoFiles`).
  * @returns {string[]} Absolute paths, sorted for deterministic output.
+ * @example
+ * const configs = findTypedocConfigs(process.cwd());
  */
-export function findTypedocConfigs(root) {
-  const out = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        walk(join(dir, entry.name));
-      } else if (entry.isFile() && /^typedoc.*\.json$/.test(entry.name)) {
-        out.push(join(dir, entry.name));
-      }
-    }
-  };
-  walk(root);
-  return out.sort();
+export function findTypedocConfigs(root, log = () => {}) {
+  return repoFiles({ cwd: root, exts: [".json"], label: "report-doc-exemptions", log })
+    .filter((p) => /^typedoc.*\.json$/.test(basename(p)))
+    .map((p) => join(root, ...p.split("/")))
+    .sort();
 }
 
 /**
@@ -58,13 +45,14 @@ export function reportDocExemptions(config) {
  * Scans every `typedoc*.json` under `repoRoot` for `intentionallyNotDocumented` entries,
  * stamping the result with what was scanned rather than returning a bare count.
  * @param {string} repoRoot - The repository root to scan from.
+ * @param {(line: string) => void} [log] - Receives the corpus size line; silent when omitted.
  * @returns {{ total: number, scanned: string[], bySource: { path: string, names: string[] }[] }}
  *   `total` — the sum of every exemption found; `scanned` — every `typedoc*.json` path visited,
  *   including ones carrying zero exemptions; `bySource` — a per-source breakdown listing only
  *   the configs that actually carry at least one exemption.
  */
-export function scanDocExemptions(repoRoot) {
-  const scanned = findTypedocConfigs(repoRoot);
+export function scanDocExemptions(repoRoot, log = () => {}) {
+  const scanned = findTypedocConfigs(repoRoot, log);
   const bySource = [];
   let total = 0;
   for (const path of scanned) {

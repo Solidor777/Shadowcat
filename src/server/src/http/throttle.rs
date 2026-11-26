@@ -1,10 +1,11 @@
-//! Shared sliding-window throttle for the two Argon2-verifying auth endpoints
-//! (`/api/login`, `/api/invites/accept`). Keys are opaque strings composed by
-//! the callers (`login:u:<username>`, `login:ip:<ip>`, `invite:u:<uuid>`,
-//! `invite:ip:<ip>`). INVARIANT (no enumeration oracle): identity keys count
-//! attempts against unknown identities exactly like known ones, and callers
-//! return one uniform 429 — the throttle must never behave differently for an
-//! identity that exists.
+//! This module is the shared sliding-window throttle for the Argon2-verifying auth endpoints
+//! (`/api/login`, `/api/invites/accept`, `/api/account/password`) and for world creation.
+//!
+//! Keys are opaque strings composed by the callers (`login:u:<username>`, `login:ip:<ip>`,
+//! `invite:u:<uuid>`, `invite:ip:<ip>`, `password_change:u:<uuid>`, `world_create:u:<uuid>`). INVARIANT (no enumeration
+//! oracle): identity keys count attempts against unknown identities exactly like known ones, and
+//! callers return one uniform 429 — the throttle must never behave differently for an identity
+//! that exists.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -25,9 +26,13 @@ pub const INVITE_PER_MIN_PER_IP: usize = 30;
 /// authenticated `AuthUser` with no per-world capability check, so an unthrottled account
 /// could mint unbounded worlds (each seeding a full config-doc set via `apply_intent`),
 /// exhausting storage/DB rows with no signal beyond ordinary write volume. Sized well above
-/// legitimate interactive use (no test in this crate creates more than a handful of worlds
-/// per session) while still bounding a scripted flood to one order of magnitude per minute.
+/// legitimate interactive use while still bounding a scripted flood to one order of magnitude
+/// per minute.
 pub const WORLD_CREATE_PER_MIN_PER_ACCOUNT: usize = 10;
+/// Per-account change-own-password budget (trailing 60 s). The caller is authenticated, but a
+/// stolen session cookie must not guess the current password at Argon2 speed; every attempt,
+/// successful or not, spends one unit, as in `login`.
+pub const PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT: usize = 10;
 /// Tracked-key capacity. Unauthenticated input mints identity keys, so the map
 /// must be bounded; per-IP budgets cap the mint rate per address, and on
 /// overflow new keys FAIL CLOSED (throttled) rather than evicting live state.
@@ -37,7 +42,7 @@ pub const MAX_TRACKED_KEYS: usize = 65_536;
 const WINDOW_MS: i64 = 60_000;
 
 /// Sliding-window budgets for login/invite abuse, keyed by opaque strings
-/// (`login:user:<name>`, `login:ip:<addr>`, ...). Fails closed at capacity.
+/// (`login:u:<username>`, `login:ip:<addr>`, ...). Fails closed at capacity.
 ///
 /// # Examples
 ///
@@ -45,7 +50,7 @@ const WINDOW_MS: i64 = 60_000;
 /// use shadowcat::http::throttle::AuthThrottle;
 ///
 /// let throttle = AuthThrottle::default();
-/// assert!(throttle.check("login:user:example", 0, 1));
+/// assert!(throttle.check("login:u:example", 0, 1));
 /// ```
 pub struct AuthThrottle {
     /// Per-key hit timestamps within the window.
@@ -61,7 +66,7 @@ impl AuthThrottle {
     ///
     /// ```
     /// let t = shadowcat::http::throttle::AuthThrottle::new();
-    /// assert!(t.check("login:user:testuser-01", 0, 5)); // first hit within budget
+    /// assert!(t.check("login:u:testuser-01", 0, 5)); // first hit within budget
     /// ```
     pub fn new() -> Self {
         Self {
@@ -88,11 +93,11 @@ impl AuthThrottle {
     /// use shadowcat::http::throttle::AuthThrottle;
     ///
     /// let t = AuthThrottle::new();
-    /// assert!(t.check("login:user:example", 0, 3));
-    /// assert!(t.check("login:user:example", 100, 3));
-    /// assert!(t.check("login:user:example", 200, 3));
+    /// assert!(t.check("login:u:example", 0, 3));
+    /// assert!(t.check("login:u:example", 100, 3));
+    /// assert!(t.check("login:u:example", 200, 3));
     /// // A 4th hit within the trailing 60s window exceeds the per_min=3 budget.
-    /// assert!(!t.check("login:user:example", 300, 3));
+    /// assert!(!t.check("login:u:example", 300, 3));
     /// ```
     pub fn check(&self, key: &str, now_ms: i64, per_min: usize) -> bool {
         let cutoff = now_ms - WINDOW_MS;
@@ -120,11 +125,12 @@ impl Default for AuthThrottle {
 }
 
 /// Infallible client-IP extractor: `Some` when the server is served with connect-info (production,
-/// via `into_make_service_with_connect_info`), `None` under the axum-test mock transport — IP
-/// throttling degrades to identity-only there, never a 500. Behind a configured trusted reverse
-/// proxy (`Config::trusted_proxies`), resolves through `X-Forwarded-For` instead of the raw TCP
-/// peer — see `resolve_client_ip`'s doc for the exact trust-walk algorithm. Default configuration
-/// (`trusted_proxies` empty) preserves the original TCP-peer-only behavior exactly.
+/// via `http::into_service`, which supplies `ConnectInfo<ConnMeta>`), `None` under the axum-test
+/// mock transport — IP throttling degrades to identity-only there, never a 500. Behind a
+/// configured trusted reverse proxy (`Config::trusted_proxies`), resolves through
+/// `X-Forwarded-For` instead of the raw TCP peer — see `resolve_client_ip`'s doc for the exact
+/// trust-walk algorithm. With `trusted_proxies` empty no peer is trusted, so the client address is
+/// the raw TCP peer.
 ///
 /// # Examples
 ///
@@ -145,8 +151,8 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
     ) -> Result<Self, Self::Rejection> {
         let peer = parts
             .extensions
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip());
+            .get::<axum::extract::ConnectInfo<crate::tls::ConnMeta>>()
+            .map(|ci| ci.0.peer.ip());
         let Some(peer) = peer else {
             return Ok(ClientIp(None));
         };
@@ -170,6 +176,7 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
 /// right-to-left (nearest hop first) against `config.is_trusted_proxy`: each trusted-proxy entry
 /// is a hop to skip past; the first non-trusted or unparseable entry is the client. Falls back to
 /// `peer` if the header is absent/empty, or every entry turns out to be a trusted-proxy address.
+/// The result is always in canonical form (`IpAddr::to_canonical`).
 ///
 /// # Examples
 ///
@@ -177,7 +184,7 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
 /// use shadowcat::config::Config;
 /// use shadowcat::http::throttle::resolve_client_ip;
 ///
-/// let cfg = Config { trusted_proxies: vec!["10.0.0.1".into()], ..Default::default() };
+/// let cfg = Config { trusted_proxies: vec!["10.0.0.1".parse().unwrap()], ..Default::default() };
 /// let peer = "10.0.0.1".parse().unwrap();
 /// let real = resolve_client_ip(peer, Some("203.0.113.9"), &cfg);
 /// assert_eq!(real, "203.0.113.9".parse::<std::net::IpAddr>().unwrap());
@@ -187,6 +194,9 @@ pub fn resolve_client_ip(
     forwarded: Option<&str>,
     config: &crate::config::Config,
 ) -> std::net::IpAddr {
+    // Both the peer and a forwarded entry come back canonical (an IPv4-mapped IPv6 address becomes
+    // its IPv4 form), so per-client throttle keys never split one host across two spellings.
+    let peer = peer.to_canonical();
     let Some(header) = forwarded else { return peer };
     let entries: Vec<&str> = header
         .split(',')
@@ -196,7 +206,7 @@ pub fn resolve_client_ip(
     for entry in entries.iter().rev() {
         match entry.parse::<std::net::IpAddr>() {
             Ok(ip) if config.is_trusted_proxy(ip) => continue, // another trusted hop; keep walking left
-            Ok(ip) => return ip,   // first non-trusted entry: the real client
+            Ok(ip) => return ip.to_canonical(), // first non-trusted entry: the real client
             Err(_) => return peer, // malformed entry: fail safe to the verified TCP peer
         }
     }

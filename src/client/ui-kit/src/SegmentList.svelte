@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "./appContext";
   import SegmentList from "./SegmentList.svelte";
   import type { ChatSegment, UnknownSegment, DocLinkTarget, WireActorOwnerRef } from "@shadowcat/core";
@@ -20,6 +21,10 @@
 
   const ctx = getAppContext();
   const t = ctx.t;
+  // `ctx.documents` is a plain store, not a rune. Reading `subscribeDocuments()` before a lookup
+  // makes the enclosing template expression re-run whenever the store emits, so a `doc_link`'s
+  // openability and its live-resolved text follow renames and late-arriving documents.
+  const subscribeDocuments = createSubscriber((update) => ctx.documents.subscribe(update));
 
   /** Resolves a `doc_link` segment's target to an openable `SheetRef` when the referenced
    * document/token is present in the per-recipient OPTIMISTIC store: presence implies READ
@@ -48,12 +53,37 @@
         tokenId: string;
       }
     | null {
+    subscribeDocuments();
     if (target.kind === "doc") {
       return ctx.documents.get(target.doc_id)
         ? { docId: target.doc_id, embeddedPath: target.embedded_path ?? undefined }
         : null;
     }
     return ctx.documents.get(target.token_id) ? { tokenId: target.token_id } : null;
+  }
+
+  /** The display text of a `doc_link`. An explicit authored `label` always wins and is never
+   * re-resolved. Without one, the target's CURRENT name is read from the per-recipient optimistic
+   * store, the same presence check `docLinkOpenRef` uses (a target this recipient cannot READ is
+   * absent from the store, and a redacted name is `null`), so a rename updates every message that
+   * links to it. A target that is absent, or whose name is withheld or empty, shows a placeholder.
+   * @param target The `doc_link` segment's target.
+   * @param label The segment's authored label, if any.
+   * @returns The text the link renders.
+   * @example
+   * ```
+   * declare const target: DocLinkTarget;
+   * docLinkText(target, "The Villain"); // "The Villain"
+   * docLinkText(target, null); // the target's current name, or a placeholder
+   * ```
+   */
+  function docLinkText(target: DocLinkTarget, label: string | null | undefined): string {
+    if (label) return label;
+    subscribeDocuments();
+    const id = target.kind === "doc" ? target.doc_id : target.token_id;
+    const name = ctx.documents.get(id)?.name;
+    if (name) return name;
+    return t(target.kind === "doc" ? "chat.docLink.unknownDocument" : "chat.docLink.unknownToken");
   }
 
   /** Host caption for a `link_preview` card. Never throws on a malformed `url` — a preview is
@@ -129,6 +159,29 @@
     });
   }
 
+  /** Svelte action for the html segment's container: a click on a same-page fragment link
+   * (`href="#..."`) never reaches the browser's navigation. The hash router owns
+   * `location.hash`, so a default fragment navigation would unmount the world session. A
+   * surrounding view that owns the fragment targets (a note body) scrolls to them itself.
+   * @param node The element holding the sanitized html.
+   * @returns The action handle that removes the listener.
+   * @example
+   * ```
+   * // internal; applied as `use:keepFragmentLinksOnPage` on the html container
+   * declare const node: HTMLElement;
+   * const handle = keepFragmentLinksOnPage(node);
+   * handle.destroy();
+   * ```
+   */
+  function keepFragmentLinksOnPage(node: HTMLElement): { /** Removes the click listener. */ destroy: () => void } {
+    const onClick = (event: MouseEvent): void => {
+      const href = (event.target as Element).closest("a")?.getAttribute("href");
+      if (href?.startsWith("#")) event.preventDefault();
+    };
+    node.addEventListener("click", onClick);
+    return { destroy: () => node.removeEventListener("click", onClick) };
+  }
+
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
    * channel — never re-executes the carrying message's own roll. A statted button is
    * per-clicker: the send carries the clicker's own actor binding (the pending one-shot
@@ -137,7 +190,7 @@
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
-   * sendRollButton({ kind: "roll_button", formula: "1d20", label: null });
+   * sendRollButton({ kind: "roll_button", formula: "1d20", label: null, flavor: "Attack" });
    * ```
    */
   function sendRollButton(s: RollButtonSegment): void {
@@ -149,8 +202,11 @@
         : undefined;
     // The same precedence the composer applies (pending one-shot beats the sticky selection);
     // a server refusal (e.g. an unresolvable reference) is player-presentable, so surface it.
+    // A flavored button re-sends its flavor through the same `|` convention a typed
+    // `/roll <formula> | <flavor>` uses.
+    const content = s.flavor ? `/roll ${s.formula} | ${s.flavor}` : `/roll ${s.formula}`;
     void Promise.resolve(
-      ctx.chat.send(actorOwner ? { channel, content: `/roll ${s.formula}`, actorOwner } : { channel, content: `/roll ${s.formula}` }),
+      ctx.chat.send(actorOwner ? { channel, content, actorOwner } : { channel, content }),
     ).catch((e: unknown) => {
       ctx.notify(e instanceof Error ? e.message : String(e), "error");
     });
@@ -170,17 +226,25 @@
     the raw source URL is structurally never stored on any of those segments (only a Uuid asset
     id is), so there is no code path by which the viewer's browser could fetch a remote,
     attacker-chosen resource through this component. -->
-    <span class="seg-html">{@html s.sanitized_html}</span>
+    <span class="seg-html" use:keepFragmentLinksOnPage>{@html s.sanitized_html}</span>
   {:else if s.kind === "roll_embed"}
-    <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
+    <!-- `flavor` is author-written plain text: an escaped text node, never {@html}. -->
+    {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}
+    {#if s.outcome}
+      <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
+    {:else}
+      <!-- A blind roll the server withheld from this reader: no formula, no digits. -->
+      <span class="blind-roll" data-testid="blind-roll-card">{t("chat.blind.rolled")}</span>
+    {/if}
   {:else if s.kind === "roll_button"}
     <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
       {s.label ?? s.formula}
     </button>
+    {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}
   {:else if s.kind === "link_preview"}
     <!-- Server-fetched preview (SSRF-guarded). The client NEVER fetches
     `s.url` or any remote resource itself — title/description/url render as escaped
-    text. `image_asset_id`, when present, is a post-publish-resolved thumbnail
+    text. `image_asset_id`, when present, is a server-resolved thumbnail
     served through this server's OWN /api/assets/{uuid} endpoint (see the `html`
     branch's INVARIANT comment above); the raw external image URL is never stored
     and never reaches the client. -->
@@ -209,10 +273,11 @@
     </a>
   {:else if s.kind === "doc_link"}
     {@const ref = docLinkOpenRef(s.target)}
+    {@const text = docLinkText(s.target, s.label)}
     {#if ref}
-      <button type="button" class="doc-link" onclick={() => ctx.openDocument(ref)}>{s.label}</button>
+      <button type="button" class="doc-link" onclick={() => ctx.openDocument(ref)}>{text}</button>
     {:else}
-      <span class="seg-text">{s.label}</span>
+      <span class="seg-text">{text}</span>
     {/if}
     {#if docLinkIsTable(s.target)}
       {@const tableId = s.target.kind === "doc" ? s.target.doc_id : ""}
@@ -240,9 +305,15 @@
     it, indented. -->
     <div class="table-draw">
       <div class="table-draw-header">
-        <RollTooltip outcome={s.outcome} recalcHistory={null} />
+        {#if s.outcome}
+          <RollTooltip outcome={s.outcome} recalcHistory={null} />
+        {:else}
+          <span class="blind-roll" data-testid="blind-roll-card">{t("chat.blind.rolled")}</span>
+        {/if}
       </div>
-      {#if s.row}
+      {#if !s.outcome}
+        <!-- A withheld blind draw has no row either; absence of `row` here does not mean no row matched. -->
+      {:else if s.row}
         <div class="table-draw-row-label">{s.row.label}</div>
         <SegmentList segments={s.row.content} {channel} />
         {#if s.row.nested.length > 0}
@@ -256,6 +327,16 @@
         <div class="table-draw-no-row">{t("chat.table.noRow")}</div>
       {/if}
     </div>
+  {:else if s.kind === "secret"}
+    <!-- Server-redacted block. A copy whose recipient the server excluded arrives with no
+    content; it renders nothing, so a stripped secret leaves no placeholder. Content that did
+    arrive renders through this SAME component, inside a labelled frame. -->
+    {#if s.content.length > 0}
+      <span class="secret" data-testid="secret-segment">
+        <span class="secret-label">{t("chat.secret.label")}</span>
+        <SegmentList segments={s.content} {channel} />
+      </span>
+    {/if}
   {/if}
 {/each}
 
@@ -264,6 +345,36 @@
     // Preserves author-typed newlines in a plain-text segment; without this a multi-line
     // message collapses to one visual line despite the \n surviving in the DOM text node.
     white-space: pre-wrap;
+  }
+  .secret {
+    // Frames a block only some readers receive, so it reads apart from public text.
+    display: inline-block;
+    border: 1px dashed currentColor;
+    border-radius: var(--radius-1, 4px);
+    padding: 0 var(--space-1);
+  }
+  .secret-label {
+    // Small caps-style badge naming the block as restricted.
+    font-size: 0.75em;
+    text-transform: uppercase;
+    opacity: 0.7;
+    margin-inline-end: var(--space-1);
+  }
+  .roll-flavor {
+    // Caption beside the roll; plain escaped text, dimmed so the roll result stays primary.
+    opacity: 0.75;
+    font-style: italic;
+    margin-inline: var(--space-1);
+  }
+  .blind-roll {
+    // Compact card for a blind roll withheld from this reader; italic and dimmed like a
+    // placeholder, since it carries no result.
+    display: inline-block;
+    padding: 0 var(--space-1);
+    border: 1px dashed currentColor;
+    border-radius: var(--radius-1, 4px);
+    font-style: italic;
+    opacity: 0.8;
   }
   .roll-btn {
     // Touch floor: matches the message card's `.actions` control sizing.

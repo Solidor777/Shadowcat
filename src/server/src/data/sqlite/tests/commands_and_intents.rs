@@ -1,8 +1,9 @@
-//! Role/capability gating on `apply_command`/`apply_intent`, command
-//! create/update/delete round trips and their commit-time snapshots, OCC
-//! conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/
-//! capability-gated Update, tier-2 system-schema enforcement, and the
-//! singleton-`doc_type` create-gate (cross-call and intra-batch).
+//! These tests cover role and capability gating on `apply_command` and `apply_intent`.
+//!
+//! They also cover command create/update/delete round trips and their commit-time snapshots, OCC
+//! conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/capability-gated Update,
+//! system-schema enforcement, and the singleton-`doc_type` create-gate (cross-call and
+//! intra-batch).
 
 use super::*;
 
@@ -164,6 +165,7 @@ async fn player_may_create_message_but_not_other_types() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -188,6 +190,7 @@ async fn player_may_create_message_but_not_other_types() {
             kind: crate::chat::MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         2,
     );
@@ -240,6 +243,7 @@ async fn spectator_may_not_create_message() {
             kind: crate::chat::MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         1,
     );
@@ -293,6 +297,7 @@ async fn player_may_not_forge_message_owner_via_baseline_exemption() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -344,6 +349,7 @@ async fn player_may_not_update_own_message() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -420,6 +426,7 @@ async fn seed_owned_message() -> (
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -877,7 +884,7 @@ async fn events_since_returns_the_suffix() {
 
 #[tokio::test]
 async fn multi_op_command_snapshot_reflects_the_final_post_loop_state_for_every_op() {
-    // The write-loop counterpart of permission.rs's
+    // The write-loop counterpart of the permission module's
     // multi_op_leak_within_one_command_is_closed_by_the_post_loop_accumulator: proves
     // apply_intent's OWN snapshot construction (not a hand-built one) gives the FIRST op's
     // OpSnapshot the override the SECOND op in the SAME command adds.
@@ -956,7 +963,7 @@ async fn create_op_snapshot_in_a_same_command_create_then_update_reflects_the_po
     // state_for_every_op: proves the Create op's OWN persisted OpSnapshot carries the SAME
     // doc_id's later-in-command Update result (a reassigned `/owner`), not the value at the
     // moment the Create ran within the loop. Uses apply_command (the trusted replay
-    // substrate) because apply_intent's Phase-1 OCC pre-image check rejects an Update
+    // substrate) because apply_intent's validation-pass OCC pre-image check rejects an Update
     // targeting a not-yet-committed same-batch Create (see
     // apply_intent_same_batch_create_then_engine_update_is_rejected) — a real op sequence
     // reaching this code path arrives via that substrate, not the client-intent gate.
@@ -1463,7 +1470,7 @@ async fn apply_intent_same_batch_create_then_engine_update_is_rejected() {
 }
 
 #[tokio::test]
-async fn apply_intent_server_message_revision_may_write_property_overrides_but_nothing_else_under_permissions(
+async fn apply_intent_server_message_revision_may_write_the_four_permission_paths_but_nothing_else_under_permissions(
 ) {
     use crate::chat::MESSAGE_DOC_TYPE;
     use crate::data::document::{DocRole, PermissionSet};
@@ -1537,7 +1544,41 @@ async fn apply_intent_server_message_revision_may_write_property_overrides_but_n
         "property_overrides write should be admitted: {ok:?}"
     );
 
-    // `/permissions/default` is NOT admitted under the same origin.
+    // The readership trio is admitted under the same origin.
+    let ok = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/default".into(),
+                        old: serde_json::json!("observer"),
+                        new: serde_json::json!("none"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/gm_role".into(),
+                        old: serde_json::json!(null),
+                        new: serde_json::json!("observer"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/users".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ gm.to_string(): "owner" }),
+                    },
+                ],
+            }],
+            2,
+            WriteOrigin::ServerMessageRevision,
+        )
+        .await;
+    assert!(ok.is_ok(), "the readership trio should be admitted: {ok:?}");
+
+    // `/permissions/capabilities` is NOT admitted under the same origin.
     let denied = r
         .apply_intent(
             &ctx,
@@ -1546,18 +1587,156 @@ async fn apply_intent_server_message_revision_may_write_property_overrides_but_n
                 doc_id,
                 changes: vec![FieldChange {
                     remove: false,
-                    path: "/permissions/default".into(),
-                    old: serde_json::json!("observer"),
-                    new: serde_json::json!("owner"),
+                    path: "/permissions/capabilities".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({"some_cap": ["x"]}),
                 }],
             }],
-            2,
+            3,
             WriteOrigin::ServerMessageRevision,
         )
         .await;
     assert!(
         matches!(denied, Err(DataError::Forbidden)),
-        "widening /permissions/default must stay forbidden under ServerMessageRevision, got {denied:?}"
+        "a /permissions path outside the four-path set must stay forbidden under ServerMessageRevision, got {denied:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_server_message_revision_permission_write_ignores_a_declared_requirement_on_an_unrelated_path_but_embedded_stays_gated(
+) {
+    // Both `authorize_update_change` gates read `SMR_PERMISSION_PATHS`: the three
+    // readership paths must skip the additive declared-requirement check (a
+    // requirement carries no `doc_type`, so one declared on `/permissions/users`
+    // for an unrelated doc type would otherwise block a GM's vetted reveal),
+    // while `/embedded` under the same origin still honours a declared requirement.
+    use crate::chat::MESSAGE_DOC_TYPE;
+    use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.set_world_cap_requirements(
+        w.id,
+        &[
+            CapabilityRequirement {
+                path_prefix: "/permissions".into(),
+                caps: ["dnd5e:edit_permissions".to_string()].into_iter().collect(),
+            },
+            CapabilityRequirement {
+                path_prefix: "/embedded".into(),
+                caps: ["dnd5e:embed".to_string()].into_iter().collect(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    let doc_id = Uuid::new_v4();
+    let doc = Document {
+        id: doc_id,
+        scope: Scope::World { world_id: w.id },
+        doc_type: MESSAGE_DOC_TYPE.to_string(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: Some(gm),
+        permissions: PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        embedded: Default::default(),
+        parent_id: None,
+        engine: Some(serde_json::json!({
+            "channel": "all", "user_owner": gm, "kind": "normal",
+            "audience": {"kind": "public"}, "content": []
+        })),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    for (i, (path, old, new)) in [
+        (
+            "/permissions/default",
+            serde_json::json!("observer"),
+            serde_json::json!("none"),
+        ),
+        (
+            "/permissions/gm_role",
+            serde_json::json!(null),
+            serde_json::json!("observer"),
+        ),
+        (
+            "/permissions/users",
+            serde_json::json!({}),
+            serde_json::json!({ gm.to_string(): "owner" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ok = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                1 + i as i64,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            ok.is_ok(),
+            "{path} must skip the additive declared requirement: {ok:?}"
+        );
+    }
+
+    let denied = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({}),
+                }],
+            }],
+            10,
+            WriteOrigin::ServerMessageRevision,
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "/embedded must stay gated by a declared requirement, got {denied:?}"
     );
 }
 
@@ -1751,7 +1930,7 @@ async fn apply_intent_server_message_revision_write_to_an_unscoped_path_still_en
     assert!(
         matches!(denied, Err(DataError::Forbidden)),
         "a ServerMessageRevision write to a path outside the \
-         /engine + /permissions/property_overrides scope must still be \
+         /engine + four-/permissions-path scope must still be \
          gated by a matching declared requirement, got {denied:?}"
     );
 }
@@ -2322,6 +2501,54 @@ async fn create_rejects_a_second_singleton_doc_of_the_same_type() {
     );
 }
 
+/// `module-settings` is capped at one document per world by the create gate: a second
+/// client-issued Create conflicts. The gate reads `world_seed::CONFIG_SINGLETON_DOC_TYPES`, so a
+/// doc_type seeded but missing from the gate cannot exist; this pins the new entry through both.
+#[tokio::test]
+async fn create_rejects_a_second_module_settings_doc() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    assert!(crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.contains(&"module-settings"));
+
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: singleton_test_doc(1, w.id, "module-settings"),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, w.id, "module-settings"),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Conflict(_)),
+        "a second module-settings doc in the same world must be rejected, got {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn create_allows_singleton_doc_types_in_different_worlds() {
     use crate::data::membership::PermissionContext;
@@ -2475,7 +2702,7 @@ async fn create_rejects_intra_batch_duplicate_singleton_creates() {
     };
 
     // A single Intent batching TWO Creates of the same singleton doc_type:
-    // neither has been inserted when the other's Phase-1 check runs, so
+    // neither has been inserted when the other's validation-pass check runs, so
     // the DB-only check alone would let both through. The second must be
     // rejected by the intra-batch `claimed_singletons` tracking instead.
     let err = r
@@ -4629,10 +4856,10 @@ async fn apply_intent_pairs_update_access_across_two_updates_to_one_doc() {
     // `old` chained off the first's `new` -- exercises `update_access`'s
     // push-then-consume pairing across N>1 Update ops on one doc_id rather
     // than N=1 ops on N docs, pinning that the
-    // `.expect("one Access recorded per Update op in Phase 1")` never panics
+    // `.expect("one Access recorded per Update op in the validation pass")` never panics
     // regardless of how many ops in the batch target the same doc. Both
     // ops' OCC `old` names the document's true stored value at the start of
-    // this call: Phase 1 validates each op's pre-image against a fresh
+    // this call: the validation pass validates each op's pre-image against a fresh
     // `Self::load_document` read, never against a sibling op's `new` --
     // there is no intra-batch simulation of a prior op's effect for OCC
     // purposes, so a chained pre-image (this op's `old` set to the
@@ -4679,7 +4906,7 @@ async fn apply_intent_pairs_update_access_across_two_updates_to_one_doc() {
             "each Update op must carry exactly one derived /engine/body change: {changes:?}"
         );
     }
-    // Phase 2 applies both ops in order against the SAME transaction, so
+    // The apply pass applies both ops in order against the SAME transaction, so
     // the second op's write lands on top of the first's -- the final stored
     // value is the second op's `new`, not the first's.
     let row = r.get_document(doc_a).await.unwrap().unwrap();

@@ -20,6 +20,10 @@ import type { Falloff } from "./Falloff";
  *     dim_radius: 8.0,
  *     falloff: None,
  *     enabled: true,
+ *     active_below_env: None,
+ *     angle: None,
+ *     rotation: 0.0,
+ *     follow_token_rotation: false,
  * };
  * assert!(emission.enabled);
  * ```
@@ -49,4 +53,27 @@ falloff: Falloff | null,
  * GM toggle; a disabled emission contributes nothing (the suppress path
  * for a carried emission, the on/off switch for a standalone light).
  */
-enabled: boolean, };
+enabled: boolean, 
+/**
+ * Darkness-activation threshold: the light contributes only while the scene's
+ * `settings.env_intensity` is at or below this value (`0.0..=1.0`). Absent = always active.
+ * Gates placed and carried lights only; the environment ambient term is never suppressed.
+ */
+activeBelowEnv?: number | null, 
+/**
+ * Full arc width of a cone light, degrees (`(0, 360]`). Absent = the full-circle radial
+ * light.
+ */
+angle?: number | null, 
+/**
+ * Direction of the cone's bisector, degrees: `0` points along +x and the angle grows toward
+ * +y (clockwise on a y-down canvas, the `TokenEngine::rotation` convention). Any finite
+ * value is legal; readers normalise. Meaningful only when `angle` is set.
+ */
+rotation: number, 
+/**
+ * When true and the emission is carried by a token, the effective cone direction is the
+ * carrying token's `TokenEngine::rotation` plus `rotation`, resolved at each read. Inert on
+ * a standalone `light` document (no token to follow).
+ */
+followTokenRotation: boolean, };

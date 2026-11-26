@@ -1,6 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { clickScene } from "./stage-gestures";
+import { latchTextSeen } from "./transient-latch";
 import type { ScenePoint } from "./stage-gestures";
 
 // A 1×1 PNG used as token art (same fixture `hex-movement.spec.ts`/`assets.spec.ts` use).
@@ -144,10 +145,11 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(gm.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
     await expect(player.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
 
-    // The "your turn" notice is an auto-dismissing toast that fires the moment the clock lands on
-    // the player's own row — which may be the very first turn — so the watch for it starts
-    // BEFORE Start and is awaited once the advance loop below has landed there.
-    const yourTurnNotice = expect(player.getByText("It's your turn!")).toBeVisible({ timeout: 60_000 });
+    // The "your turn" notice is a toast that auto-dismisses after 5 s and fires the moment the clock
+    // lands on the player's own row — which may be the very first turn — so its latch is installed
+    // BEFORE Start and read once the advance loop below has landed there. A polled visibility
+    // assertion could straddle the toast's lifetime.
+    const yourTurnNotice = await latchTextSeen(player, "It's your turn!");
 
     // Start the combat — round 1, the first row is aria-current on BOTH browsers.
     await gm.getByRole("button", { name: "Start", exact: true }).click();
@@ -171,7 +173,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
       await expect(player.locator('[aria-current="true"]')).toHaveAttribute("data-testid", after!, { timeout: 15_000 });
     }
 
-    await yourTurnNotice;
+    await expect.poll(() => yourTurnNotice.seen(), { timeout: 60_000 }).toBe(true);
     await player.getByTestId("combat-tracker:end-my-turn").click();
     await expect(gm.locator('[aria-current="true"]')).toHaveCount(1, { timeout: 15_000 });
 

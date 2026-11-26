@@ -138,6 +138,11 @@ export const VAD_PROCESSOR_NAME = "shadowcat-vad-processor";
  * source calls — narrowed so unit tests can inject fakes without a real Web Audio
  * implementation (jsdom has none). */
 export interface MicVadDeps {
+  /** Whether the platform exposes microphone capture and `audioWorklet` at all. Both
+   * `navigator.mediaDevices` and `AudioContext.audioWorklet` are `[SecureContext]` members
+   * (WebIDL; MDN "MediaDevices" and "BaseAudioContext.audioWorklet"), absent on a plain-HTTP
+   * non-loopback origin such as LAN play; defaults to a feature check of both. */
+  isAvailable: (audioContext: AudioContext) => boolean;
   /** Requests microphone access; defaults to `navigator.mediaDevices.getUserMedia`. */
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   /** Loads the worklet module into `audioContext`; defaults to
@@ -165,6 +170,10 @@ export interface MicVadDeps {
  */
 function defaultDeps(): MicVadDeps {
   return {
+    isAvailable: (audioContext) =>
+      typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getUserMedia === "function" &&
+      typeof audioContext.audioWorklet?.addModule === "function",
     getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
     addWorkletModule: (ctx, url) => ctx.audioWorklet.addModule(url),
     createWorkletNode: (ctx, name, options) => new AudioWorkletNode(ctx, name, options),
@@ -189,7 +198,7 @@ export interface MicVadSourceOptions {
 }
 
 /** Why `enable()` could not start listening. */
-export type MicVadDenialReason = "permission-denied" | "no-microphone" | "unknown";
+export type MicVadDenialReason = "permission-denied" | "no-microphone" | "unavailable" | "unknown";
 
 /**
  * Mic voice-activity `DuckSource`: on `enable()`, requests the microphone
@@ -289,6 +298,7 @@ export class MicVadSource {
    */
   async enable(): Promise<MicVadDenialReason | null> {
     if (this.enabled) return null;
+    if (!this.deps.isAvailable(this.audioContext)) return "unavailable";
     let stream: MediaStream;
     try {
       stream = await this.deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { noticeOncePerGesture, resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, VISION_TREATMENT_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -11,6 +11,7 @@
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import LevelSwitcher from "./LevelSwitcher.svelte";
+  import { facingWedgeVisibleTo } from "./facing-wedge";
 
   /** Options every `createBackend` call carries — declared once so the prop's type annotation
    * and its default's parameter share one shape (an inline copy in each would drift). */
@@ -49,7 +50,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members, t } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onRuler, onScrollingText, vfx, audio, onMoveOutcome, role, members, t } = ctx;
 
   // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
   // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
@@ -60,7 +61,7 @@
   const viewedSceneLevels = $derived.by((): SceneEngine["levels"] => {
     subscribe();
     const vsid = ctx.viewedSceneId;
-    const doc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+    const doc = vsid ? documents.get(vsid) : undefined;
     return (doc?.engine as SceneEngine | undefined)?.levels ?? [];
   });
 
@@ -93,6 +94,21 @@
    * immediately without a manual reconcile call. Gated to GM-only at the control itself — this
    * flag carries no server round-trip and is never read for a non-GM (the control never mounts). */
   let ghostOtherLevels = $state(false);
+
+  /** Writes a `data-*` observability marker on the stage host only when its value differs: a
+   * dataset write is a DOM attribute mutation even when the value is unchanged, and the walls
+   * and regions markers are recomputed on every document commit.
+   * @param key The `dataset` key (camelCase).
+   * @param value The marker's new value.
+   * @example
+   * ```
+   * // private function; not part of the public API
+   * setWhenChanged("wallSegments", "0,0>10,0");
+   * ```
+   */
+  function setWhenChanged(key: string, value: string): void {
+    if (host.dataset[key] !== value) host.dataset[key] = value;
+  }
 
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
@@ -164,10 +180,13 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offRuler: (() => void) | null = null;
+    let offScrollingText: (() => void) | null = null;
     let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
+    let detachReveal: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
     // so a stale listener set can never call into a destroyed engine.
     const controller = new AbortController();
@@ -185,8 +204,13 @@
         viewedSceneId: () => ctx.viewedSceneId,
         viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
+        bars: () => ctx.bars,
+        nameplateFallbackLabel: () => ctx.t("token.nameplateFallback"),
         selectedTokens: () => ctx.tokenSelection.ids,
         ghostOtherLevels: () => ghostOtherLevels,
+        // A token's facing is shown only to the GM and the token's owner, so another creature's
+        // facing never reaches a player's canvas.
+        facingWedgeVisible: (doc) => facingWedgeVisibleTo(role, ctx.selfId, doc, documents),
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
         vfxAssets: (id) => {
@@ -214,6 +238,16 @@
         // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
         // content with no other DOM presence.
         onMeasureDrawn: (label) => { host.dataset.measureLabel = label; },
+        // Read-only observability signal: the scene point at the viewport center, as "x,y".
+        // Mirrors the applied transform into `ctx.stageView` so stage overlays stay anchored.
+        onTransformApplied: (t) => ctx.stageView.set(t),
+        // Re-runs every overlay reader of `ctx.stageView.isTokenRevealed` on each applied fog mask.
+        onVisibilityApplied: () => ctx.stageView.noteMaskApplied(),
+        onCameraApplied: (c) => { host.dataset.cameraCenter = `${c.x},${c.y}`; },
+        visionTreatments: (kind) =>
+          ctx.contributions
+            .contributionsFor(VISION_TREATMENT_CONTRACT)
+            .find((c) => c.visionTreatment?.kind === kind)?.visionTreatment,
         onLightingApplied: (frame, sweeping) => {
           // Read-only observability signals: the painted lighting overlay's cell count and
           // whether a carried-light sweep is driving it — an e2e can see a torch light a
@@ -236,6 +270,10 @@
           if (host.dataset.litCells !== litCells) host.dataset.litCells = litCells;
           if (host.dataset.lightSweep !== lightSweep) host.dataset.lightSweep = lightSweep;
           if (host.dataset.litBbox !== litBbox) host.dataset.litBbox = litBbox;
+          // Cells carrying a render-hint treatment, "wash,outline" counts — an e2e sees a vision
+          // mode's treatment reach the painted frame without pixel diffing.
+          const treatment = `${frame.cells.filter((c) => c.colorWash).length},${frame.cells.filter((c) => c.outline).length}`;
+          if (host.dataset.lightTreatment !== treatment) host.dataset.lightTreatment = treatment;
         },
       });
       const e = engine;
@@ -246,8 +284,13 @@
       e.start();
       // Tools reach this engine via the AppContext scene bridge.
       detachScene = scene.attach(e);
+      detachReveal = ctx.stageView.attachReveal((id, at) => e.isTokenRevealed(id, at));
       engineRef = e;
       if (gmView !== "all") applyGmView(); // survive an $effect re-run with a non-default view
+      // Survive an $effect re-run with a non-center snap mode (same window as the gmView
+      // line above): the watcher below also pushes the preference, but its first run is
+      // async, so a fresh engine gets the session's mode synchronously at attach.
+      e.setSnapMode(ctx.snapModePreference.mode);
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
@@ -258,6 +301,8 @@
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
+      // A "bars" frame is the same kind of commit-less change as a footprints frame.
+      let lastBars = ctx.bars;
       // Token selection is client-local UI state (no document write either) — same explicit
       // re-projection so the selection highlight fx tracks the click.
       let lastSelectionKey = [...ctx.tokenSelection.ids].sort().join(" ");
@@ -280,12 +325,22 @@
             lastFootprints = fp;
             e.reapplyFootprints();
           }
+          const barsNow = ctx.bars; // tracks the session's bars $state
+          if (barsNow !== lastBars) {
+            lastBars = barsNow;
+            e.reapplyBars();
+          }
           // Iterating the SvelteSet tracks it; a membership change re-projects the tokens.
           const selKey = [...ctx.tokenSelection.ids].sort().join(" ");
           if (selKey !== lastSelectionKey) {
             lastSelectionKey = selKey;
             e.reapplyTokenSelection();
           }
+          // Snap mode is session-scoped client state (ctx.snapModePreference), not a
+          // document: pushed unconditionally, the same cheap-flag-write discipline
+          // `setSnapEnabled` gets in onDocs. Reading `.mode` here is what tracks the
+          // preference, so a ToolRail toggle re-runs this effect and reaches the engine.
+          e.setSnapMode(ctx.snapModePreference.mode);
         });
       });
       wirePointer(e, controller.signal);
@@ -294,9 +349,10 @@
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
       let lastAnimKey = "";
+      let lastOutlineKey = "";
       const onDocs = (): void => {
         const vsid = ctx.viewedSceneId;
-        const activeSceneDoc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+        const activeSceneDoc = vsid ? documents.get(vsid) : undefined;
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(activeSceneDoc, documents);
         const g = (activeSceneDoc?.engine as {
@@ -318,6 +374,15 @@
         if (key !== lastGridKey) {
           lastGridKey = key;
           e.setGrid(spec);
+        }
+        // The authored-rectangle outline is a GM aid for telling the margin from the play area:
+        // only the GM, only with a margin. Pushed only on change so a token drag does not redraw
+        // it each frame; setGrid redraws it itself when the grid changes.
+        const outline = role === "gm" && settings.padding > 0 ? settings.bounds : null;
+        const outlineKey = outline ? `${outline.width}x${outline.height}` : "";
+        if (outlineKey !== lastOutlineKey) {
+          lastOutlineKey = outlineKey;
+          e.setAuthoredBounds(outline ? { width: outline.width, height: outline.height } : null);
         }
         // Snap-to-grid is per-scene. Pushed unconditionally each pass — a
         // cheap flag assignment (unlike setGrid's Grid rebuild or setAnimation's config
@@ -371,6 +436,52 @@
           documents.query("drawing").length + documents.query("template").length,
         );
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal: each viewed-scene wall's committed `seg` endpoints
+        // as `x1,y1>x2,y2`, sorted so the string is order-independent — the exact geometry a
+        // wall-tool drag stored, so an e2e can confirm which snap resolution a placement ran
+        // under (cell center vs vertex) without inspecting WebGL pixels.
+        setWhenChanged("wallSegments", documents
+          .query("wall")
+          .filter((w) => !vsid || w.parent_id === vsid)
+          .map((w) => {
+            const seg = (w.engine as {
+              /** Mirrors `WallEngine.seg`; absent only on a doc that predates its geometry. */
+              seg?: {
+                /** Segment start x, scene units. */
+                x1: number;
+                /** Segment start y, scene units. */
+                y1: number;
+                /** Segment end x, scene units. */
+                x2: number;
+                /** Segment end y, scene units. */
+                y2: number;
+              };
+            } | undefined)?.seg;
+            return seg ? `${seg.x1},${seg.y1}>${seg.x2},${seg.y2}` : null;
+          })
+          .filter((s): s is string => s !== null)
+          .sort()
+          .join(";"));
+        // Read-only observability signal: each viewed-scene region's committed geometry as
+        // `id:part+part` in authored order (a `!` prefix marks a hole part), id-sorted like
+        // data-wall-segments — lets an e2e confirm which shape form (a bare kind for the
+        // legacy singular form, a `+`-joined part list for a compound) and which parts are
+        // holes a region doc stored, without inspecting WebGL pixels.
+        setWhenChanged("regionShapes", documents
+          .query("region")
+          .filter((r) => !vsid || r.parent_id === vsid)
+          .map((r) => {
+            const geometry = (r.engine as {
+              /** Mirrors `RegionEngine.shape`: a bare shape object (legacy singular form) or
+               * an array of `{shape, hole}` parts (compound form). */
+              shape?: RegionGeometry;
+            } | undefined)?.shape;
+            const parts = Array.isArray(geometry) ? geometry : geometry ? [{ shape: geometry, hole: false }] : [];
+            const summary = parts.map((p) => `${p.hole === true ? "!" : ""}${p.shape.kind}`).join("+");
+            return `${r.id}:${summary}`;
+          })
+          .sort()
+          .join(";"));
         // Read-only observability signal: each viewed-scene token's last-projected badge chips
         // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
         // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can
@@ -414,6 +525,22 @@
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
+      // Shared rulers (never this connection's own frame): each sending CONNECTION's ruler is
+      // keyed by user id plus origin token, so one user measuring on two devices shows two
+      // rulers; an `active: false` frame clears exactly that connection's.
+      offRuler = onRuler((m) => {
+        if (m.active) e.setRemoteRuler(m.from, m.origin, m.points);
+        else e.clearRemoteRuler(m.from, m.origin);
+        host.dataset.lastRuler = `${m.from}:${m.active}:${m.points.length}`;
+      });
+      // Region-triggered scrolling-text overlays reuse the SAME floating-overlay lifecycle
+      // as a player-fired emote (`EmoteView.addEmote`) — never a second renderer — but declare
+      // the "caption" draw treatment (smaller, wrapped, multi-line) rather than the emoji
+      // "glyph" one, since server-authored prose is not a 1-4-character cluster.
+      offScrollingText = onScrollingText((m) => {
+        e.addEmote(m.token, m.text, "caption");
+        host.dataset.lastScrollingText = `${m.token}:${m.text}`;
+      });
       // Relayed VFX one-shots (incl. our own echo) play through the engine. Warm the asset's
       // metadata BEFORE calling engine.playVfx so the render layer's own synchronous
       // vfxAssets(id) lookup always hits on this exact arrival — a cold cache would otherwise
@@ -429,11 +556,21 @@
         });
         if (m.sound) audio.playOneShot(m.sound, { channel: "sfx" });
       });
-      // Read-only observability signal for the local player's own move requests —
-      // no behavior change to movement, just an outcome the client already
-      // receives via `WorldSession.moveRequest`'s resolution.
+      // The ONE consumer of the local player's own move outcomes: it mirrors the outcome onto the
+      // host for observability and raises the player-visible notice for a rejection (a refused
+      // move, the correlated-request timeout, a dropped socket). Every move-issuing path
+      // (`makeMeasureTool`'s commit, the select tool's drag release) reaches it through
+      // `WorldSession.moveRequest`, so none raises its own rejection notice.
+      // One notice per gesture: a multi-token drag issues one request per token, and every
+      // request of the same gesture shares its `gesture` identity. `noticeOncePerGesture` is the
+      // same owner the tools raise their own route-failure notices through, so a drag whose tokens
+      // fail differently still raises one notice. A request with no gesture is its own gesture.
       offMoveOutcome = onMoveOutcome((m) => {
         host.dataset.lastMoveOutcome = m.outcome;
+        if (m.outcome !== "rejected") return;
+        noticeOncePerGesture(m.gesture, () =>
+          ctx.notify(t(m.paused ? "intent.rejected.paused" : "tools.moveRejected"), "warning"),
+        );
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
@@ -463,9 +600,12 @@
       disposed = true;
       engineRef = null;
       detachScene?.();
+      detachReveal?.();
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offRuler?.();
+      offScrollingText?.();
       offVfx?.();
       offMoveOutcome?.();
       offAsset?.();
@@ -516,6 +656,7 @@
       engine.dispatchPointerDown(local(e), e);
     }, { signal });
     canvas.addEventListener("pointermove", (e) => engine.dispatchPointerMove(local(e), e), { signal });
+    canvas.addEventListener("pointerleave", () => engine.clearHoveredToken(), { signal });
     const up = (e: PointerEvent): void => engine.dispatchPointerUp(local(e), e);
     canvas.addEventListener("pointerup", up, { signal });
     canvas.addEventListener("pointercancel", up, { signal });
@@ -531,6 +672,7 @@
 
 <div
   class="stage-host"
+  data-tour="stage.canvas"
   bind:this={host}
   data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
   data-render-scale={String(perfBudget.renderScale)}
@@ -560,6 +702,7 @@
     <select
       class="gm-view"
       data-testid="gm-view-select"
+      data-tour="stage.gm-view"
       aria-label="GM vision mode"
       bind:value={gmView}
       onchange={applyGmView}

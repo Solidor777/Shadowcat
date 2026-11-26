@@ -5,6 +5,7 @@
 // the `TemplateModalHost` renders. Constructed by the shell alongside `SheetsController`; imports
 // no module.
 import {
+  randomUuid,
   findInstances, syncState, stampInstance, effectiveOwner, MergeIntentError,
   type WireDocument, type StampOpts, type SyncState, type Logger,
   type DocumentStore, type ReadableDocuments, type NotificationLevel,
@@ -288,7 +289,7 @@ export class TemplatesController {
     let retry = false;
     try {
       const outcome = await this.#deps.sendMergeIntent(
-        { type: "merge_pull", request_id: crypto.randomUUID(), child_id: childId, resolutions },
+        { type: "merge_pull", request_id: randomUuid(), child_id: childId, resolutions },
         { timeoutMs: MERGE_TIMEOUT_BASE_MS },
       );
       if (outcome.kind !== "pull") return;
@@ -349,7 +350,7 @@ export class TemplatesController {
     this.#inFlight.add(childId);
     void this.#deps
       .sendMergeIntent(
-        { type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId },
+        { type: "merge_revert", request_id: randomUuid(), child_id: childId },
         { timeoutMs: MERGE_TIMEOUT_BASE_MS },
       )
       .catch((err: unknown) => {
@@ -403,7 +404,7 @@ export class TemplatesController {
     try {
       const instances = this.findInstances(templateId).length;
       const outcome = await this.#deps.sendMergeIntent(
-        { type: "merge_push", request_id: crypto.randomUUID(), template_id: templateId, resolutions },
+        { type: "merge_push", request_id: randomUuid(), template_id: templateId, resolutions },
         { timeoutMs: MERGE_TIMEOUT_BASE_MS + MERGE_TIMEOUT_PER_INSTANCE_MS * instances },
       );
       if (outcome.kind !== "push") return;

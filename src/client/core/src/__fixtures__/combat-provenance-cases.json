@@ -49,6 +49,32 @@
     "expect": { "value": true, "source": "scene" }
   },
   {
+    "name": "expiryNotice engine fallback",
+    "path": "combat.expiryNotice",
+    "expect": { "value": "visible", "source": "engine" }
+  },
+  {
+    "name": "expiryNotice supplied by the system layer",
+    "system": { "expiryNotice": "gm_only" },
+    "path": "combat.expiryNotice",
+    "expect": { "value": "gm_only", "source": "system" }
+  },
+  {
+    "name": "expiryNotice overridden by the world layer over a system value",
+    "system": { "expiryNotice": "gm_only" },
+    "world": { "expiryNotice": "visible" },
+    "path": "combat.expiryNotice",
+    "expect": { "value": "visible", "source": "world" }
+  },
+  {
+    "name": "expiryNotice overridden by the scene layer over world and system",
+    "system": { "expiryNotice": "visible" },
+    "world": { "expiryNotice": "visible" },
+    "scene": { "expiryNotice": "gm_only" },
+    "path": "combat.expiryNotice",
+    "expect": { "value": "gm_only", "source": "scene" }
+  },
+  {
     "name": "effectLifecycle.onCombatEnd engine fallback (null means built-in behaviour)",
     "path": "combat.effectLifecycle.onCombatEnd",
     "expect": { "value": null, "source": "engine" }

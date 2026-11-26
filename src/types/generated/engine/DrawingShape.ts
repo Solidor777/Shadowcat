@@ -15,8 +15,9 @@
  */
 export type DrawingShape = { 
 /**
- * "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer
- * vocabulary; kept a `String` in v1).
+ * "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer vocabulary). The
+ * server stores any string within the engine band's `MAX_SYSTEM_BYTES` cap and does not
+ * read it.
  */
 kind: string, 
 /**

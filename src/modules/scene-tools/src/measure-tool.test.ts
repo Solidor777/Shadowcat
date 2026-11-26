@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
+import { noticeOncePerGesture, DocumentStore, AssetResolver, PathfindError, buildSceneDoc, buildTokenDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
@@ -78,7 +78,7 @@ function setupRoute(over: {
             ? {
                 vision: {
                   losRestriction: null, fog: null, observerVision: null, movementRestriction: null,
-                  movementModel: over.sceneVision.movementModel ?? null,
+                  movementModel: over.sceneVision.movementModel ?? null, fogPooling: null,
                 },
               }
             : {}),
@@ -86,7 +86,7 @@ function setupRoute(over: {
       },
       {
         op: "create",
-        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1"),
+        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-1"),
       },
     ],
   });
@@ -383,7 +383,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
       { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-1") },
     ],
   });
 
@@ -661,6 +661,8 @@ function seedRouteCtx(over: {
   onClearOverlay?: () => void;
   onClearMeasure?: () => void;
   tokenAt: { id: string; x: number; y: number };
+  /** Receives every toast the tool raises. */
+  notify?: ToolContext["notify"];
   /** Scene-level vision overrides. Absent ⇒ grid-stepped default. */
   sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
 }): { ctx: ToolContext; now: FakeNow; docs: DocumentStore } {
@@ -676,7 +678,7 @@ function seedRouteCtx(over: {
             ? {
                 vision: {
                   losRestriction: null, fog: null, observerVision: null, movementRestriction: null,
-                  movementModel: over.sceneVision.movementModel ?? null,
+                  movementModel: over.sceneVision.movementModel ?? null, fogPooling: null,
                 },
               }
             : {}),
@@ -686,7 +688,7 @@ function seedRouteCtx(over: {
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: over.tokenAt.x, y: over.tokenAt.y, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
         }, over.tokenAt.id),
       },
     ],
@@ -729,6 +731,7 @@ function seedRouteCtx(over: {
     tokenSelection: sel,
     pathfind: over.pathfind,
     moveRequest: over.moveRequest,
+    notify: over.notify,
     now,
   };
 
@@ -778,6 +781,28 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
   expect(moves).toEqual([{ tokenId: "tok1", path: [[0, 0], [100, 0], [100, 100]] }]);
 });
 
+test("double-click commit while the session pause freezes movement sends no moveRequest and raises the paused notice", async () => {
+  const moves: Array<unknown> = [];
+  const notices: string[] = [];
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
+    moveRequest: async (_s, tokenId, path) => {
+      moves.push({ tokenId, path });
+      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
+    },
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+    notify: (message) => { notices.push(message); },
+  });
+  ctx.movesFrozen = () => true;
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+  expect(moves).toEqual([]);
+  expect(notices).toEqual(["intent.rejected.paused"]);
+});
+
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
   const { ctx } = seedRouteCtx({
@@ -796,11 +821,11 @@ test("a single click in route mode does NOT commit", async () => {
 
 test("route commit survives its own pointer-up: moveRequest resolves after pointer-up and still fires", async () => {
   // REGRESSION guard: in production, onPointerDown(double) is immediately followed by
-  // onPointerUp. The committing flag must suppress clearRoute() in onPointerUp so the
-  // in-flight moveRequest's seq guard is not invalidated.
+  // onPointerUp. The commit's ownership must suppress clearRoute() in onPointerUp so the
+  // route is not torn down under the in-flight moveRequest.
   //
   // The deferred moveRequest resolves ONLY after both pointer-ups to catch any code that
-  // allows onPointerUp to invalidate an in-flight commit.
+  // allows onPointerUp to tear the commit down.
 
   let resolveMoveRequest!: (r: MoveStream) => void;
   const deferredMoveRequest: ToolContext["moveRequest"] = (_scene, _tokenId, _path) =>
@@ -824,14 +849,17 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   // Advance time within DOUBLE_CLICK_MS, then second pointer-down → commit fires.
   now.advance(100);
   tool.onPointerDown({ x: 200, y: 200 }, ev()); // second down → commitRoute called
+  // The commit owns the route from here: no teardown may happen until it settles.
+  const clearsAtCommit = clearCount;
   tool.onPointerUp({ x: 200, y: 200 }, ev()); // trailing up on the double-click release
 
   // Let the internal pathfind resolve so moveRequest is called and resolveMoveRequest is assigned.
   // moveRequest itself is still deferred (resolveMoveRequest not yet called).
   await drain();
 
-  // moveRequest has been called but NOT resolved. committing=true must suppress the already-fired
-  // pointer-up's clearRoute — committing must still be true at this point.
+  // moveRequest has been called but NOT resolved. The commit's ownership must have suppressed
+  // the trailing pointer-up's clearRoute, so no teardown has happened since the commit began.
+  expect(clearCount).toBe(clearsAtCommit);
   const clearsBefore = clearCount;
 
   resolveMoveRequest({
@@ -921,10 +949,10 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
 });
 
 test("stale commit resolve does not clear a newer commit's suppression flag", async () => {
-  // Invariant: only the still-current commit (seq === pendingSeq) may mutate `committing`.
-  // Commit A starts → onDeactivate aborts A → tool reactivated → commit B starts →
-  // A's stale moveRequest resolves. The stale resolve must not touch `committing`, or it
-  // wipes B's pointer-up suppression and a trailing up bumps pendingSeq, silently bailing B.
+  // Invariant: only the still-attached commit may release the tool's commit ownership.
+  // Commit A starts → onDeactivate detaches A → tool reactivated → commit B starts →
+  // A's moveRequest resolves. The detached settle must not release B's ownership, or a
+  // trailing pointer-up tears B's route down before B settles.
 
   // Two independently-controllable deferreds so A and B resolve in controlled order.
   let resolveA!: (r: MoveStream) => void;
@@ -953,37 +981,174 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
 
   const tool = makeMeasureTool(ctx);
 
-  // Start commit A via double-click, then abort it with onDeactivate.
+  // Start commit A via double-click, then detach it with onDeactivate.
   tool.onPointerDown({ x: 100, y: 0 }, ev());
   now.advance(100);
   tool.onPointerDown({ x: 100, y: 0 }, ev()); // double-click → commit A in flight
   await drain(); // let A's pathfind resolve so moveRequest is called
-  tool.onDeactivate!(); // aborts A: committing=false, pendingSeq bumped
+  tool.onDeactivate!(); // detaches A; its request keeps running
 
   // Start commit B (tool reactivated on same instance, as ToolController reuses instances).
   tool.onPointerDown({ x: 200, y: 0 }, ev()); // first click of new double-click
   now.advance(100);
   tool.onPointerDown({ x: 200, y: 0 }, ev()); // double-click → commit B in flight
   await drain(); // let B's pathfind resolve so moveRequest is called
+  const clearsAtB = clearCount;
 
-  // A resolves while B is in flight. A is stale (seq_A < pendingSeq).
-  // Must not touch committing — B's suppression flag must remain true.
+  // A resolves while B is in flight. A is detached, so its settle must not release B's ownership.
   resolveA({ requestId: "rA", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [100, 0] as [number, number], samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false });
   await drain();
 
-  // A trailing pointer-up must be suppressed by B's still-intact committing flag.
-  // If the stale resolve wiped committing, clearRoute fires here and bumps pendingSeq,
-  // making B stale too — so B's finish() would never run.
+  // Neither A's settle nor a trailing pointer-up may tear B's route down.
+  expect(clearCount).toBe(clearsAtB);
   tool.onPointerUp({ x: 200, y: 0 }, ev());
-
-  // Capture count AFTER the pointer-up: if committing was wiped, the pointer-up already
-  // bumped pendingSeq, so B would resolve stale with no finish() call.
+  expect(clearCount).toBe(clearsAtB);
   const clearsBefore = clearCount;
 
-  // B resolves: must find seq === pendingSeq and call finish() → clearRoute().
+  // B resolves: it still owns the route, so its settle clears the overlay.
   resolveB({ requestId: "rB", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [200, 0] as [number, number], samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false });
   await drain();
 
   // B's finish() fired: clearRoute() was called, incrementing clearCount.
   expect(clearCount).toBeGreaterThan(clearsBefore);
+});
+
+test("a committed move still reaches moveRequest when the tool is deactivated before its pathfind resolves", async () => {
+  // Deactivation cancels previews, never a commit the user already made: double-click then an
+  // immediate tool swap must still send the move.
+  let resolvePathfind!: (r: Awaited<ReturnType<NonNullable<ToolContext["pathfind"]>>>) => void;
+  const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
+  const { ctx, now } = seedRouteCtx({
+    pathfind: () => new Promise((res) => { resolvePathfind = res; }),
+    moveRequest: async (_s, tokenId, path) => {
+      moves.push({ tokenId, path });
+      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
+    },
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  tool.onPointerUp({ x: 100, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev()); // double-click: commit issues its own pathfind
+  tool.onPointerUp({ x: 100, y: 0 }, ev());
+  tool.onDeactivate!(); // tool swap while the pathfind is outstanding
+  resolvePathfind({ path: [[0, 0], [100, 0]], cost: 1, arrested: false, truncated: false, budgetCells: null });
+  await drain();
+  expect(moves).toEqual([{ tokenId: "tok1", path: [[0, 0], [100, 0]] }]);
+});
+
+test("a commit detached by deactivation never clears the overlay a newer tool owns", async () => {
+  let resolveMove!: (r: MoveStream) => void;
+  let overlayClears = 0;
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
+    moveRequest: () => new Promise((res) => { resolveMove = res; }),
+    onClearOverlay: () => { overlayClears++; },
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  await drain(); // moveRequest in flight
+  tool.onDeactivate!();
+  const clearsAfterDeactivate = overlayClears;
+  resolveMove({ requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [100, 0] as [number, number], samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false });
+  await drain();
+  expect(overlayClears).toBe(clearsAfterDeactivate);
+});
+
+test("a second commit while a detached one is in flight sends its own request for the same token", async () => {
+  // Behaviour pinned by the `commitRoute` doc: a detached commit is not cancelled, so a re-commit
+  // after a tool swap issues a second `move_request`; which one the server refuses (the per-token
+  // moving lock) reaches the player through the host's move-outcome consumer, not the tool.
+  const requests: Array<{ tokenId: string; path: [number, number][] }> = [];
+  const moveRequest: ToolContext["moveRequest"] = (_s, tokenId, path) => {
+    requests.push({ tokenId, path });
+    return new Promise(() => {}); // both stay in flight
+  };
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
+    moveRequest,
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  await drain();
+  tool.onDeactivate!(); // detaches the first commit; its request stays in flight
+  tool.onPointerDown({ x: 200, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 200, y: 0 }, ev());
+  await drain();
+  expect(requests.map((r) => r.tokenId)).toEqual(["tok1", "tok1"]);
+  expect(requests.map((r) => r.path.at(-1))).toEqual([[100, 0], [200, 0]]);
+});
+
+/** Runs one double-click commit against the given pathfind stub and returns the toasts raised. */
+async function commitNotices(pathfind: ToolContext["pathfind"], moveRequest?: ToolContext["moveRequest"]): Promise<Array<{ message: string; level: string | undefined }>> {
+  const notices: Array<{ message: string; level: string | undefined }> = [];
+  const { ctx, now } = seedRouteCtx({
+    pathfind,
+    moveRequest: moveRequest ?? (async () => { throw new Error("unused"); }),
+    notify: (message, level) => notices.push({ message, level }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  await drain();
+  return notices;
+}
+
+
+test("a commit-time route failure is worded by `routeFailureKey`: a typed rejection reaches its own notice", async () => {
+  expect(await commitNotices(async () => { throw new PathfindError("boom", "invalid"); }))
+    .toEqual([{ message: "tools.moveInvalid", level: "warning" }]);
+  expect(await commitNotices(async () => { throw new Error("not connected"); }))
+    .toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a commit's moveRequest carries the commit's gesture, fresh per commit, and the tool's notice shares it with the host's", async () => {
+  const gestures: (object | undefined)[] = [];
+  const route: ToolContext["pathfind"] = async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null });
+  const capture: ToolContext["moveRequest"] = (_s, _t, _p, gesture) => {
+    gestures.push(gesture);
+    throw new Error("transport seam threw");
+  };
+  // The tool's own notice (the transport threw synchronously) is raised under the commit's gesture...
+  expect(await commitNotices(route, capture)).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+  expect(await commitNotices(route, capture)).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+  expect(gestures).toHaveLength(2);
+  expect(gestures[0]).toBeDefined();
+  expect(gestures[1]).not.toBe(gestures[0]);
+  // ...so the host's rejection notice for the same request is coalesced away.
+  const hostRaised: string[] = [];
+  expect(noticeOncePerGesture(gestures[0], () => hostRaised.push("tools.moveRejected"))).toBe(false);
+  expect(hostRaised).toEqual([]);
+});
+
+test("a synchronous throw from the commit's moveRequest raises one notice", async () => {
+  // An unhandled rejection also fails the whole vitest run; the notice pins the catch path.
+  expect(await commitNotices(
+    async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
+    () => { throw new Error("transport seam threw"); },
+  )).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a commit whose route never leaves the start raises the blocked notice only when truncated", async () => {
+  expect(await commitNotices(async (_s, start) => ({ path: [start], cost: 0, arrested: false, truncated: true, budgetCells: 0 })))
+    .toEqual([{ message: "tools.moveBlocked", level: "warning" }]);
+  expect(await commitNotices(async (_s, start) => ({ path: [start], cost: 0, arrested: false, truncated: false, budgetCells: null })))
+    .toEqual([]);
+});
+
+test("a rejected commit moveRequest raises no notice from the tool: the host's move-outcome consumer owns it", async () => {
+  expect(await commitNotices(
+    async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
+    async () => { throw new Error("token is moving"); },
+  )).toEqual([]);
 });

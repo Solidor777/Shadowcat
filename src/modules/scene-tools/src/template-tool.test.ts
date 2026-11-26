@@ -25,10 +25,11 @@ function setup(
     snap,
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand };
+  const notices: Array<{ message: string; level?: string }> = [];
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand, notify: (message, level) => notices.push({ message, level }) };
   const controller = new ToolController(ctx);
   controller.templateMode = mode;
-  return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared };
+  return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared, controller, notices };
 }
 
 /** Snaps to the nearest 100-unit cell center, matching the default scene's `size: 100` grid —
@@ -110,4 +111,180 @@ test("with viewedLevelBand unset, a new template's engine body's elevation stays
   tool.onPointerUp({ x: 30, y: 40 }, ev);
   const op = sent[0][0];
   if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
+});
+
+test("a cone with an authored angle persists that angle on the created shape", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateAngle = 90;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "cone", angle: 90 } });
+});
+
+test("a cone with no authored angle persists a null angle (render layer's own default)", () => {
+  const { tool, sent } = setup("cone");
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "cone", angle: null } });
+});
+
+test("a line with an authored width persists that width on the created shape", () => {
+  const { tool, controller, sent } = setup("line");
+  controller.templateWidth = 4;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "line", width: 4 } });
+});
+
+test("a rect with an authored width persists that width on the created shape", () => {
+  const { tool, controller, sent } = setup("rect");
+  controller.templateWidth = 20;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "rect", width: 20 } });
+});
+
+// The server's `TemplateEngine::validate` refuses a cone angle outside (0.0, 180.0) exclusive —
+// `conePoints`' three-point wedge is collinear at 180° and opens away from `direction` past it.
+// `onPointerUp` must refuse to dispatch a doomed `Create` rather than round-tripping an
+// optimistic placement into a server rejection and rollback.
+test("a cone with an out-of-range authored angle (180, at the exclusive bound) is not dispatched", () => {
+  const { tool, controller, sent, clears } = setup("cone");
+  controller.templateAngle = 180;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+  expect(clears()).toBe(1); // the tool still resets its own gesture state
+});
+
+test("a refused template drag raises the out-of-range warning instead of vanishing silently", () => {
+  const { tool, controller, sent, notices } = setup("cone");
+  controller.templateAngle = 180;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+  expect(notices).toEqual([{ message: "tools.templateOutOfRange", level: "warning" }]);
+});
+
+test("a cone with an out-of-range authored angle (270, past the bound) is not dispatched", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateAngle = 270;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+});
+
+test("a cone with an out-of-range authored angle (0, at the exclusive lower bound) is not dispatched", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateAngle = 0;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+});
+
+test("a cone with an angle just inside the bound (179.9) is still dispatched", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateAngle = 179.9;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(1);
+});
+
+test("an out-of-range angle authored while a NON-cone mode is active does not block dispatch, and is not persisted", () => {
+  // The angle field only governs cones — a stale/irrelevant `templateAngle` value must never
+  // block a line/rect/circle placement, AND `onPointerUp` sends `angle` only for `"cone"`, so
+  // this line's dispatched shape must carry `angle: null`, not the stale 270.
+  const { tool, controller, sent } = setup("line");
+  controller.templateAngle = 270;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { angle: null } });
+});
+
+// Regression pin for the mode-switch bypass: an out-of-range angle authored while in cone mode
+// (correctly refused there) must not survive a switch to a mode that doesn't send `angle` at
+// all — `onPointerUp` scopes `angle` to `"cone"` BEFORE the validity gate runs, so the gate
+// never even sees the stale value for a rect/line/circle placement, and the dispatched payload
+// itself proves it (not merely that a dispatch happened).
+test("an out-of-range angle left over from cone mode does not block a placement after switching to rect, and the persisted shape carries a null angle", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateAngle = 200; // refused while still in cone mode (pinned above)
+  controller.templateMode = "rect";
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "rect", angle: null } });
+});
+
+// The width twin of the angle-range guard: `TemplateEngine::validate` refuses a negative
+// `shape.width` outright, so `onPointerUp` must refuse to dispatch one for either kind that
+// sends `width` (a `null` "unused" width is always fine — asserted separately below).
+test("a negative authored width is not dispatched for line", () => {
+  const { tool, controller, sent } = setup("line");
+  controller.templateWidth = -1;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+});
+
+test("a negative authored width is not dispatched for rect", () => {
+  const { tool, controller, sent } = setup("rect");
+  controller.templateWidth = -1;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+});
+
+test("a non-negative authored width still dispatches for line and rect", () => {
+  const line = setup("line");
+  line.controller.templateWidth = 0;
+  line.tool.onPointerDown({ x: 0, y: 0 }, ev);
+  line.tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(line.sent).toHaveLength(1);
+
+  const rect = setup("rect");
+  rect.controller.templateWidth = 20;
+  rect.tool.onPointerDown({ x: 0, y: 0 }, ev);
+  rect.tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(rect.sent).toHaveLength(1);
+});
+
+test("a cone placement never persists a width, even when one is authored (stale from a prior mode)", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateWidth = 8; // stale from a prior line/rect authoring
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "cone", width: null } });
+});
+
+test("a rect/line placement never persists an angle, even when one is authored (stale from a prior mode)", () => {
+  const rect = setup("rect");
+  rect.controller.templateAngle = 90; // stale from a prior cone authoring
+  rect.tool.onPointerDown({ x: 0, y: 0 }, ev);
+  rect.tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const rectOp = rect.sent[0][0];
+  if (rectOp.op === "create") expect(rectOp.doc.engine).toMatchObject({ shape: { kind: "rect", angle: null } });
+
+  const line = setup("line");
+  line.controller.templateAngle = 90;
+  line.tool.onPointerDown({ x: 0, y: 0 }, ev);
+  line.tool.onPointerUp({ x: 10, y: 0 }, ev);
+  const lineOp = line.sent[0][0];
+  if (lineOp.op === "create") expect(lineOp.doc.engine).toMatchObject({ shape: { kind: "line", angle: null } });
+});
+
+test("a negative authored width left over from a prior mode does not block a cone placement (width is not sent for cone)", () => {
+  const { tool, controller, sent } = setup("cone");
+  controller.templateWidth = -1; // would refuse a line/rect placement, but cone never sends width
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(1);
 });

@@ -4,7 +4,15 @@ import DuckingRuntime from "./DuckingRuntime.svelte";
 import { DuckSourcesController } from "./controller";
 import { readDuckingMirror } from "./duckingMirror";
 
-export { KeySource, NULL_SINK, DEFAULT_KEY, type DuckSink } from "./keySource";
+export {
+  KeySource,
+  NULL_SINK,
+  DEFAULT_KEY,
+  DUCKING_MODULE_ID,
+  PUSH_TO_DUCK_BINDING_ID,
+  type DuckSink,
+  type KeySourceBindings,
+} from "./keySource";
 export {
   MicVadSource,
   VadEngine,
@@ -53,7 +61,7 @@ export const ducking: Module = {
   },
   register(ctx) {
     const prefs = readDuckingMirror(localStorage);
-    const controller = new DuckSourcesController(prefs, consoleLogger());
+    const controller = new DuckSourcesController(prefs, consoleLogger(), ctx.keybindings);
     currentController = controller;
 
     ctx.contributions.contribute({

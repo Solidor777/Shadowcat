@@ -1,15 +1,16 @@
-//! The `"audibility"` derived channel's pure geometry: distance falloff, wall occlusion, stereo
-//! pan, and the per-token carried `SoundEmission` resolver. Mirrors `scene::emitters`'
-//! light-emitter shape exactly (`token_light_emission`/`scene_lights_excluding`) — a carried
-//! sound is the SAME kind of payload (an engine-band emission resolved at the token's live
-//! position), so the resolution precedence (linked actor + `overrides.sound` wholesale-replace,
-//! embedded actor, raw token = no emission) is copied verbatim rather than re-derived.
+//! This module is the pure geometry of the `"audibility"` derived channel.
 //!
-//! Occlusion reuses the EXACT primitives the movement gate and the sight raycaster already use
-//! (`segments_cross`, `elevation::wall_occludes`) — never a second geometry rule. `falloff`/`pan`
-//! are clean-room formulas (no external citation: `falloff(t) = clamp(1 - t², 0, 1)` is a
-//! standard inverse-square-flavored audio rolloff shape, chosen for a smooth zero at the
-//! emitter's own radius with no divide-by-zero at `t = 0`).
+//! The module covers distance falloff, wall occlusion, stereo pan, and the per-token carried
+//! `SoundEmission` resolver. The resolver (`SceneEcs::token_sound_emission`) applies the resolution
+//! of `token_light_emission` with `sound` in place of `light`: a linked token's `overrides.sound`
+//! replaces its actor's sound wholesale, an unlinked token reads its embedded actor, and a token
+//! with neither carries no emission.
+//!
+//! Occlusion tests the listener-to-emitter segment with `segments_cross`, the crossing predicate
+//! `move_exec::execute_move` also uses, over walls selected by `elevation::walls_at_elevation`.
+//! `falloff` and `pan_for` are clean-room formulas with no external citation. The formula
+//! `falloff(t) = clamp(1 - t², 0, 1)` is `1.0` at the emitter, `0.0` at the emitter's own radius,
+//! and involves no division.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -49,20 +50,33 @@ pub(crate) fn pan_for(dx: f64, radius_world: f64) -> f64 {
     (dx / radius_world).clamp(-1.0, 1.0)
 }
 
-/// Whether any wall in `walls` crosses the listener–emitter segment (`segments_cross`, the SAME
-/// proper-crossing/touching-endpoint test `move_walls`'s reference `blocks_move` and the sight
-/// raycaster both use). `walls` is caller-filtered to the relevant elevation band
-/// (`elevation::walls_at_elevation`) before this is called — this function performs no band
-/// test of its own, mirroring `light_polygon`'s own division of labor (caller filters, this
-/// function only crosses segments).
+/// The listener–emitter segment's wall verdict: `(blocked, gain)`. `blocked` is `true` iff a
+/// wall of `walls` crosses the segment (`segments_cross`, the SAME proper-crossing/touching-
+/// endpoint test `move_exec::execute_move` uses) and is not open to the listener by proximity
+/// (`vision::Seg::open_from`, evaluated at the listener — the sound's origin for this test).
+/// `gain` is the product of `OpenWithin::gain` over every crossed wall that IS open to the
+/// listener (`1.0` when none is), so a wall the listener stands near passes sound at its
+/// authored `sound_gain` instead of blocking it. `walls` is caller-filtered to the relevant
+/// elevation band (`elevation::walls_at_elevation`) before this is called — this function
+/// performs no band test of its own, mirroring `light_polygon`'s own division of labor (caller
+/// filters, this function only crosses segments).
 pub(crate) fn segment_occluded(
     listener: (f64, f64),
     emitter: (f64, f64),
     walls: &[vision::Seg],
-) -> bool {
-    walls
-        .iter()
-        .any(|w| segments_cross(listener, emitter, w.a, w.b))
+) -> (bool, f64) {
+    let mut blocked = false;
+    let mut gain = 1.0;
+    for w in walls {
+        if !segments_cross(listener, emitter, w.a, w.b) {
+            continue;
+        }
+        match w.open_within {
+            Some(open) if w.open_from(listener) => gain *= open.gain,
+            _ => blocked = true,
+        }
+    }
+    (blocked, gain)
 }
 
 /// `WorldSettingsEngine.audio`'s leaves resolved to their engine-literal defaults — the SAME
@@ -76,7 +90,8 @@ pub(crate) struct ResolvedAudioOverlay {
     pub(crate) spatial: bool,
     /// Wall-occlusion policy.
     pub(crate) occlusion: eng::Occlusion,
-    /// Gain an occluded emitter is reduced to — never silenced entirely.
+    /// Gain a wall-occluded emitter is reduced to — a wall never silences entirely; a
+    /// sound-blocking region does (`compute_audibility`).
     pub(crate) through_wall_gain: f64,
 }
 
@@ -177,6 +192,7 @@ impl SceneEcs {
 ///     asset: "a-wind".into(),
 ///     gain: 0.5,
 ///     pan: -0.25,
+///     muffled: false,
 ///     loop_: true,
 /// };
 /// assert!(emitter.loop_);
@@ -190,12 +206,18 @@ pub struct AudibleEmitter {
     pub token: Uuid,
     /// Asset id to play.
     pub asset: String,
-    /// Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* throughWallGain` if
-    /// occluded under `Occlusion::Walls` (never reduced to exactly `0` by occlusion alone — a
-    /// player still learns something is behind the door).
+    /// Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* soundGain` of every crossed
+    /// wall open to the listener by proximity (`WallProximity::sound_gain`), then `* throughWallGain` if
+    /// occluded under `Occlusion::Walls` (a wall never reduces it to exactly `0` — a player
+    /// still learns something is behind the door — but a crossed sound-blocking region does).
     pub gain: f64,
     /// Stereo pan, `-1..=1`.
     pub pan: f64,
+    /// Whether `gain` was reduced by wall occlusion this frame (`Occlusion::Walls` plus
+    /// `segment_occluded`). The client runs a lowpass filter while `true`. Set by the same
+    /// branch that applies `throughWallGain`, so the two never disagree; `false` under flat
+    /// mixing, without a listener, and under `Occlusion::None`.
+    pub muffled: bool,
     /// Loop the asset per the emission's own `loop` flag.
     #[serde(rename = "loop")]
     pub loop_: bool,
@@ -262,7 +284,9 @@ impl SceneEcs {
     /// Compute one scene's `SceneAudibility` slice for `ctx`, given the connection's current
     /// listen-as `override_` (see `select_listener`). `world_defaults` gates
     /// `select_listener`'s override admission (`ctx_access`) the same way every other derived
-    /// channel's recipient-scoping does.
+    /// channel's recipient-scoping does. Occlusion reads the scene's SOUND wall set
+    /// (`SceneEcs::sound_walls_for` — a wall's effective `blocks_sound`, which inherits its
+    /// door-resolved `blocks_sight` when unauthored), never the sight set.
     pub(crate) fn compute_audibility(
         &self,
         ctx: &PermissionContext,
@@ -274,17 +298,26 @@ impl SceneEcs {
         let listener = self.select_listener(ctx, world_defaults, scene, override_);
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
         let wu_per_cell = self.resolve_grid_shape(scene, cell).world_units_per_cell();
-        let sight_walls = self.sight_wall_entries(scene);
 
-        // The listener's own position + elevation (band-filters the occlusion wall set, mirroring
-        // every other per-source elevation filter in this module). Absent a listener, walls are
-        // irrelevant — every emitter below already reads `listener.is_none()` and produces silence
-        // before consulting them.
-        let listener_geo = listener.and_then(|id| {
+        // The listener's own position and the occlusion wall set band-filtered to its elevation
+        // (mirroring every other per-source elevation filter in this module). Absent a listener,
+        // walls are irrelevant — every emitter below produces silence without consulting them.
+        // Both are invariant across the emitter loop below, so the elevation band filter runs once
+        // here rather than per emitter.
+        let listener_view = listener.and_then(|id| {
             let &e = self.index.get(&id)?;
             let c = self.world.get::<&SceneEntity>(e).ok()?;
             let t = self.engine_as_cached::<eng::TokenEngine>(id, &c.doc)?;
-            Some(((t.x, t.y), elevation::elevation_or_ground(t.elevation)))
+            let floor = elevation::elevation_or_ground(t.elevation);
+            let walls = self.sound_walls_for(scene, floor);
+            // The outline of every sound-blocking region: a segment crossing one silences the
+            // emitter outright, where a wall only muffles it. These edges are also in `walls`
+            // (`sound_wall_entries` appends them), so a crossing both muffles and silences.
+            let silencers = elevation::walls_at_elevation(
+                &self.region_occluder_entries(scene, eng::WallSense::Sound),
+                floor,
+            );
+            Some(((t.x, t.y), walls, silencers))
         });
 
         let mut emitters = Vec::new();
@@ -322,12 +355,12 @@ impl SceneEcs {
                 0.0
             };
 
-            let (gain, pan) = if !overlay.spatial {
-                (volume, 0.0)
+            let (gain, pan, muffled) = if !overlay.spatial {
+                (volume, 0.0, false)
             } else {
-                match listener_geo {
-                    None => (0.0, 0.0),
-                    Some((lp, l_elev)) => {
+                match &listener_view {
+                    None => (0.0, 0.0, false),
+                    Some((lp, walls, silencers)) => {
                         let dx = pos.0 - lp.0;
                         let dy = pos.1 - lp.1;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -337,13 +370,19 @@ impl SceneEcs {
                             f64::INFINITY
                         };
                         let mut g = volume * falloff(t);
+                        let mut muffled = false;
                         if g > 0.0 && overlay.occlusion == eng::Occlusion::Walls {
-                            let walls = elevation::walls_at_elevation(&sight_walls, l_elev);
-                            if segment_occluded(lp, pos, &walls) {
+                            let (blocked, open_gain) = segment_occluded(*lp, pos, walls);
+                            g *= open_gain;
+                            if blocked {
                                 g = (g * overlay.through_wall_gain).max(0.0);
+                                muffled = true;
+                                if silencers.iter().any(|w| segments_cross(*lp, pos, w.a, w.b)) {
+                                    g = 0.0;
+                                }
                             }
                         }
-                        (g, pan_for(dx, radius_world))
+                        (g, pan_for(dx, radius_world), muffled)
                     }
                 }
             };
@@ -353,6 +392,7 @@ impl SceneEcs {
                 asset: sound.asset,
                 gain,
                 pan,
+                muffled,
                 loop_: sound.loop_,
             });
         }

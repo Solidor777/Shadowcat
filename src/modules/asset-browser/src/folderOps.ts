@@ -4,31 +4,22 @@
 // lives in `@shadowcat/core`'s `buildMoveOp` — shared with every other
 // document tree that has a `parent_id` band.
 
-import { appendSortKey, envelope, type WireDocument } from "@shadowcat/core";
+import type { SortSibling, WireDocument } from "@shadowcat/core";
+import {
+  appendTypedFolderSortKey,
+  buildTypedFolderDoc,
+  typedFolderChildren,
+  typedFolderSiblings,
+} from "@shadowcat/ui-kit";
+
+export { isDescendantOrSelf } from "@shadowcat/ui-kit";
 
 /** The `asset_folder` doc_type string. */
 export const ASSET_FOLDER_DOC_TYPE = "asset_folder";
 
-/** The slice of the `asset_folder` engine band read client-side. */
-interface FolderEngineShape {
-  /** GM-set ordering key. */
-  sort?: unknown;
-}
-
-/** A folder's `engine.sort`, or 0 when absent/malformed.
- * @param doc - The folder document.
- * @returns The numeric sort key.
- * @example
- * ```
- * // private helper; consumed by folderChildren's comparator below
- * declare const doc: WireDocument;
- * sortOf(doc);
- * ```
- */
-function sortOf(doc: WireDocument): number {
-  const sort = (doc.engine as FolderEngineShape | null | undefined)?.sort;
-  return typeof sort === "number" ? sort : 0;
-}
+/** The drop-target id of the "All assets" row: an asset dropped on it leaves its folder. Never
+ * collides with a folder id, which is a UUID. */
+export const ROOT_DROP_ID = "all-assets";
 
 /**
  * The folder documents directly under `parentId` (`null` = world root),
@@ -56,9 +47,32 @@ export function folderChildren(
   parentId: string | null,
   nameCompare: (a: string, b: string) => number = (a, b) => a.localeCompare(b),
 ): WireDocument[] {
-  return docs
-    .filter((d) => d.doc_type === ASSET_FOLDER_DOC_TYPE && d.parent_id === parentId)
-    .sort((a, b) => sortOf(a) - sortOf(b) || nameCompare(a.name ?? "", b.name ?? ""));
+  return typedFolderChildren(docs, ASSET_FOLDER_DOC_TYPE, parentId, nameCompare);
+}
+
+/**
+ * The folders directly under `parentId` as id + `sort` pairs in display order — the sibling list
+ * `buildReorderOps` reorders.
+ * @param docs - Candidate documents (non-folders are ignored).
+ * @param parentId - The parent folder id, or `null` for the root.
+ * @param nameCompare - The name tie-break comparator, as `folderChildren`.
+ * @returns The ordered siblings.
+ * @example
+ * ```ts
+ * import { folderSiblings } from "@shadowcat/module-asset-browser";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const docs: WireDocument[];
+ * const siblings = folderSiblings(docs, null);
+ * void siblings;
+ * ```
+ */
+export function folderSiblings(
+  docs: WireDocument[],
+  parentId: string | null,
+  nameCompare?: (a: string, b: string) => number,
+): SortSibling[] {
+  return typedFolderSiblings(docs, ASSET_FOLDER_DOC_TYPE, parentId, nameCompare);
 }
 
 /**
@@ -90,33 +104,6 @@ export function folderPathNames(docs: WireDocument[], id: string): string[] {
 }
 
 /**
- * Whether `id` is `rootId` itself or sits anywhere in its subtree — the drag
- * guard that refuses dropping a folder into itself or its own descendants
- * (advisory; the server's cycle walk is authoritative).
- * @param docs - The folder documents to resolve through.
- * @param rootId - The candidate ancestor.
- * @param id - The node being tested.
- * @returns Whether `id` is inside `rootId`'s subtree (self included).
- * @example
- * ```ts
- * import { isDescendantOrSelf } from "@shadowcat/module-asset-browser";
- * import type { WireDocument } from "@shadowcat/core";
- *
- * declare const docs: WireDocument[];
- * isDescendantOrSelf(docs, "a", "a"); // true
- * ```
- */
-export function isDescendantOrSelf(docs: WireDocument[], rootId: string, id: string): boolean {
-  const byId = new Map(docs.map((d) => [d.id, d]));
-  let cursor: string | null = id;
-  while (cursor) {
-    if (cursor === rootId) return true;
-    cursor = byId.get(cursor)?.parent_id ?? null;
-  }
-  return false;
-}
-
-/**
  * The `sort` key a new folder appended under `parentId` should take — one density step past
  * the highest existing sibling's key, or `SORT_KEY_DENSITY` for the first child.
  * @param docs - Candidate documents (non-folders are ignored).
@@ -132,8 +119,7 @@ export function isDescendantOrSelf(docs: WireDocument[], rootId: string, id: str
  * ```
  */
 export function appendFolderSortKey(docs: WireDocument[], parentId: string | null): number {
-  const siblings = folderChildren(docs, parentId);
-  return appendSortKey(siblings.map(sortOf));
+  return appendTypedFolderSortKey(docs, ASSET_FOLDER_DOC_TYPE, parentId);
 }
 
 /**
@@ -153,5 +139,5 @@ export function appendFolderSortKey(docs: WireDocument[], parentId: string | nul
  * ```
  */
 export function buildFolderDoc(world: string, name: string, parentId: string | null, sort = 0): WireDocument {
-  return envelope(world, ASSET_FOLDER_DOC_TYPE, parentId, {}, undefined, { sort }, name);
+  return buildTypedFolderDoc(world, ASSET_FOLDER_DOC_TYPE, name, parentId, sort);
 }

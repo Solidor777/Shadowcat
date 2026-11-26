@@ -84,6 +84,11 @@ describe("parseMessageEngine", () => {
     expect(eng!.source).toBe("/me waves");
     expect(eng!.edited_at).toBe(5);
   });
+  test("parses an out-of-character message kind", () => {
+    const eng = parseMessageEngine(msgDoc({ ...base, kind: "ooc" }));
+    expect(eng).not.toBeNull();
+    expect(eng!.kind).toBe("ooc");
+  });
   test("unknown segment kinds survive parse and are filtered by isKnownSegment", () => {
     const eng = parseMessageEngine(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
     expect(eng).not.toBeNull();
@@ -177,6 +182,23 @@ describe("roll segments", () => {
       ...base, content: [{ kind: "roll_button", formula: "1d20", label: null }],
     }));
     expect(withoutLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
+  });
+  test("parses flavor on a roll_embed and a roll_button, and tolerates it being absent", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [
+        { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: "Attack roll" },
+        { kind: "roll_button", formula: "1d20", label: "Attack", flavor: "Swing" },
+      ],
+    }));
+    expect(eng!.content).toEqual([
+      { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: "Attack roll" },
+      { kind: "roll_button", formula: "1d20", label: "Attack", flavor: "Swing" },
+    ]);
+    expect(parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: 5 }],
+    }))).toBeNull();
   });
   test("fail-closed: roll_embed missing outcome fails the whole message parse", () => {
     expect(parseMessageEngine(msgDoc({
@@ -416,10 +438,17 @@ describe("doc_link segments", () => {
       { kind: "doc_link", target: { kind: "token", token_id: "t1" }, label: "Goblin" },
     ]);
   });
-  test("fail-closed: doc_link missing label fails the whole message parse", () => {
-    expect(parseMessageEngine(msgDoc({
+  test("a doc_link without a label key parses with no label (resolved live at render)", () => {
+    const eng = parseMessageEngine(msgDoc({
       ...base,
       content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }],
+    }));
+    expect(eng!.content).toEqual([{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }]);
+  });
+  test("fail-closed: a doc_link whose label is the wrong type fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: 7 }],
     }))).toBeNull();
   });
   test("fail-closed: doc_link with an unrecognized target kind fails the whole message parse", () => {
@@ -541,6 +570,67 @@ describe("table_draw segments", () => {
   });
 });
 
+describe("blind rolls: results the server withholds", () => {
+  const blind = { ...base, kind: "roll", audience: { kind: "blind" } };
+  const withheldRoll = { kind: "roll_embed", roll_id: "r1" };
+
+  test("a blind message parses a roll_embed with no formula and no outcome", () => {
+    const eng = parseMessageEngine(msgDoc({ ...blind, content: [withheldRoll] }));
+    expect(eng).not.toBeNull();
+    expect(eng!.audience).toEqual({ kind: "blind" });
+    expect(eng!.content).toEqual([{ kind: "roll_embed", roll_id: "r1" }]);
+  });
+
+  test("a blind message parses a table_draw with no formula, outcome or row", () => {
+    const draw = { kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "r1" };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [draw] }))).not.toBeNull();
+  });
+
+  test("a blind message parses a recalc entry with no previous_outcome", () => {
+    const seg = {
+      ...withheldRoll,
+      recalc_history: [{ recalculated_by: "GM", recalculated_at: 5 }],
+    };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [seg] }))).not.toBeNull();
+  });
+
+  test("a blind message parses a withheld roll nested in a secret block", () => {
+    const secret = { kind: "secret", visibility: "gm_only", content: [withheldRoll] };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [secret] }))).not.toBeNull();
+  });
+
+  test("fail-closed: a non-blind message still refuses a roll_embed with no formula", () => {
+    const seg = { kind: "roll_embed", outcome: rollOutcome() };
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [seg] }))).toBeNull();
+  });
+
+  test("fail-closed: a non-blind message still refuses a table_draw with no outcome", () => {
+    const draw = tableDraw();
+    delete draw.outcome;
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [draw] }))).toBeNull();
+  });
+
+  test("fail-closed: a whisper refuses a recalc entry with no previous_outcome", () => {
+    const seg = {
+      kind: "roll_embed", formula: "1d6", outcome: rollOutcome(),
+      recalc_history: [{ recalculated_by: "GM", recalculated_at: 5 }],
+    };
+    const whisper = { ...base, kind: "roll", audience: { kind: "whisper", recipients: [] }, content: [seg] };
+    expect(parseMessageEngine(msgDoc(whisper))).toBeNull();
+  });
+
+  test("fail-closed: a withheld roll nested in a secret refuses a non-blind message", () => {
+    const secret = { kind: "secret", visibility: "gm_only", content: [withheldRoll] };
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [secret] }))).toBeNull();
+  });
+
+  test("a blind message the GM holds parses in full", () => {
+    const seg = { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), roll_id: "r1" };
+    const eng = parseMessageEngine(msgDoc({ ...blind, content: [seg] }));
+    expect(eng!.content).toEqual([seg]);
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");
@@ -561,12 +651,12 @@ test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () =
 
 test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () => {
   const d = buildChatSettingsDoc("w1", {
-    markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false,
+    markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false, blind_visible_to_players: null, blind_visible_to_actor_owner: null,
   });
   expect(d.doc_type).toBe("chat-settings");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false });
+  expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false, blind_visible_to_players: null, blind_visible_to_actor_owner: null });
   expect(d.system).toEqual({});
 });
 
@@ -596,5 +686,35 @@ describe("firstChannel", () => {
       ops: [{ op: "create", doc: buildChannelRegistryDoc("w1", { general: { name: "General" }, ooc: { name: "OOC" } }) }],
     });
     expect(firstChannel(store)).toBe("general");
+  });
+});
+
+describe("secret segments", () => {
+  test("parses a nested secret and a redacted one whose content key is absent", () => {
+    const inner = { kind: "secret", visibility: { recipients: ["u1"] }, content: [{ kind: "text", text: "in" }] };
+    const outer = { kind: "secret", visibility: "gm_only", content: [inner] };
+    const stripped = { kind: "secret" };
+    const eng = parseMessageEngine(msgDoc({ ...base, content: [outer, stripped] }));
+    expect(eng).not.toBeNull();
+    const [o, s] = eng!.content as { kind: string; content: { kind: string }[] }[];
+    expect(o.content[0].kind).toBe("secret");
+    expect(s.content).toEqual([]);
+  });
+
+  test("a redacted secret carries no visibility, so no recipient ids, after parsing", () => {
+    const stripped = { kind: "secret" };
+    const eng = parseMessageEngine(msgDoc({ ...base, content: [stripped] }));
+    expect(eng).not.toBeNull();
+    expect((eng!.content[0] as { visibility?: unknown }).visibility).toBeUndefined();
+  });
+
+  test("refuses the whole message when a secret carries a malformed visibility", () => {
+    expect(
+      parseMessageEngine(msgDoc({ ...base, content: [{ kind: "secret", visibility: 5, content: [] }] })),
+    ).toBeNull();
+  });
+
+  test("isKnownSegment recognizes secret", () => {
+    expect(isKnownSegment({ kind: "secret", visibility: "gm_only", content: [] })).toBe(true);
   });
 });

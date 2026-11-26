@@ -1,10 +1,16 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta } from "@shadowcat/core";
+  import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, sessionFreezes, SessionPausedError, actorDisplayName, resolveTokenActor, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type RegionAnchor, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
+  import DormantRegionList from "./DormantRegionList.svelte";
+  import { portalTokens } from "./portal-use";
+  import { wallBlocksSound } from "./wall-flags";
+  import { MAX_PROXIMITY_CELLS, isValidProximityWithin } from "./server-bounds";
+  import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
   const ctx = getAppContext();
 
@@ -33,7 +39,6 @@
   // here, so a seam the host has can never be left out of this literal without a type error.
   // The two viewedLevel* fields below are ToolContext-only (no AppContext counterpart), so they
   // sit OUTSIDE this checked literal — spread in below — rather than widening the check itself.
-  // svelte-ignore state_referenced_locally
   const hostToolContext = {
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
@@ -44,8 +49,13 @@
     world: ctx.world,
     role: ctx.role,
     sendPing: ctx.sendPing,
+    shareRuler: ctx.shareRuler,
+    sendRulerUpdate: ctx.sendRulerUpdate,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
+    toggleDoor: ctx.toggleDoor,
+    notify: ctx.notify,
+    selfId: ctx.selfId,
     combat: ctx.combat,
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
@@ -56,7 +66,11 @@
     ...hostToolContext,
     viewedLevelBand: () => resolvedViewedLevel(),
     viewedLevelBottom: () => resolvedViewedLevel()?.bottom ?? null,
+    movesFrozen: () => movesFrozen,
   });
+  // The rail's unmount (a world session ending included) deactivates the active tool, so a live
+  // shared ruler's keepalive timer stops with it.
+  onDestroy(() => controller.release());
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so
@@ -74,12 +88,21 @@
   const activeScene = $derived.by((): WireDocument | undefined => {
     subscribe();
     const vsid = ctx.viewedSceneId;
-    return vsid ? ctx.documents.get(vsid) : ctx.documents.query("scene")[0];
+    return vsid ? ctx.documents.get(vsid) : undefined;
   });
   const snapToGrid = $derived.by((): boolean => {
     subscribe();
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
   });
+  // The whole-session pause freezes a non-GM's token movement. The select and measure tools stay
+  // usable (selection, doors, route previews); their move commits are what the controller
+  // refuses, and their tooltip says why.
+  const movesFrozen = $derived.by((): boolean => {
+    subscribe();
+    return sessionFreezes(ctx.documents, ctx.role);
+  });
+  /** The tools whose gestures commit token movement. */
+  const MOVE_TOOLS: readonly ToolId[] = ["select", "measure"];
 
   // Contributed scene tools (SCENE_TOOL_CONTRACT): contribution changes are NOT document-store
   // changes, so this needs its own `ctx.contributions.subscribe` bridge, separate from the
@@ -113,6 +136,39 @@
       snapToGrid?: boolean;
     } | undefined)?.snapToGrid ?? null;
     ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/snapToGrid", old: rawSnap, value: !snapToGrid }])]);
+  }
+
+  /** The snap modes in the order the mode button cycles through them. */
+  const SNAP_MODE_CYCLE: SnapMode[] = ["center", "vertex", "edge"];
+
+  /** The mode button's visible label for `mode`.
+   * @param mode The snap mode to label.
+   * @returns The localized label.
+   * @example
+   * ```
+   * snapModeLabel("edge");
+   * ```
+   */
+  function snapModeLabel(mode: SnapMode): string {
+    switch (mode) {
+      case "vertex": return t("tools.snapModeVertex");
+      case "edge": return t("tools.snapModeEdge");
+      case "center": return t("tools.snapModeCenter");
+    }
+  }
+
+  /** Advances the session's snap-MODE preference to the next mode in the cell-center, vertex,
+   * edge cycle. Client-local session state (`ctx.snapModePreference`), never a document write —
+   * unlike `toggleSnap` above, nothing here is shared with other clients; `Stage` observes
+   * the preference and re-pushes it to the engine's `setSnapMode` chokepoint.
+   * @example
+   * ```
+   * toggleSnapMode();
+   * ```
+   */
+  function toggleSnapMode(): void {
+    const next = (SNAP_MODE_CYCLE.indexOf(ctx.snapModePreference.mode) + 1) % SNAP_MODE_CYCLE.length;
+    ctx.snapModePreference.set(SNAP_MODE_CYCLE[next]);
   }
 
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
@@ -178,6 +234,65 @@
     if (!tok) return false;
     return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
   });
+
+  // "Use portal" affordance: the selected tokens that stand in a portal region and that this user
+  // may plausibly act for (GM, or the effective owner). Advisory only, like `canActAsSelected`:
+  // the server re-checks the token's stored membership and ownership before it re-offers.
+  const portalTokenIds = $derived.by((): string[] => {
+    subscribe();
+    return portalTokens(ctx.tokenSelection.ids, ctx.documents).filter((id) => {
+      const tok = ctx.documents.get(id);
+      return tok !== undefined && (ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents));
+    });
+  });
+
+  /** Ask the server to re-offer the portal for every selected token that stands in one; a
+   * refusal surfaces as a notification carrying the server's wording.
+   * @example
+   * ```
+   * usePortal();
+   * ```
+   */
+  function usePortal(): void {
+    for (const id of portalTokenIds) {
+      ctx.portal.open(id).catch((e: unknown) => {
+        ctx.notify(e instanceof SessionPausedError ? t("intent.rejected.paused") : e instanceof Error ? e.message : String(e), "error");
+      });
+    }
+  }
+
+  /** The viewed scene's tokens this user effectively owns (`ownerFloorApplies`: direct owner, or
+   * the linked actor's owner). The pan-to-owned button's subject and its enablement. */
+  const ownedTokens = $derived.by((): WireDocument[] => {
+    subscribe();
+    const sceneId = ctx.viewedSceneId;
+    if (sceneId === null) return [];
+    return ctx.documents
+      .query("token")
+      .filter((tok) => tok.parent_id === sceneId && ownerFloorApplies(tok, ctx.selfId, ctx.documents));
+  });
+
+  /** Pans the camera to the average position of the user's owned tokens on the viewed scene
+   * (a token's `engine.x`/`engine.y` is its center). A no-op with none; the button is disabled
+   * then.
+   * @example
+   * ```
+   * // wired to the "center on my tokens" button
+   * panToOwnedTokens();
+   * ```
+   */
+  function panToOwnedTokens(): void {
+    const owned = ownedTokens;
+    if (owned.length === 0) return;
+    let x = 0;
+    let y = 0;
+    for (const tok of owned) {
+      const eng = tok.engine as TokenEngine;
+      x += eng.x;
+      y += eng.y;
+    }
+    ctx.scene.panToPoint(x / owned.length, y / owned.length);
+  }
 
   /** Sets the pending speak-as-token selection from the currently selected token (a no-op if
    * none is selected, guarded by `canActAsSelected` at the call site).
@@ -245,7 +360,8 @@
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
-  const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+  const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest", "ambient_light"];
+  const ambientLightModes: AmbientLightMode[] = ["darken", "brighten", "override"];
 
   // The open editor's target document, resolved live from the shared editing selection
   // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
@@ -332,6 +448,84 @@
     editSelected("/engine/elevation", old, next);
   }
 
+  /** One entry of the "Follows token" picker. */
+  interface RegionCarrierOption {
+    /** The token document id the option selects. */
+    id: string;
+    /** The option's visible text. */
+    label: string;
+  }
+
+  /** The tokens on the edited region's own scene, as `{ id, label }` options for the "Follows
+   * token" picker (a carrier must be a token on the region's scene). The label is the
+   * redaction-safe display name (`actorDisplayName`), falling back to a short id.
+   * @param region The region document open in the editor.
+   * @returns The scene's tokens, in document order.
+   * @example
+   * ```
+   * declare const region: WireDocument;
+   * regionCarrierOptions(region); // [{ id: "t1", label: "Goblin" }]
+   * ```
+   */
+  function regionCarrierOptions(region: WireDocument): RegionCarrierOption[] {
+    return ctx.documents
+      .query("token")
+      .filter((tok) => tok.parent_id === region.parent_id)
+      .map((tok) => ({ id: tok.id, label: actorDisplayName(resolveTokenActor(tok, ctx.documents) ?? {}, tok.id.slice(0, 8)) }));
+  }
+
+  /** Apply a "Follows token" edit to the open region: the carrier picker (`tokenId` set; an empty
+   * string detaches) or one of the two flag checkboxes (`patch`). The flags are kept when the
+   * carrier changes. The shape conversion lives in `ToolController.setRegionAnchor`.
+   * @param eng The edited region's engine body (the current anchor is the base of the change).
+   * @param tokenId The picked carrier id, `""` to detach, or `undefined` to keep the current one.
+   * @param patch Flag changes to merge into the anchor.
+   * @example
+   * ```
+   * declare const eng: RegionEngine;
+   * editRegionAnchor(eng, "t1", {}); // attach to token t1
+   * ```
+   */
+  function editRegionAnchor(eng: RegionEngine, tokenId: string | undefined, patch: Partial<RegionAnchor>): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    if (tokenId === "") {
+      controller.setRegionAnchor(doc.id, null);
+      return;
+    }
+    const token = tokenId ?? eng.anchor?.token;
+    if (!token) return;
+    controller.setRegionAnchor(doc.id, { include_carrier: false, follow_rotation: false, ...eng.anchor, ...patch, token });
+  }
+
+  /** The senses a region can occlude, in editor order; each is a `RegionOcclusion` key. */
+  const OCCLUDE_SENSES = ["sight", "light", "sound"] as const;
+  /** The translation key labelling each occlusion checkbox. */
+  const OCCLUDE_LABEL = {
+    sight: "tools.regionOccludesSight",
+    light: "tools.regionOccludesLight",
+    sound: "tools.regionOccludesSound",
+  } as const;
+
+  /** Write one sense flag of the edited region's `/engine/occludes` block, keeping the other
+   * flags. Clearing the last ticked flag writes `null` (an all-false block is rejected by
+   * `RegionEngine::validate`, so "blocks nothing" is stored as absent).
+   * @param eng The edited region's engine body (the raw stored `occludes` is the write's `old`).
+   * @param sense Which sense the checkbox toggles.
+   * @param checked The checkbox's new state.
+   * @example
+   * ```
+   * declare const eng: RegionEngine;
+   * editRegionOcclusion(eng, "sight", true); // fog bank
+   * ```
+   */
+  function editRegionOcclusion(eng: RegionEngine, sense: (typeof OCCLUDE_SENSES)[number], checked: boolean): void {
+    const old = eng.occludes ?? null;
+    const flags = { sight: false, light: false, sound: false, ...old, [sense]: checked };
+    const next = flags.sight || flags.light || flags.sound ? flags : null;
+    editSelected("/engine/occludes", old, next);
+  }
+
   /** Write one end of an edited entity's `/engine/elevation` band, preserving the other end —
    * the shared body behind `editEntityElevation`, the one band editor every band-shaped kind
    * (wall, region, drawing, template) uses: they all carry the identical `Option<ElevationBand>`
@@ -383,35 +577,101 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Escape backs out of any open scene-entity editor (clears the editing selection). Tool
-   * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
-   * @param event The window keydown event.
+  /** The senses a wall's proximity tier can open, in the order the editor lists them. */
+  const PROXIMITY_SENSES: readonly WallSense[] = ["sight", "light", "sound"];
+
+  /** Write the edited wall's whole `/engine/proximity` value; `old` is the raw stored value
+   * (`null` when the wall has no tier). The server validates the tier as one unit, so every edit
+   * replaces the object.
+   * @param next The tier to store, or `null` to remove it.
    * @example
    * ```
-   * onWindowKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * editProximity({ within: 2, senses: ["sight"], soundGain: null });
    * ```
    */
-  function onWindowKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || !controller.editingEntity) return;
-    // Only a canvas-context Escape backs out of the editor: a keydown originating inside a
-    // dialog (a floating panel closing on the same keystroke) or a focused form control is not
-    // aimed at the canvas selection.
+  function editProximity(next: WallProximity | null): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    editSelected("/engine/proximity", (doc.engine as WallEngine).proximity ?? null, next);
+  }
+
+  /** Write the proximity distance from the input's raw string. A value that is not a finite
+   * number in `(0, MAX_PROXIMITY_CELLS]` is not written (the server rejects the whole update for
+   * one): the input shows the stored distance again and a warning says why.
+   * @param tier The wall's stored tier.
+   * @param input The distance input; its text is reset when the value is refused.
+   * @example
+   * ```
+   * declare const input: HTMLInputElement;
+   * editProximityWithin({ within: 1, senses: ["sight"], soundGain: null }, input);
+   * ```
+   */
+  function editProximityWithin(tier: WallProximity, input: HTMLInputElement): void {
+    const raw = input.value;
+    const within = Number(raw);
+    if (raw.trim() === "" || !isValidProximityWithin(within)) {
+      input.value = String(tier.within);
+      ctx.notify(t("tools.wallProximityOutOfRange", { max: MAX_PROXIMITY_CELLS }), "warning");
+      return;
+    }
+    if (within === tier.within) return;
+    editProximity({ ...tier, within });
+  }
+
+  /** Add or remove one sense from the stored tier. Removing `sound` also clears the gain, which
+   * the server accepts only alongside the sound sense.
+   * @param tier The wall's stored tier.
+   * @param sense The sense whose checkbox changed.
+   * @param on Whether the sense is now checked.
+   * @example
+   * ```
+   * editProximitySense({ within: 1, senses: ["sight"], soundGain: null }, "light", true);
+   * ```
+   */
+  function editProximitySense(tier: WallProximity, sense: WallSense, on: boolean): void {
+    const senses = PROXIMITY_SENSES.filter((s) => (s === sense ? on : tier.senses.includes(s)));
+    editProximity({ ...tier, senses, soundGain: senses.includes("sound") ? (tier.soundGain ?? null) : null });
+  }
+
+  /** Whether an Escape keystroke is aimed at the canvas selection. Only a canvas-context Escape
+   * backs out of the editor: a keydown originating inside a dialog (a floating panel closing on
+   * the same keystroke) or a focused form control belongs to that surface.
+   * @param event The Escape keydown event.
+   * @returns True when the event's origin is neither inside a dialog nor a form control.
+   * @example
+   * ```
+   * isCanvasEscape(new KeyboardEvent("keydown", { key: "Escape" })); // true
+   * ```
+   */
+  function isCanvasEscape(event: KeyboardEvent): boolean {
     const origin = event.target;
-    if (
+    return !(
       origin instanceof Element &&
       (origin.closest('[role="dialog"]') !== null ||
         origin instanceof HTMLInputElement ||
         origin instanceof HTMLSelectElement ||
         origin instanceof HTMLTextAreaElement)
-    )
-      return;
-    controller.editingEntity = null;
+    );
   }
 
-  const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
+  // Escape backs out of any open scene-entity editor (clears the editing selection) through the
+  // shared coordinator, registered only while an editor is open. Tool deactivation itself stays
+  // with the rail's re-select-clears rule (`controller.toggle`).
+  $effect(() => {
+    if (!controller.editingEntity) return;
+    return escapeCoordinator.register(
+      ESCAPE_PRIORITY.TOOL,
+      () => {
+        controller.editingEntity = null;
+      },
+      isCanvasEscape,
+    );
+  });
+
+  const triggerEvents: TriggerEvent[] = ["enter", "arrest", "exit", "turn_start", "turn_end", "round_start", "round_end"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
-  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport", "scrolling_text"];
   const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
 
   /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
@@ -423,6 +683,34 @@
    */
   function addRegionTrigger(): void {
     controller.regionTriggers.push({ on: "enter", effect: { type: "condition_add", condition: "" } });
+  }
+
+  /** Append a blank per-tag cost row (empty tag, cost 1) to the region tool's authored
+   * `regionCostByTag` list, persisted onto the next region the tool creates.
+   * @example
+   * ```
+   * addRegionCostByTagRow();
+   * ```
+   */
+  function addRegionCostByTagRow(): void {
+    controller.regionCostByTag.push({ tag: "", cost: 1 });
+  }
+
+  /** Arm the compound-region gesture: the region tool's drags then STAGE parts into the
+   * `regionParts` list instead of persisting a single-shape region. A second click with
+   * nothing staged yet cancels the gesture (the only escape hatch before the first drag —
+   * an armed-but-empty list commits nothing either way).
+   * @example
+   * ```
+   * toggleRegionCompound();
+   * ```
+   */
+  function toggleRegionCompound(): void {
+    if (controller.regionCompound && controller.regionParts.length === 0) {
+      controller.discardRegionParts();
+    } else {
+      controller.regionCompound = true;
+    }
   }
 
   /** Re-seat a row's effect when its type select changes. Each effect kind carries disjoint
@@ -442,6 +730,7 @@
       case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
       case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
       case "teleport": trig.effect = { type: "teleport", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null } }; break;
+      case "scrolling_text": trig.effect = { type: "scrolling_text", text: "" }; break;
       default: trig.effect = { type: "condition_add", condition: "" };
     }
   }
@@ -463,9 +752,8 @@
   }
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
 
-<div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
+<div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")} data-tour="scene-tools.rail">
   {#each visibleTools as tool (tool.id)}
     <button
       type="button"
@@ -473,12 +761,20 @@
       class:active={controller.active === tool.id}
       aria-pressed={controller.active === tool.id}
       data-testid="tool-{tool.id}"
-      title={tool.label}
+      data-tour="scene-tools.{tool.id}"
+      data-moves-frozen={movesFrozen && MOVE_TOOLS.includes(tool.id) ? "true" : undefined}
+      title={movesFrozen && MOVE_TOOLS.includes(tool.id) ? t("tools.paused") : tool.label}
       onclick={() => controller.toggle(tool.id)}
     >
       {tool.label}
     </button>
   {/each}
+
+  <!-- The reason the move tools do nothing while the session is paused, as text: a tooltip is
+       unreachable on touch. -->
+  {#if movesFrozen}
+    <span class="hint" data-testid="moves-paused-note">{t("tools.paused")}</span>
+  {/if}
 
   {#each sceneTools as tool (tool.id)}
     <button
@@ -494,6 +790,18 @@
     </button>
   {/each}
 
+  {#if portalTokenIds.length > 0}
+    <button
+      type="button"
+      class="tool"
+      data-testid="use-portal"
+      title={t("tools.usePortal")}
+      onclick={usePortal}
+    >
+      {t("tools.usePortal")}
+    </button>
+  {/if}
+
   <!-- Snap is a scene-document write (`/engine/snapToGrid`), i.e. authoring: GM-only. -->
   {#if isGm && activeScene}
     <button
@@ -507,6 +815,53 @@
       {t("tools.snap")}
     </button>
   {/if}
+
+  <!-- Snap MODE (center, vertex or edge) steers only this client's own tool clicks, so it is
+       client-local session state (`ctx.snapModePreference`), not a scene-document write;
+       GM-only like the snap toggle beside it. -->
+  {#if isGm && activeScene}
+    <button
+      type="button"
+      class="tool"
+      aria-pressed={ctx.snapModePreference.mode !== "center"}
+      data-testid="snap-mode-toggle"
+      title={t("tools.snapMode")}
+      onclick={toggleSnapMode}
+    >
+      {snapModeLabel(ctx.snapModePreference.mode)}
+    </button>
+  {/if}
+
+  <!-- The shared live ruler's toggle: client-local, per-user, OFF by default
+       (`ctx.shareRuler`). Shown beside the measure tool's own controls, where the measure tool is
+       active; never a document write. -->
+  {#if controller.active === "measure"}
+    <button
+      type="button"
+      class="tool"
+      aria-pressed={ctx.shareRuler.enabled}
+      aria-label={t("tools.shareRuler")}
+      data-testid="share-ruler-toggle"
+      title={t("tools.shareRuler")}
+      onclick={() => ctx.shareRuler.set(!ctx.shareRuler.enabled)}
+    >
+      {t("tools.shareRuler")}
+    </button>
+  {/if}
+
+  <!-- Camera shortcut for every role: centers on the average position of the viewer's own
+       tokens on the viewed scene; disabled while the viewer owns none there. -->
+  <button
+    type="button"
+    class="tool"
+    disabled={ownedTokens.length === 0}
+    aria-label={t("tools.panToOwnedTokens")}
+    data-testid="pan-to-owned"
+    title={t("tools.panToOwnedTokens")}
+    onclick={panToOwnedTokens}
+  >
+    {t("tools.panToOwnedTokens")}
+  </button>
 
   {#if canActAsSelected}
     <button
@@ -574,6 +929,43 @@
           {#each templateModes as m (m)}<option value={m}>{m}</option>{/each}
         </select>
         <input type="color" data-testid="template-color" aria-label={t("tools.color")} bind:value={controller.templateColor} />
+        {#if controller.templateMode === "cone"}
+          <!-- Cone full aperture, degrees; empty persists an absent `shape.angle` (the render
+               layer's own DEFAULT_CONE_ANGLE_DEGREES). `min`/`max` bound the authorable range to
+               `TemplateEngine::validate`'s own EXCLUSIVE `(0.0, 180.0)` — `conePoints`' 3-point
+               wedge is collinear at 180° and opens away from `direction` past it. These native
+               attributes are advisory only (they neither clamp a typed value nor block `change`);
+               `isValidTemplateAngle` in the controller is the real gate at dispatch time. -->
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            max="179.9"
+            data-testid="template-angle"
+            aria-label={t("tools.templateAngle")}
+            value={controller.templateAngle ?? ""}
+            onchange={(e) => {
+              const parsed = parseElevation(e.currentTarget.value);
+              if (parsed !== undefined) controller.templateAngle = parsed;
+            }}
+          />
+        {/if}
+        {#if controller.templateMode === "line" || controller.templateMode === "rect"}
+          <!-- A line's thickness, or a rect's second dimension alongside `size`; empty persists
+               an absent `shape.width` (zero-width line / forced-square rect). -->
+          <input
+            type="number"
+            step="1"
+            min="0"
+            data-testid="template-width"
+            aria-label={t("tools.templateWidth")}
+            value={controller.templateWidth ?? ""}
+            onchange={(e) => {
+              const parsed = parseElevation(e.currentTarget.value);
+              if (parsed !== undefined) controller.templateWidth = parsed;
+            }}
+          />
+        {/if}
       </div>
     {:else if controller.active === "region"}
       <div class="controls">
@@ -584,10 +976,79 @@
           {#each regionBehaviors as b (b)}<option value={b}>{b}</option>{/each}
         </select>
         <input type="number" data-testid="region-cost" aria-label={t("tools.cost")} min="1" step="0.5" bind:value={controller.regionCost} disabled={controller.regionBehavior !== "terrain"} />
+        {#if controller.regionBehavior === "terrain"}
+          <!-- Per-movement-tag cost overrides: the flat `regionCost` above stays the fallback
+               for a mover whose tags match none of these rows. -->
+          {#each controller.regionCostByTag as row, i (i)}
+            <div class="trigger-row" data-testid="region-cost-by-tag-row">
+              <input
+                data-testid="region-cost-by-tag-tag"
+                aria-label={t("tools.regionCostByTag")}
+                bind:value={row.tag}
+              />
+              <input
+                type="number"
+                data-testid="region-cost-by-tag-cost"
+                aria-label={t("tools.cost")}
+                min="1"
+                step="0.5"
+                bind:value={row.cost}
+              />
+              <button
+                type="button"
+                data-testid="region-cost-by-tag-remove"
+                aria-label={t("tools.removeTagCost")}
+                title={t("tools.removeTagCost")}
+                onclick={() => controller.regionCostByTag.splice(i, 1)}
+              >×</button>
+            </div>
+          {/each}
+          <button type="button" data-testid="region-cost-by-tag-add" onclick={addRegionCostByTagRow}>{t("tools.addTagCost")}</button>
+        {/if}
+        {#if controller.regionBehavior === "ambient_light"}
+          <select data-testid="region-ambient-mode" aria-label={t("tools.regionAmbientLight")} bind:value={controller.regionAmbientMode}>
+            {#each ambientLightModes as m (m)}<option value={m}>{m === "darken" ? t("tools.ambientDarken") : m === "brighten" ? t("tools.ambientBrighten") : t("tools.ambientOverride")}</option>{/each}
+          </select>
+          <input type="number" data-testid="region-ambient-level" aria-label={t("tools.ambientLevel")} min="0" max={controller.regionAmbientMode === "override" ? 1 : undefined} step="0.05" bind:value={controller.regionAmbientLevel} />
+        {/if}
+        <label>
+          <input type="checkbox" data-testid="region-occludes-sight" bind:checked={controller.regionOccludesSight} />
+          {t("tools.regionOccludesSight")}
+        </label>
+        <label>
+          <input type="checkbox" data-testid="region-occludes-light" bind:checked={controller.regionOccludesLight} />
+          {t("tools.regionOccludesLight")}
+        </label>
+        <label>
+          <input type="checkbox" data-testid="region-occludes-sound" bind:checked={controller.regionOccludesSound} />
+          {t("tools.regionOccludesSound")}
+        </label>
         <label>
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
+        <button type="button" data-testid="region-part-add" onclick={toggleRegionCompound}>{t("tools.regionPartAdd")}</button>
+        {#if controller.regionCompound || controller.regionParts.length > 0}
+          <!-- The compound part-list gesture: each row is one staged drag (additive unless its
+               hole checkbox is set); nothing exists as a document until commit folds the
+               whole list into ONE compound region. -->
+          {#each controller.regionParts as part, i (i)}
+            <div class="trigger-row">
+              <span data-testid="region-part-kind">{t(`tools.regionPartKind.${part.shape.kind}`)}</span>
+              <label>
+                <input type="checkbox" data-testid="region-part-hole" checked={part.hole} onchange={(e) => controller.setRegionPartHole(i, e.currentTarget.checked)} />
+                {t("tools.regionPartHole")}
+              </label>
+              <button type="button" data-testid="region-part-remove" aria-label={t("tools.regionPartRemove")} title={t("tools.regionPartRemove")} onclick={() => controller.removeRegionPartAt(i)}>×</button>
+            </div>
+          {/each}
+          <button
+            type="button"
+            data-testid="region-create-commit"
+            disabled={controller.regionParts.length === 0}
+            onclick={() => controller.commitRegionParts()}
+          >{t("tools.regionCreateCommit")}</button>
+        {/if}
         {#each controller.regionTriggers as trig, i (i)}
           <div class="trigger-row">
             <select data-testid="region-trigger-on" aria-label={t("tools.triggerOn")} bind:value={trig.on}>
@@ -596,7 +1057,7 @@
             <select
               data-testid="region-trigger-effect"
               aria-label={t("tools.triggerEffect")}
-              value={trig.effect.type}
+              value={trig.effect.type === "portal_choice" ? "teleport" : trig.effect.type}
               onchange={(e) => setRegionTriggerEffectType(trig, e.currentTarget.value)}
             >
               {#each triggerEffectTypes as et (et)}<option value={et}>{et}</option>{/each}
@@ -616,14 +1077,22 @@
               <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
                 {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
               </select>
-            {:else if trig.effect.type === "teleport"}
-              <RegionTriggerTeleportEditor bind:target={trig.effect.target} row={i} {controller} />
+            {:else if trig.effect.type === "teleport" || trig.effect.type === "portal_choice"}
+              <RegionTriggerTeleportEditor bind:effect={trig.effect} row={i} {controller} />
+            {:else if trig.effect.type === "scrolling_text"}
+              <input
+                data-testid="region-trigger-scrolling-text"
+                aria-label={t("tools.triggerScrollingText")}
+                bind:value={trig.effect.text}
+              />
+              <span class="hint" data-testid="region-trigger-scrolling-text-hint">{t("tools.triggerScrollingTextHint", { max: MAX_OVERLAY_DISPLAY_CHARS })}</span>
             {/if}
             <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
           </div>
         {/each}
         <button type="button" data-testid="region-trigger-add" onclick={addRegionTrigger}>{t("tools.addTrigger")}</button>
       </div>
+      <DormantRegionList {controller} />
     {/if}
 
     <!-- Every entity editor below keys off the shared editing selection, not the active tool:
@@ -686,6 +1155,129 @@
           />
           {t("tools.blocksLight")}
         </label>
+        <!-- `blocksSound` absent = inherits the wall's door-resolved blocksSight server-side
+             (`WallEngine::effective_flags`); the checkbox authors an explicit override only. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-sound"
+            checked={wallBlocksSound(eng)}
+            onchange={(e) => editSelected("/engine/blocksSound", eng.blocksSound ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksSound")}
+        </label>
+        <!-- One-way walls: `direction` carries the sign naming the SOLID side of the segment
+             (`WallDirection.blockingSide`, ±1 — the cross-product convention is documented on
+             that type). The checkbox writes `{ blockingSide: 1 }` / removes the field; the flip
+             button negates the stored sign. Sight and movement only — light/sound stay
+             symmetric. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-one-way"
+            checked={eng.direction != null}
+            onchange={(e) =>
+              editSelected("/engine/direction", eng.direction ?? null, e.currentTarget.checked ? { blockingSide: 1 } : null)}
+          />
+          {t("tools.wallOneWay")}
+        </label>
+        {#if eng.direction}
+          <button
+            type="button"
+            class="tool"
+            data-testid="wall-flip-side"
+            onclick={() =>
+              editSelected("/engine/direction", eng.direction ?? null, { blockingSide: -(eng.direction?.blockingSide ?? 1) })}
+          >
+            {t("tools.wallFlipSide")}
+          </button>
+        {/if}
+        <!-- `sightTier: "limited"`: a sight ray may cross this one wall and stops at the next
+             crossing ("see through one such wall, not two"). Sight only. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-limited"
+            checked={eng.sightTier === "limited"}
+            onchange={(e) =>
+              editSelected("/engine/sightTier", eng.sightTier ?? null, e.currentTarget.checked ? "limited" : null)}
+          />
+          {t("tools.wallLimited")}
+        </label>
+        <!-- `proximity`: the wall is absent for a sight ray, light or sound whose origin lies
+             within `within` cells of it. The last remaining sense cannot be unchecked (a tier
+             names at least one sense); the toggle removes the tier. The gain slider exists only
+             with the sound sense (`soundGain` is rejected without it). -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-proximity"
+            checked={eng.proximity != null}
+            onchange={(e) =>
+              editProximity(e.currentTarget.checked ? { within: 1, senses: ["sight"], soundGain: null } : null)}
+          />
+          {t("tools.wallProximity")}
+        </label>
+        {#if eng.proximity}
+          {@const tier = eng.proximity}
+          <label>
+            {t("tools.wallProximityWithin")}
+            <input
+              type="number"
+              min="0"
+              max={MAX_PROXIMITY_CELLS}
+              step="0.5"
+              data-testid="wall-proximity-within"
+              value={tier.within}
+              onchange={(e) => editProximityWithin(tier, e.currentTarget)}
+            />
+          </label>
+          {#each PROXIMITY_SENSES as sense (sense)}
+            <label>
+              <input
+                type="checkbox"
+                data-testid={`wall-proximity-${sense}`}
+                checked={tier.senses.includes(sense)}
+                disabled={tier.senses.length === 1 && tier.senses.includes(sense)}
+                onchange={(e) => editProximitySense(tier, sense, e.currentTarget.checked)}
+              />
+              {t(`tools.wallProximity.${sense}`)}
+            </label>
+          {/each}
+          {#if tier.senses.includes("sound")}
+            <label>
+              {t("tools.wallProximityGain")}
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                data-testid="wall-proximity-gain"
+                value={tier.soundGain ?? 1}
+                onchange={(e) => editProximity({ ...tier, soundGain: Number(e.currentTarget.value) })}
+              />
+            </label>
+          {/if}
+        {/if}
+        <!-- The door state: `none` (an ordinary wall — writes `null`, removing the door) or
+             `closed`/`open`/`locked`. This select is the GM's authoring surface (and the ONLY
+             way onto or off `locked`); the player-facing flip is the select tool's
+             click-to-toggle (`toggleDoorAt`), which never routes through this editor. -->
+        <label>
+          {t("tools.doorToggle")}
+          <select
+            data-testid="wall-door"
+            aria-label={t("tools.doorToggle")}
+            value={eng.door ?? "none"}
+            onchange={(e) =>
+              editSelected("/engine/door", eng.door ?? null, e.currentTarget.value === "none" ? null : e.currentTarget.value)}
+          >
+            <option value="none">—</option>
+            <option value="closed">{t("tools.doorState.closed")}</option>
+            <option value="open">{t("tools.doorState.open")}</option>
+            <option value="locked">{t("tools.doorState.locked")}</option>
+          </select>
+        </label>
         <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
              unbounded (stored as an absent band, which occludes every elevation). -->
         <label>
@@ -735,6 +1327,53 @@
             onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
+        {#each OCCLUDE_SENSES as sense (sense)}
+          <label>
+            <input
+              type="checkbox"
+              data-testid={`region-editor-occludes-${sense}`}
+              checked={eng.occludes?.[sense] ?? false}
+              onchange={(e) => editRegionOcclusion(eng, sense, e.currentTarget.checked)}
+            />
+            {t(OCCLUDE_LABEL[sense])}
+          </label>
+        {/each}
+        <!-- Attach the region to a token on this scene. Picking a token or ticking a flag
+             re-expresses the stored shape so the region does not move on the canvas. A list
+             (not a pointer gesture) so it works on touch. -->
+        <label>
+          {t("tools.regionFollowToken")}
+          <select
+            data-testid="region-follow-token"
+            value={eng.anchor?.token ?? ""}
+            onchange={(e) => editRegionAnchor(eng, e.currentTarget.value, {})}
+          >
+            <option value="">{t("tools.regionFollowNone")}</option>
+            {#each regionCarrierOptions(editingDoc) as opt (opt.id)}
+              <option value={opt.id}>{opt.label}</option>
+            {/each}
+          </select>
+        </label>
+        {#if eng.anchor}
+          <label>
+            <input
+              type="checkbox"
+              data-testid="region-follow-include-carrier"
+              checked={eng.anchor.include_carrier}
+              onchange={(e) => editRegionAnchor(eng, undefined, { include_carrier: e.currentTarget.checked })}
+            />
+            {t("tools.regionFollowIncludeCarrier")}
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              data-testid="region-follow-rotation"
+              checked={eng.anchor.follow_rotation}
+              onchange={(e) => editRegionAnchor(eng, undefined, { follow_rotation: e.currentTarget.checked })}
+            />
+            {t("tools.regionFollowRotation")}
+          </label>
+        {/if}
         <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {:else if editingDoc && controller.editingEntity?.kind === "drawing"}
@@ -787,6 +1426,21 @@
             onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
+        <!-- Conversion needs both create (region) and delete (template) rights; a shape with no
+             region equivalent shows its reason as text, since a tooltip is unreachable on touch. -->
+        {#if ctx.canCreate("region") && ctx.canDelete(editingDoc)}
+          {@const conversion = templateToRegionShape(eng.shape)}
+          <button
+            type="button"
+            class="tool"
+            data-testid="template-make-region"
+            disabled={!conversion.ok}
+            onclick={() => controller.convertTemplateToRegion(editingDoc)}
+          >{t("tools.templateMakeRegion")}</button>
+          {#if !conversion.ok}
+            <span data-testid="template-make-region-reason">{t(conversion.reason === "zero_width_line" ? "tools.templateMakeRegionZeroWidth" : "tools.templateMakeRegionUnknownShape")}</span>
+          {/if}
+        {/if}
         <button type="button" class="tool" data-testid="template-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
@@ -840,8 +1494,28 @@
       min-height: var(--input-height-coarse);
     }
   }
+  /* Every button in the active tool's controls (add and remove rows included) meets the touch
+   * target floor; the remove buttons carry a single glyph and would otherwise be narrow. */
+  .controls button {
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    box-sizing: border-box;
+  }
+  .hint {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
+    font-size: 0.85em;
+    color: var(--text-secondary);
+  }
+  /* The paused note is a direct child of the rail. A full-width basis would shrink every tool
+   * button in the compact row, so it takes its content width up to a readable cap and wraps there. */
+  .tool-rail > .hint {
+    flex: 0 0 auto;
+    max-width: 14rem;
+  }
   .trigger-row {
     display: flex;
+    flex-wrap: wrap;
     flex-direction: row;
     gap: var(--space-1);
     align-items: center;
@@ -875,6 +1549,12 @@
     flex-wrap: nowrap;
     align-items: center;
     overflow-x: auto;
+  }
+  /* A tool button in the scrolling strip keeps its whole label on one line at its natural width;
+   * shrinking it would cut the label, and the strip scrolls instead. */
+  .tool-rail.compact > .tool {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
   .tool-rail.compact .controls {
     flex-direction: row;

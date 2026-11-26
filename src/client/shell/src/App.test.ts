@@ -39,7 +39,7 @@ test("auto-enters the saved lastWorld on load", async () => {
   // opens, so the session stays "connecting" and the Table shows "Connecting…".
   vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "w1" }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: "w1" }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
   render(App);
@@ -49,7 +49,7 @@ test("auto-enters the saved lastWorld on load", async () => {
 
 test("falls back to entry when the saved lastWorld is no longer accessible", async () => {
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "gone" }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: "gone" }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "listWorlds").mockResolvedValue([]); // "gone" not present
   render(App);
@@ -81,7 +81,7 @@ test("reload on a valid world route enters THAT world, not a different valid las
   window.dispatchEvent(new HashChangeEvent("hashchange"));
   const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "last-world" }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: "last-world" }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "listWorlds").mockResolvedValue([
     { id: "route-world", name: "Route World", role: "gm" },
@@ -120,7 +120,7 @@ test("boot gives up at the deadline and a late-resolving fetch afterward is a no
     const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
     vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
     vi.spyOn(api, "getUiState").mockResolvedValue({
-      global: { locale: "en", lastWorld: "w1" },
+      modules: {}, global: { locale: "en", lastWorld: "w1" },
       worlds: {},
     });
     vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -152,7 +152,7 @@ test("boot prunes a stored world absent from the fetched worlds list", async () 
   vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: "w1" },
+    modules: {}, global: { locale: "en", lastWorld: "w1" },
     worlds: { w1: { panelLayout: { version: 1 } }, stale: { chatRead: { general: 1 } } },
   });
   vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -169,7 +169,7 @@ test("a hash change during the listWorlds await is honored, not the route captur
   window.dispatchEvent(new HashChangeEvent("hashchange"));
   const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: null }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   let resolveWorlds!: (worlds: WorldEntry[]) => void;
   vi.spyOn(api, "listWorlds").mockReturnValue(
@@ -194,7 +194,7 @@ test("a hash change during the listWorlds await is honored, not the route captur
 test("a reject's detail renders as a literal text node, never markup", async () => {
   vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "w1" }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: "w1" }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
   const { activeNotifications } = await import("@shadowcat/ui-kit");
@@ -216,4 +216,25 @@ test("a reject's detail renders as a literal text node, never markup", async () 
   // literally rather than being parsed.
   expect(notice?.message).toContain("<b>evil</b>");
   vi.unstubAllGlobals();
+});
+
+test("a failed first read of the TLS status is retried, so TLS-dependent messages do not stay silent", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api, "getMe").mockResolvedValue(null);
+    const tls = { enabled: true, source: "self-signed" as const, https_origins: [], alpn: ["h2"] };
+    const read = vi
+      .spyOn(api, "getTlsStatus")
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue(tls);
+    render(App);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read, "no further reads once it has succeeded").toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });

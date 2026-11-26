@@ -17,8 +17,9 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
+use axum::Extension;
 use futures_util::stream::StreamExt;
-use futures_util::{Sink, SinkExt};
+use futures_util::{Sink, SinkExt, Stream};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -32,8 +33,11 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
-use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
+use crate::ws::bounded_sink::CLOSE_SEND_TIMEOUT;
+use crate::ws::protocol::{ClientMsg, PathErrorReason, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
+use crate::ws::ruler::{canonical, origin_admissible, points_admissible, RULER_RATE_PER_MIN};
+use crate::ws::scene_broadcast_permitted;
 use crate::ws::time::now_millis;
 use crate::ws::MESSAGE_RATE_PER_MIN;
 
@@ -218,8 +222,13 @@ fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
-/// // `router` wires this handler at `GET /ws` (see `http::router`'s own example).
+/// // `router` wires this handler at `GET /ws` (HTTP/1.1 upgrade) and `CONNECT /ws` (RFC 8441,
+/// // WebSockets over HTTP/2); see `http::router`'s own example.
 /// // A real socket is required: `WebSocketUpgrade` extraction needs hyper's
 /// // actual upgrade machinery, absent from the in-process mock transport.
 /// let server = axum_test::TestServer::builder()
@@ -245,20 +254,41 @@ pub async fn ws_handler(
     user: AuthUser,
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
+    lease: Option<Extension<crate::http::conn_serve::ConnLease>>,
+    tunnel: Option<Extension<crate::http::conn_serve::TunnelProbe>>,
 ) -> Response {
+    // The connection's lease (absent when the router is not served through
+    // `http::conn_serve::serve_router`) moves into the session task: hyper runs an HTTP/2
+    // WebSocket as a detached upgrade, so this lease is the only thing that keeps the
+    // connection counted as busy (HTTP/2 idle bound) and its cap slot held while the session
+    // lives.
+    let lease = lease.map(|Extension(l)| l);
+    // The session's own HTTP/2 stream (absent over HTTP/1): lets the sink see how far ahead of the
+    // wire the session is, which hyper's tunnel task never reports.
+    let tunnel = tunnel.map(|Extension(t)| t);
     // Acquired HERE, synchronously, still within the HTTP request cycle hyper's own
     // graceful-shutdown accounting tracks — never inside the task `on_upgrade` spawns. That
     // task starts running strictly AFTER the 101 response is written, so if the guard were
-    // taken there instead, `WsState::live_connection_count` could read zero, `axum::serve`
-    // could resolve, and `wait_for_drain` could return, all before the spawned task has run
-    // its first line — the exact drain-accounting gap this ordering closes. Moved into the
-    // upgrade closure so `handle_socket` holds it for the connection's whole lifetime;
-    // `handle_socket` must never acquire a second one.
+    // taken there instead, `WsState::live_connection_count` could read zero and
+    // `WsState::wait_for_drain` could return before the spawned task has run its first line —
+    // the exact drain-accounting gap this ordering closes. Moved into the upgrade closure so
+    // `handle_socket` holds it for the connection's whole lifetime; `handle_socket` must never
+    // acquire a second one.
     let connection_guard = state.ws.connection_guard();
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
-            handle_socket(socket, state, user.id, user.role, q.world, connection_guard)
+        .on_upgrade(move |socket| async move {
+            let _lease = lease;
+            handle_socket(
+                socket,
+                state,
+                user.id,
+                user.role,
+                q.world,
+                connection_guard,
+                tunnel,
+            )
+            .await
         })
 }
 
@@ -319,6 +349,140 @@ where
     sink.send(text(&out)).await.map_err(|_| ())
 }
 
+/// Sends a Close frame, giving up after `CLOSE_SEND_TIMEOUT`. The result is ignored by every
+/// caller: the session is ending either way.
+async fn send_close<S>(sink: &mut S)
+where
+    S: Sink<Message> + Unpin,
+{
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, sink.send(Message::Close(None))).await;
+}
+
+/// Sends one error frame and then a Close frame. Every send is bounded by the sink
+/// (`BoundedSink`), so a peer that is not reading cannot hold the session task here. A failed
+/// error send ends the refusal without a Close: a send fails only when the peer stopped reading
+/// or the socket is dead, and the Close would wait on the same condition, so once shutdown is
+/// signalled the whole refusal stays inside one `CLOSE_SEND_TIMEOUT`.
+async fn reject_join<S>(sink: &mut S, code: WsErrorCode, message: &str)
+where
+    S: Sink<Message> + Unpin,
+{
+    let sent = sink
+        .send(text(&ServerMsg::Error {
+            code,
+            message: message.into(),
+        }))
+        .await;
+    if sent.is_err() {
+        return;
+    }
+    send_close(sink).await;
+}
+
+/// The refusal frame a `DataError` from the join path maps to, as `(code, message)`.
+///
+/// Only a real `Forbidden` (a non-member) reads as a membership refusal, which the client treats
+/// as terminal; every other error (a database or serialization failure) is `Internal`, which the
+/// client treats as transient and retries. This function never produces `WorldNotFound`: that
+/// answer has one source, `RoomRegistry::get_or_create`'s `Ok(None)`, which `handle_socket`
+/// replies to itself.
+fn join_refusal(e: &crate::data::DataError) -> (WsErrorCode, &'static str) {
+    match e {
+        crate::data::DataError::Forbidden => (WsErrorCode::Forbidden, "not a member of this world"),
+        _ => (WsErrorCode::Internal, "internal"),
+    }
+}
+
+/// Reads and discards inbound frames until the peer's Close or the end of the stream. A refused
+/// client has already sent its `hello`; closing a TCP socket that still holds unread data makes
+/// the OS reset the connection, which discards the refusal frame still in flight to the peer.
+/// Draining first lets the Close handshake finish.
+///
+/// Two bounds end the wait: `CLOSE_SEND_TIMEOUT` from the start (a silent peer), and the shutdown
+/// signal (`shutdown` set, now or later), which ends it at once. Once sessions are told to close,
+/// the server is going away and the drain only spares the peer a connection reset, so it must not
+/// add a wait after the refusal's own bounded sends.
+async fn drain_inbound<R>(stream: &mut R, mut shutdown: tokio::sync::watch::Receiver<bool>)
+where
+    R: Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    let read_to_close = async {
+        while let Some(Ok(frame)) = stream.next().await {
+            if matches!(frame, Message::Close(_)) {
+                break;
+            }
+        }
+    };
+    let signalled = async {
+        let _ = shutdown.wait_for(|set| *set).await;
+    };
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, async {
+        tokio::select! {
+            () = read_to_close => {}
+            () = signalled => {}
+        }
+    })
+    .await;
+}
+
+/// Sends the `(code, message)` refusal frame and a Close through `sink` (`reject_join`), then
+/// drains the peer's inbound frames from `stream` (`drain_inbound`). The sink and the stream are
+/// the two halves of one socket; the caller drops them after this returns.
+async fn refuse_streams<S, R>(
+    sink: &mut S,
+    stream: &mut R,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    code: WsErrorCode,
+    message: &str,
+) where
+    S: Sink<Message> + Unpin,
+    R: Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    reject_join(sink, code, message).await;
+    drain_inbound(stream, shutdown).await;
+}
+
+/// Refuses a join on `socket`: splits it, bounds the sink (`WsState::bounded_sink`) and refuses
+/// through the halves (`refuse_streams`) before the socket drops.
+async fn refuse_socket(
+    state: &AppState,
+    socket: WebSocket,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
+    code: WsErrorCode,
+    message: &str,
+) {
+    let (sink, mut stream) = socket.split();
+    let mut sink = state.ws.bounded_sink(sink, &state.config, tunnel);
+    refuse_streams(
+        &mut sink,
+        &mut stream,
+        state.ws.shutdown.clone(),
+        code,
+        message,
+    )
+    .await;
+}
+
+/// Maps a join-path `DataError` through `join_refusal`, logs it (a membership refusal at info,
+/// anything else at warn with the error), replies with the refusal frame and a Close, and drains
+/// the peer's inbound frames before the socket drops (`refuse_socket`).
+async fn refuse_join(
+    state: &AppState,
+    socket: WebSocket,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
+    world_id: Uuid,
+    user_id: Uuid,
+    e: &crate::data::DataError,
+) {
+    let (code, message) = join_refusal(e);
+    if code == WsErrorCode::Forbidden {
+        tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
+    } else {
+        tracing::warn!(world = %world_id, user = %user_id, error = %e, "ws join failed");
+    }
+    refuse_socket(state, socket, tunnel, code, message).await;
+}
+
 /// Send a non-`Event` broadcast frame unchanged. `MoveStream` must never reach here — it
 /// requires per-recipient clipping in the egress loop (`clip_move_stream`); this guard catches a
 /// future routing regression at test time.
@@ -371,6 +535,7 @@ async fn handle_socket(
     user_role: ServerRole,
     world_id: Uuid,
     _connection_guard: crate::ws::ConnectionGuard,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
 ) {
     // Held for this whole task's lifetime (every `return` path below drops it, including a
     // panic unwind): this is what makes this connection observable to
@@ -379,27 +544,22 @@ async fn handle_socket(
     // `ws_handler`'s own doc for why acquiring it in here instead would leave a window where
     // `wait_for_drain` can return before this task has run its first line.
     let repo = state.repo.clone();
+    let shutdown = state.ws.shutdown.clone();
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::WorldNotFound,
-                    message: "world not found".into(),
-                }))
-                .await;
-            let _ = s.send(Message::Close(None)).await;
+            refuse_socket(
+                &state,
+                socket,
+                tunnel,
+                WsErrorCode::WorldNotFound,
+                "world not found",
+            )
+            .await;
             return;
         }
-        Err(_) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::Internal,
-                    message: "internal".into(),
-                }))
-                .await;
+        Err(e) => {
+            refuse_join(&state, socket, tunnel, world_id, user_id, &e).await;
             return;
         }
     };
@@ -409,16 +569,8 @@ async fn handle_socket(
     // filters every outgoing frame for the rest of the connection.
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
-        Err(_) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::Forbidden,
-                    message: "not a member of this world".into(),
-                }))
-                .await;
-            let _ = s.send(Message::Close(None)).await;
-            tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
+        Err(e) => {
+            refuse_join(&state, socket, tunnel, world_id, user_id, &e).await;
             return;
         }
     };
@@ -433,6 +585,13 @@ async fn handle_socket(
     room.stats.connections.fetch_add(1, Ordering::AcqRel);
     tracing::info!(world = %world_id, user = %user_id, "ws connected");
     let (rx, current_seq) = room.subscribe();
+    // Subscribed before the announce so the opening connection receives its own online frame.
+    if room.presence_connect(user_id) {
+        room.broadcast_aux(ServerMsg::Presence {
+            user: user_id,
+            online: true,
+        });
+    }
     let (sink, mut stream) = socket.split();
     let (etx, erx) = mpsc::channel::<Egress>(64);
 
@@ -442,7 +601,6 @@ async fn handle_socket(
     let egress_repo = repo.clone();
     let modules_dir = state.config.modules_path();
     let module_scan_cache = state.ws.module_scan_cache.clone();
-    let shutdown = state.ws.shutdown.clone();
     // Seeded at connect time, not the epoch: a freshly-opened connection must not read as
     // already-silent before its first inbound frame has had a chance to arrive. `std::time::
     // Instant`, never `SystemTime`/`now_millis` — a wall-clock step (an NTP correction, a
@@ -452,7 +610,7 @@ async fn handle_socket(
     let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let egress_last_activity = last_activity.clone();
     let mut egress = tokio::spawn(egress_loop(
-        sink,
+        state.ws.bounded_sink(sink, &state.config, tunnel),
         rx,
         erx,
         EgressConnState {
@@ -481,8 +639,11 @@ async fn handle_socket(
     // Per-user VFX one-shot budget (shared across this user's connections) — a SEPARATE
     // bucket from ping/emote/message, so a VFX burst cannot starve any other relay.
     let vfx_rate = state.ws.vfx_rate.clone();
-    // Link-preview fetch client/cache/budget (shared across all connections
-    // and worlds — a preview's target and cached outcome are world-independent).
+    // Per-user shared-ruler budget (shared across this user's connections) — its own bucket, so
+    // a live ruler drag cannot starve any other relay and vice versa.
+    let ruler_rate = state.ws.ruler_rate.clone();
+    // Link-preview fetch client and budget (shared across all connections and worlds) and the
+    // outcome cache (keyed by world and URL).
     let preview_client = state.ws.link_preview_client.clone();
     let preview_cache = state.ws.link_preview_cache.clone();
     let preview_rate = state.ws.preview_rate.clone();
@@ -502,7 +663,23 @@ async fn handle_socket(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                         match frame {
-                            Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                            Message::Text(t) => {
+                                let parsed = client_frame::parse_client_msg(t.as_str());
+                                // A paused session refuses a non-GM's move request, accepting
+                                // portal choice and combat intents here, before any handler
+                                // resolves them, so one rule (`session_pause::blocks_msg`)
+                                // decides for all of them.
+                                if let Ok(m) = &parsed {
+                                    if let Some(f) =
+                                        crate::ws::session_pause::msg_refusal(&room, &ctx, m).await
+                                    {
+                                        if etx.send(Egress::Frame(f)).await.is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
+                                match parsed {
                                 Ok(ClientMsg::Intent { intent_id, ops }) => {
                                     // Structural admission chokepoint for `MAX_INTENT_DOCS`:
                                     // `WS_MAX_MESSAGE_BYTES` derives the frame-size cap FROM
@@ -541,6 +718,20 @@ async fn handle_socket(
                                                 detail: None,
                                             })))
                                             .await;
+                                        continue;
+                                    }
+                                    // A paused session refuses a non-GM's token position write or
+                                    // combat-document write with `RejectReason::Paused`.
+                                    if let Some(f) = crate::ws::session_pause::intent_refusal(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        intent_id,
+                                        &ops,
+                                    )
+                                    .await
+                                    {
+                                        let _ = etx.send(Egress::Frame(f)).await;
                                         continue;
                                     }
                                     // Success is confirmed by the broadcast echo of the
@@ -660,7 +851,7 @@ async fn handle_socket(
                                     // drop silently — no error frame, so a non-reader never learns
                                     // whether `scene` exists.
                                     if ping_rate.check(user_id, now_millis(), 30)
-                                        && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
+                                        && scene_broadcast_permitted(scene, &ctx, world_id, repo.as_ref())
                                             .await
                                     {
                                         room.broadcast_aux(ServerMsg::ScenePing {
@@ -694,6 +885,55 @@ async fn handle_socket(
                                             user: user_id,
                                             emote,
                                         });
+                                    }
+                                }
+                                Ok(ClientMsg::RulerUpdate { scene, points, active, origin }) => {
+                                    // Out-of-band relay, same shape as `ScenePing` (silent drop on
+                                    // any denial — no error frame, so a non-reader never learns
+                                    // whether `scene` exists). Guard order: cheap rate check first
+                                    // (its own bucket), then the payload bounds (no I/O), then the
+                                    // authz lookup (one doc read per admitted frame). The sender is
+                                    // server-stamped; every connection in the room receives the
+                                    // frame in its `canonical` form (no `egress_loop` arm), the
+                                    // sender's own included, and `origin` lets the originating
+                                    // client drop it. An over-cap `points` list or a non-finite
+                                    // coordinate never reaches this arm: it fails to deserialize
+                                    // and takes the generic `BadMessage` reply.
+                                    if ruler_rate.check(user_id, now_millis(), RULER_RATE_PER_MIN)
+                                        && points_admissible(&points)
+                                        && origin_admissible(&origin)
+                                        && scene_broadcast_permitted(scene, &ctx, world_id, repo.as_ref())
+                                            .await
+                                    {
+                                        let (points, active) = canonical(points, active);
+                                        room.broadcast_aux(ServerMsg::Ruler {
+                                            from: user_id,
+                                            scene,
+                                            points,
+                                            active,
+                                            origin,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::ResetExploredFog { scene, user, level }) => {
+                                    // GM-only fog purge: on success no reply is sent to the
+                                    // requester's etx — the room broadcast (delivered to this
+                                    // connection too) is the confirmation, mirroring
+                                    // `handle_move_request`'s broadcast-not-requester shape.
+                                    if let Some(err_frame) = handle_reset_explored_fog(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        world_id,
+                                        scene,
+                                        user,
+                                        level,
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                                 Ok(ClientMsg::AudioTransport { op }) => {
@@ -753,7 +993,7 @@ async fn handle_socket(
                                         sound: sound.clone(),
                                         elevation,
                                     };
-                                    if vfx_rate.check(user_id, now_millis(), 30)
+                                    if vfx_rate.check(user_id, now_millis(), crate::ws::VFX_RATE_PER_MIN)
                                         && crate::ws::vfx::validate_bounds(&req)
                                         && crate::ws::vfx::vfx_permitted(scene, &ctx, world_id, repo.as_ref()).await
                                     {
@@ -795,7 +1035,104 @@ async fn handle_socket(
                                         }
                                     }
                                 }
-                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
+                                Ok(ClientMsg::ToggleDoor { request_id, scene_id, wall_id, to }) => {
+                                    // The door toggle's gate + commit live in `Room::toggle_door`
+                                    // (the `SceneEcs` read-guard scope every positional query
+                                    // needs). Reply shape mirrors `handle_move_request`:
+                                    // `None` on success (the broadcast Event echo of the wall's
+                                    // Update is the confirmation); a rejection is a correlated
+                                    // `DoorToggleError` to this connection only, never broadcast.
+                                    if let Some(err_frame) = handle_toggle_door(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        crate::ws::room::ToggleDoorInputs {
+                                            request_id,
+                                            scene_id,
+                                            wall_id,
+                                            to,
+                                            ts: now_millis(),
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::PlaceEffect { request_id, module, placement, scene_id, shape, caster }) => {
+                                    // The placement's authorization, area clamp and commit live in
+                                    // `Room::place_effect`. Reply shape mirrors `ToggleDoor`: `None`
+                                    // on success (the broadcast `Event` of the region Create is the
+                                    // confirmation); a rejection is a correlated `PlaceEffectError`
+                                    // to this connection only. Spends the shared per-user write
+                                    // budget before any module scan.
+                                    if let Some(err_frame) = handle_place_effect(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &state.config.modules_path(),
+                                        &state.ws.module_scan_cache,
+                                        &message_rate,
+                                        crate::ws::room::PlaceEffectInputs {
+                                            request_id,
+                                            module,
+                                            placement,
+                                            scene_id,
+                                            shape,
+                                            caster,
+                                            ts: now_millis(),
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::ChoosePortal { request_id, offer_id, choice }) => {
+                                    // The answer's validation + commit live in
+                                    // `Room::handle_choose_portal`; success is the broadcast
+                                    // `Event` of the teleport (a decline commits nothing). A
+                                    // refusal is a correlated `PortalChoiceError` to this
+                                    // connection only.
+                                    let outcome = match portal_rate_check(&message_rate, user_id) {
+                                        Ok(()) => {
+                                            room.handle_choose_portal(
+                                                repo.as_ref(),
+                                                &ctx,
+                                                offer_id,
+                                                choice,
+                                                now_millis(),
+                                            )
+                                            .await
+                                        }
+                                        Err(e) => Err(e),
+                                    };
+                                    if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::OpenPortal { request_id, token }) => {
+                                    // Success is the addressed `PortalOffer` broadcast.
+                                    let outcome = match portal_rate_check(&message_rate, user_id) {
+                                        Ok(()) => {
+                                            room.handle_open_portal(repo.as_ref(), &ctx, token, now_millis())
+                                                .await
+                                        }
+                                        Err(e) => Err(e),
+                                    };
+                                    if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience, system }) => {
                                     // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
                                     // the message doc, and publish. Success is confirmed by the broadcast
                                     // echo of the authored Event (like Intent). On rejection, a
@@ -820,6 +1157,7 @@ async fn handle_socket(
             content,
             actor_owner,
             audience,
+            system,
         )
                                     .await
                                     {
@@ -835,6 +1173,7 @@ async fn handle_socket(
                                                             retain_originals: state.config.retain_originals,
                                                             write_barrier: state.write_barrier.clone(),
                                                             preview_fetch_locks: state.preview_fetch_locks.clone(),
+                                                            trash: state.trash.clone(),
                                                         },
                                                         message_id,
                                                         world_id,
@@ -892,6 +1231,7 @@ async fn handle_socket(
                                                             retain_originals: state.config.retain_originals,
                                                             write_barrier: state.write_barrier.clone(),
                                                             preview_fetch_locks: state.preview_fetch_locks.clone(),
+                                                            trash: state.trash.clone(),
                                                         },
                                                         message_id,
                                                         world_id,
@@ -970,6 +1310,37 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::ReviseAudience {
+                                    request_id,
+                                    message_id,
+                                    audience,
+                                }) => {
+                                    // Same confirm-by-broadcast-echo shape as the other
+                                    // chat mutation frames; a rejection is surfaced to the
+                                    // sender only via a correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_revise_audience(
+                                        crate::chat::RecalcRollRequestCtx {
+                                            room: &room,
+                                            repo: repo.as_ref(),
+                                            ctx: &ctx,
+                                            rate: &message_rate,
+                                            now: now_millis(),
+                                            budget_per_min: MESSAGE_RATE_PER_MIN,
+                                        },
+                                        message_id,
+                                        audience,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "revise audience rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::DrawTable {
                                     request_id,
                                     table_id,
@@ -1016,6 +1387,7 @@ async fn handle_socket(
                                                             retain_originals: state.config.retain_originals,
                                                             write_barrier: state.write_barrier.clone(),
                                                             preview_fetch_locks: state.preview_fetch_locks.clone(),
+                                                            trash: state.trash.clone(),
                                                         },
                                                         message_id,
                                                         world_id,
@@ -1032,6 +1404,30 @@ async fn handle_socket(
                                             }))).await.is_err() {
                                                 break;
                                             }
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::PresentNote { request_id, note_id }) => {
+                                    // Out-of-band focus signal; success is the broadcast
+                                    // `PresentNote` echo, a refusal is a correlated `ChatError`
+                                    // to this connection only (same asymmetric reply protocol as
+                                    // SendMessage). Spends the shared `vfx_rate` bucket.
+                                    if let Err(e) = crate::notes::handle_present_note(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &vfx_rate,
+                                        note_id,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "present_note rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
                                         }
                                     }
                                 }
@@ -1112,6 +1508,7 @@ async fn handle_socket(
                                         })))
                                         .await;
                                 }
+                            }
                             },
                             Message::Close(_) => break,
                             _ => {}
@@ -1122,52 +1519,163 @@ async fn handle_socket(
 
     egress.abort();
     room.stats.connections.fetch_sub(1, Ordering::AcqRel);
+    if room.presence_disconnect(user_id) {
+        room.broadcast_aux(ServerMsg::Presence {
+            user: user_id,
+            online: false,
+        });
+    }
     state.ws.rooms.reap_if_empty(world_id);
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
 }
 
-/// Whether `ctx` may ping into `scene`: the doc must exist, be a `scene`, belong to THIS world,
-/// and grant the sender `cap::READ`. Admits a token-less spectator (READ on the scene is enough
-/// — deliberately weaker than `handle_pathfind`'s controls-a-token gate, which selects server
-/// state; ping selects none). Denial is a SILENT drop at the call site: any error frame or
-/// behavior split would leak scene existence to a non-reader.
-async fn scene_ping_permitted(
+/// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
+/// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
+/// same convention as `scene_broadcast_permitted`/`token_emote_permitted`.
+fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
+    ctx.world_role == crate::data::document::WorldRole::Gm
+}
+
+/// Whether `scene` may be targeted by `ClientMsg::ResetExploredFog`: the doc must exist, be a
+/// `"scene"` document, and belong to THIS room's world — mirrors `scene_broadcast_permitted`'s
+/// scene-ownership check (no `cap::READ` requirement: the caller is already known to be a GM,
+/// who has full authority over the world's own scenes).
+async fn reset_explored_fog_scene_ok(
     scene: Uuid,
-    ctx: &crate::data::membership::PermissionContext,
     world_id: Uuid,
     repo: &dyn crate::data::repository::Repository,
 ) -> bool {
     let Ok(Some(doc)) = repo.get_document(scene).await else {
         return false;
     };
-    if doc.doc_type != "scene" {
-        return false;
-    }
-    // World scope: a scene doc from another world is refused even for a member of both (the
-    // relay stamps THIS room).
-    if crate::data::document::world_of(&doc) != Some(world_id) {
-        return false;
-    }
-    let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
-        return false;
-    };
-    // A scene doc never carries an actor link, so the no-join resolution is
-    // exact — and fails closed if a non-scene doc ever reached here.
-    let access = crate::data::permission::resolve_access_world(
-        ctx.user_id,
-        ctx.world_role,
-        &doc,
-        &defaults.grants_for(&doc.doc_type),
-        crate::data::permission::effective_owner(&doc, None),
-    );
-    access.has(crate::data::permission::cap::READ)
+    doc.doc_type == "scene" && crate::data::document::world_of(&doc) == Some(world_id)
 }
 
-/// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
-/// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
-/// same convention as `scene_ping_permitted`/`token_emote_permitted`.
-fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
-    ctx.world_role == crate::data::document::WorldRole::Gm
+/// Resolve and apply a GM-only explored-fog reset (`ClientMsg::ResetExploredFog`). Refused with
+/// the same generic `ServerMsg::Error { code: Forbidden }` frame for a non-GM sender and for a
+/// scene absent from this world — mirroring the uniform-rejection shape every other GM-only
+/// intent uses, even though a GM's own action naming a scene in their own world discloses
+/// nothing new to them. **A `user`-scoped reset is additionally refused outright, with its own
+/// distinct `BadMessage` (never `Forbidden` — this is a semantic conflict with the scene's
+/// current mode, not an authorization failure) error, when the scene resolves to
+/// `FogPooling::Shared`.** Under Shared pooling there is only ONE explored memory for the whole
+/// scene — a per-user row is never read (`ws::conn::enrich_vision_explored`'s own key derivation
+/// never keys on `user` there), so `Repository::reset_explored_fog(scene, level, Some(user))`
+/// would match zero rows while this function still reported success and broadcast
+/// `ServerMsg::ExploredFogReset`, letting a GM believe they wiped one player's memory when they
+/// changed nothing. The alternative of silently remapping the requested `user` onto the pool
+/// sentinel is REJECTED on purpose: "reset this one player" wiping every player's shared memory
+/// is worse than refusing outright. The UNSCOPED path (`user: None`) is unaffected and stays
+/// exactly as it was — it already deletes every row for the scene regardless of `user_id`,
+/// which already includes the pool's own nil-sentinel row. The mode is resolved through the
+/// SAME `SceneEcs::resolve_scene` the live `\"vision\"` read path folds `fog_pooling` through
+/// (never a second way to learn a scene's mode) — this is GM-gated already (the check above),
+/// so the refusal discloses nothing a GM may not already know about their own scene. On success
+/// the matching `explored_fog` rows are deleted and `ServerMsg::ExploredFogReset` is broadcast
+/// out-of-band to the room via `Room::broadcast_aux` (no seq, mirrors `ScenePing`);
+/// `egress_loop`'s dedicated arm arms every connection's own debounced scene-channel re-eval on
+/// receipt, so the next `"vision"` push (for every affected connection, including the resetting
+/// GM's own) reflects the cleared rows.
+async fn handle_reset_explored_fog(
+    room: &crate::ws::room::Room,
+    repo: &SqliteRepository,
+    ctx: &crate::data::membership::PermissionContext,
+    world_id: Uuid,
+    scene: Uuid,
+    user: Option<Uuid>,
+    level: Option<String>,
+) -> Option<ServerMsg> {
+    let forbidden = ServerMsg::Error {
+        code: WsErrorCode::Forbidden,
+        message: "not authorized to reset explored fog".into(),
+    };
+    if ctx.world_role != crate::data::document::WorldRole::Gm {
+        return Some(forbidden);
+    }
+    if !reset_explored_fog_scene_ok(scene, world_id, repo).await {
+        return Some(forbidden);
+    }
+    if user.is_some() {
+        let pooling = room.scene().read().await.resolve_scene(scene).fog_pooling;
+        if pooling == crate::data::engine::FogPooling::Shared {
+            return Some(ServerMsg::Error {
+                code: WsErrorCode::BadMessage,
+                message: "cannot reset one player's explored fog on a shared-pooling scene; \
+                          reset the whole scene instead"
+                    .into(),
+            });
+        }
+    }
+    if repo
+        .reset_explored_fog(scene, level.as_deref(), user)
+        .await
+        .is_err()
+    {
+        return Some(ServerMsg::Error {
+            code: WsErrorCode::Internal,
+            message: "failed to reset explored fog".into(),
+        });
+    }
+    room.broadcast_aux(ServerMsg::ExploredFogReset { scene, user, level });
+    None
+}
+
+/// Whether `egress_loop` may deliver a `ServerMsg::ScrollingText { gm_only, .. }` frame to a
+/// connection holding `world_role`: `true` for every recipient when the frame is not `gm_only`,
+/// and `true` for a GM recipient regardless — `false` (drop, no error frame) only for a non-GM
+/// connection when `gm_only` is set. This is the exact secrecy-forcing decision
+/// `Room::apply_region_trigger_effects` computes `gm_only` FOR (a region not visible to every
+/// world member), enforced here per connection since the frame itself is a room-wide broadcast
+/// with no per-recipient document to filter through the ordinary redaction path. Extracted as a
+/// pure, I/O-free predicate (no `Room`/`Repository` access) so this decision is directly
+/// unit-testable, mirroring the intent behind `ServerMsg::Evicted`'s and `ServerMsg::MoveStream`'s
+/// own per-connection decisions in `egress_loop` without requiring a full connection/room fixture.
+fn scrolling_text_admitted(gm_only: bool, world_role: crate::data::document::WorldRole) -> bool {
+    !gm_only || world_role == crate::data::document::WorldRole::Gm
+}
+
+/// Whether `egress_loop` may deliver a `ServerMsg::PortalOffer` to a connection of `user_id`
+/// holding `world_role`: every GM, and — for an offer that is not `gm_only` — the token's
+/// effective `owner`. Anyone else never receives the frame, so a player who does not control the
+/// token cannot see the destinations, and a secret portal never reaches a non-GM. A pure
+/// predicate for the same reason `scrolling_text_admitted` is.
+fn portal_offer_admitted(
+    gm_only: bool,
+    owner: Option<Uuid>,
+    user_id: Uuid,
+    world_role: crate::data::document::WorldRole,
+) -> bool {
+    world_role == crate::data::document::WorldRole::Gm || (!gm_only && owner == Some(user_id))
+}
+
+/// Spends one hit of `user_id`'s shared write budget (`WsState::message_rate`) for a
+/// `ClientMsg::OpenPortal` or `ClientMsg::ChoosePortal`, before the request takes the world's
+/// `publish_guard`. Refuses with `PortalChoiceError::RateLimited` once the budget is spent, so a
+/// request loop cannot stall every other write in the world.
+fn portal_rate_check(
+    rate: &crate::ws::PingRateLimiter,
+    user_id: Uuid,
+) -> Result<(), crate::ws::room::PortalChoiceError> {
+    if rate.check(user_id, now_millis(), crate::ws::MESSAGE_RATE_PER_MIN) {
+        Ok(())
+    } else {
+        Err(crate::ws::room::PortalChoiceError::RateLimited)
+    }
+}
+
+/// The refusal frame for a portal request's outcome: `None` on success, else a correlated
+/// `PortalChoiceError` whose text is role-conditioned through `portal_choice_wire_message`
+/// (uniform for a non-GM).
+fn portal_error_frame(
+    request_id: Uuid,
+    outcome: Result<(), crate::ws::room::PortalChoiceError>,
+    ctx: &crate::data::membership::PermissionContext,
+) -> Option<ServerMsg> {
+    outcome.err().map(|e| ServerMsg::PortalChoiceError {
+        request_id,
+        message: crate::ws::room::portal_choice_wire_message(&e, ctx.world_role),
+        reason: None,
+    })
 }
 
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
@@ -1179,7 +1687,7 @@ const EMOTE_MAX_BYTES: usize = 16;
 /// scene ECS, parented to `scene`, and effectively owned by the sender (a GM is exempt from
 /// the ownership half, not the scene-membership half). Ownership routes through the SAME
 /// `token_effective_owner` rule `handle_pathfind`'s token gate and the write-authz path use —
-/// never a forked, looser test. Unlike `scene_ping_permitted` this reads the room's in-memory
+/// never a forked, looser test. Unlike `scene_broadcast_permitted` this reads the room's in-memory
 /// ECS (zero pool reads), and unlike ping a token-less member has NO standing here. Denial is
 /// a SILENT drop at the call site, so a non-owner never learns whether `token` exists.
 async fn token_emote_permitted(
@@ -1225,6 +1733,29 @@ struct PathfindRequest {
     token: Option<Uuid>,
 }
 
+/// Builds the `PathError` reply for `reason`, deriving the presentable text from the reason so the
+/// two cannot disagree.
+fn path_error(request_id: Uuid, reason: PathErrorReason) -> ServerMsg {
+    ServerMsg::PathError {
+        request_id,
+        message: reason.message().to_string(),
+        reason,
+    }
+}
+
+impl From<crate::scene::pathfinding::PathFail> for PathErrorReason {
+    /// The one mapping from a pathfinder failure to the wire reason: every `PathFail` reaches the
+    /// wire through it, so the presentable text and the typed reason cannot disagree.
+    fn from(fail: crate::scene::pathfinding::PathFail) -> Self {
+        use crate::scene::pathfinding::PathFail;
+        match fail {
+            PathFail::Invalid => PathErrorReason::Invalid,
+            PathFail::Unreachable => PathErrorReason::Unreachable,
+            PathFail::Exceeded => PathErrorReason::Exceeded,
+        }
+    }
+}
+
 /// Resolve and execute a one-shot grid pathfind request.
 ///
 /// INVARIANT (no-lock-across-await): the scene read guard is taken twice — once to read
@@ -1253,7 +1784,7 @@ async fn handle_pathfind(
         token,
     } = req;
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
-    // Step 0: non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
+    // The non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
     // document scan routed through `token_effective_owner`, so ownership is the same rule the
     // write-authz and vision paths enforce (per-token override, else the linked actor's owner) —
     // and it costs no raycast, which matters because `Pathfind` is unrate-limited and fires
@@ -1277,10 +1808,7 @@ async fn handle_pathfind(
             s.user_owns_token_in_scene(ctx.user_id, scene)
         };
         if !present {
-            return ServerMsg::PathError {
-                request_id,
-                message: "unreachable".to_string(),
-            };
+            return path_error(request_id, PathErrorReason::Unreachable);
         }
     }
     // The world's capability grants — an input to the movement-budget clamp's `cap::READ`
@@ -1293,18 +1821,15 @@ async fn handle_pathfind(
     let world_defaults = match repo.world_cap_defaults(room.world_id).await {
         Ok(wd) => wd,
         Err(_) => {
-            return ServerMsg::PathError {
-                request_id,
-                message: "unreachable".to_string(),
-            };
+            return path_error(request_id, PathErrorReason::Unreachable);
         }
     };
-    // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
+    // Check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
     // below never re-acquires the lock for it. The mover's level is captured here too: explored
     // memory is keyed per level, and a token-less hypothetical preview routes (and remembers) at
     // ground.
-    let (need_explored, grid_kind, mover_level) = {
+    let (need_explored, grid_kind, mover_level, explored_key) = {
         let s = room.scene().read().await;
         let resolved = s.resolve_scene(scene);
         let levels = s.scene_levels(scene);
@@ -1322,11 +1847,12 @@ async fn handle_pathfind(
             crate::scene::elevation::level_of(&levels, mover_elevation)
                 .map(|l| l.id.clone())
                 .unwrap_or_default(),
+            crate::scene::explored::explored_fog_key(resolved.fog_pooling, ctx.user_id),
         )
     };
-    // Step 2: fetch explored (if needed) after the lock is dropped.
+    // Fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
-        match repo.get_explored(scene, &mover_level, ctx.user_id).await {
+        match repo.get_explored(scene, &mover_level, explored_key).await {
             Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
                 &blob, grid_kind,
             )),
@@ -1336,7 +1862,7 @@ async fn handle_pathfind(
     } else {
         None
     };
-    // Step 3: take a fresh read guard to authorize/derive a named token's footprint (if any) and
+    // Take a fresh read guard to authorize/derive a named token's footprint (if any) and
     // call pathfind — folded into the SAME guard so the read count is unchanged.
     //
     // The named token is authorized before it is used: effective ownership (the same
@@ -1362,18 +1888,17 @@ async fn handle_pathfind(
             };
             match derived {
                 Some(r) => {
+                    let mover_tags = s.token_movement_tags(t);
                     traits = crate::scene::pathfinding::MoveTraits {
                         ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
-                            &s.token_movement_tags(t),
+                            &mover_tags,
                         ),
+                        tags: mover_tags,
                     };
                     r
                 }
                 None => {
-                    return ServerMsg::PathError {
-                        request_id,
-                        message: "unreachable".to_string(),
-                    };
+                    return path_error(request_id, PathErrorReason::Unreachable);
                 }
             }
         }
@@ -1400,10 +1925,7 @@ async fn handle_pathfind(
             match crate::ws::room::resolve_budget(&bg, is_gm) {
                 crate::ws::room::BudgetResolution::NotYourTurn
                 | crate::ws::room::BudgetResolution::Unresolvable => {
-                    return ServerMsg::PathError {
-                        request_id,
-                        message: "unreachable".to_string(),
-                    };
+                    return path_error(request_id, PathErrorReason::Unreachable);
                 }
                 crate::ws::room::BudgetResolution::Resolved {
                     budget_cells: b,
@@ -1439,6 +1961,7 @@ async fn handle_pathfind(
                 Some(t) => s.token_mover_elevation(t),
                 None => crate::scene::elevation::GROUND,
             },
+            token,
         },
     ) {
         Ok(outcome) => ServerMsg::PathResult {
@@ -1449,15 +1972,7 @@ async fn handle_pathfind(
             truncated: outcome.truncated,
             budget_cells: reply_budget_cells,
         },
-        Err(e) => ServerMsg::PathError {
-            request_id,
-            message: match e {
-                crate::scene::pathfinding::PathFail::Invalid => "invalid request",
-                crate::scene::pathfinding::PathFail::Unreachable => "unreachable",
-                crate::scene::pathfinding::PathFail::Exceeded => "search exceeded",
-            }
-            .to_string(),
-        },
+        Err(e) => path_error(request_id, e.into()),
     }
 }
 
@@ -1515,6 +2030,65 @@ async fn handle_move_request(
         Err(_) => Some(ServerMsg::MoveError {
             request_id,
             message: "move rejected".into(),
+            reason: None,
+        }),
+    }
+}
+
+/// Resolve and apply a door-toggle request (`ClientMsg::ToggleDoor`). The gate + commit live
+/// in `Room::toggle_door`; this wrapper owns only the reply shape: on success, NOTHING is
+/// returned to the requester's `etx` — the broadcast `Event` echo of the wall's Update is the
+/// confirmation (the chat-ops asymmetric pattern, mirrored from `SendMessage`); on rejection,
+/// a `DoorToggleError` to this connection only, whose message is role-conditioned through
+/// `door_toggle_wire_message` (uniform "door rejected" for a non-GM — the variant itself would
+/// disclose wall existence/reach/visibility/lock state the requester may not learn).
+async fn handle_toggle_door(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    req: crate::ws::room::ToggleDoorInputs,
+) -> Option<ServerMsg> {
+    let request_id = req.request_id;
+    match room.toggle_door(repo, ctx, req).await {
+        Ok(()) => None,
+        Err(e) => Some(ServerMsg::DoorToggleError {
+            request_id,
+            message: crate::ws::room::door_toggle_wire_message(&e, ctx.world_role),
+        }),
+    }
+}
+
+/// Resolve and apply a module-placed effect request (`ClientMsg::PlaceEffect`). The gate and
+/// commit live in `Room::place_effect`; this wrapper owns the rate check and the reply shape: on
+/// success NOTHING is returned (the broadcast `Event` of the region Create is the confirmation);
+/// on rejection a `PlaceEffectError` to this connection only, whose message is role-conditioned
+/// through `place_effect_wire_message`.
+///
+/// # Examples
+///
+/// ```text
+/// let reply = handle_place_effect(&room, repo, &ctx, &modules_dir, &cache, &rate, req).await;
+/// ```
+async fn handle_place_effect(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    modules_dir: &std::path::Path,
+    cache: &Arc<crate::modules::ModuleScanCache>,
+    rate: &crate::ws::PingRateLimiter,
+    req: crate::ws::room::PlaceEffectInputs,
+) -> Option<ServerMsg> {
+    let request_id = req.request_id;
+    let result = if rate.check(ctx.user_id, req.ts, crate::ws::MESSAGE_RATE_PER_MIN) {
+        room.place_effect(repo, ctx, modules_dir, cache, req).await
+    } else {
+        Err(crate::ws::room::PlaceEffectError::RateLimited)
+    };
+    match result {
+        Ok(()) => None,
+        Err(e) => Some(ServerMsg::PlaceEffectError {
+            request_id,
+            message: crate::ws::room::place_effect_wire_message(&e, ctx.world_role),
         }),
     }
 }
@@ -1533,6 +2107,9 @@ struct ExploredCtx<'a> {
         Uuid,
         Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
     >,
+    /// Each subscribed scene's resolved `FogPooling` mode, captured under the same ECS read lock
+    /// as `grid`/`grid_shapes` (`SceneEcs::scene_fog_pooling`).
+    fog_pooling: &'a std::collections::HashMap<Uuid, crate::data::engine::FogPooling>,
     /// The repository `get_explored`/`set_explored` persist explored-fog blobs through.
     repo: &'a SqliteRepository,
     /// The world the explored-fog blob is persisted under.
@@ -1566,6 +2143,7 @@ async fn enrich_vision_explored(
     let ExploredCtx {
         grid,
         grid_shapes,
+        fog_pooling,
         repo,
         world,
         user,
@@ -1627,19 +2205,24 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
-        let mut set = match repo.get_explored(scene, &group_level, user).await {
+        // The bucket this recipient reads/writes for THIS scene: their own `user` id under
+        // `Individual` pooling, or the reserved shared-pool sentinel under
+        // `Shared` — computed once, consumed by BOTH calls below, never `user` directly. Absent
+        // from `fog_pooling` cannot happen alongside a present `grid`/`grid_shapes` entry (both
+        // maps are built from the same live-scene scan under the same ECS read lock), but falls
+        // back to `Individual` rather than panicking if that parity is ever broken.
+        let pooling = fog_pooling
+            .get(&scene)
+            .copied()
+            .unwrap_or(crate::data::engine::FogPooling::Individual);
+        let key = crate::scene::explored::explored_fog_key(pooling, user);
+        let mut set = match repo.get_explored(scene, &group_level, key).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_cells(visible) > 0 {
             let _ = repo
-                .set_explored(
-                    world,
-                    scene,
-                    &group_level,
-                    user,
-                    &set.to_bytes(shape.kind()),
-                )
+                .set_explored(world, scene, &group_level, key, &set.to_bytes(shape.kind()))
                 .await;
         }
         // Emission is scoped to the recipient's VIEWED level: every level's memory grew above,
@@ -1913,8 +2496,7 @@ fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::
 /// capability machinery. Non-destructive: `world_cap_requirements` itself is
 /// NEVER mutated by enable/disable; this union is recomputed fresh on every
 /// `Welcome`, so a mid-session enable/disable takes effect on the affected
-/// world's next (re)connect, exactly like a `world_cap_requirements` edit
-/// already does today. Re-checks `engine_compat_ok` per enabled module (not
+/// world's next (re)connect. Re-checks `engine_compat_ok` per enabled module (not
 /// just at enable time) so a module that has gone incompatible since being
 /// enabled (server downgrade, on-disk manifest edit) stops contributing.
 ///
@@ -2077,8 +2659,8 @@ async fn egress_loop<S>(
             Vec::new()
         }
     };
-    // Informational/parity for the client (tier-2 is server-enforced; tier-1
-    // validates client-side). Fail open to empty for the advisory copy.
+    // Informational/parity for the client (the structural-schema gate is server-enforced; the
+    // client Zod gate validates client-side). Fail open to empty for the advisory copy.
     let world_schemas = match repo.world_schema_declarations(world_id).await {
         Ok(s) => s,
         Err(e) => {
@@ -2104,6 +2686,7 @@ async fn egress_loop<S>(
             contract_declarations: world_contracts,
             schema_declarations: world_schemas,
             role_capabilities,
+            online_users: room.presence_online(),
         }))
         .await
         .is_err()
@@ -2167,7 +2750,7 @@ async fn egress_loop<S>(
             res = shutdown.changed() => {
                 let should_close = res.is_err() || *shutdown.borrow_and_update();
                 if should_close {
-                    let _ = sink.send(Message::Close(None)).await;
+                    let _ = send_close(&mut sink).await;
                     break;
                 }
             }
@@ -2188,7 +2771,7 @@ async fn egress_loop<S>(
                 // stale liveness stamp is not an invariant worth ending this task over.
                 let idle = last_activity.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
                 if idle >= PING_TIMEOUT {
-                    let _ = sink.send(Message::Close(None)).await;
+                    let _ = send_close(&mut sink).await;
                     break;
                 }
                 if sink.send(text(&ServerMsg::Ping)).await.is_err() {
@@ -2297,14 +2880,14 @@ async fn egress_loop<S>(
                         // Read the ECS and the seq it reflects under one borrow, then drop it before
                         // awaiting the sink. Grid sizes are captured under the same lock for the
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
-                        let (payload, seq, grid, grid_shapes) = {
+                        let (payload, seq, grid, grid_shapes, fog_pooling) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes(), ecs.scene_fog_pooling())
                         };
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
+                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, fog_pooling: &fog_pooling, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -2438,6 +3021,42 @@ async fn egress_loop<S>(
                                 }
                                 failed
                             }
+                            ServerMsg::ExploredFogReset { .. } => {
+                                // A GM's reset may affect OTHER users' connections; `reeval_deadline`
+                                // is per-connection state, so every connection arms its OWN debounced
+                                // re-eval on receipt (mirrors `AudioListenAs`'s leading-edge arm) —
+                                // this makes the affected subscription's next "vision" push read
+                                // `explored_fog` fresh and show the now-empty set. Forwarded
+                                // unredacted (no geometry, no explored-cell contents) to every
+                                // connection including the resetting GM's own, so their client sees
+                                // the reset too.
+                                reeval_deadline = Some(tokio::time::Instant::now());
+                                send_plain(&mut sink, inner.as_ref()).await.is_err()
+                            }
+                            ServerMsg::ScrollingText { gm_only, .. } => {
+                                // Per-connection secrecy filter, mirroring the `Evicted`
+                                // per-recipient decision shape above: a `gm_only` overlay is
+                                // silently dropped for a non-GM connection (not a failure — the
+                                // frame simply never reaches this sink), exactly like a forced
+                                // `GmOnly` `ChatNotice`'s own audience restriction. The actual
+                                // admit/drop decision lives in `scrolling_text_admitted`, a pure
+                                // predicate pinned by its own unit test.
+                                if scrolling_text_admitted(*gm_only, ctx.world_role) {
+                                    send_plain(&mut sink, inner.as_ref()).await.is_err()
+                                } else {
+                                    false
+                                }
+                            }
+                            ServerMsg::PortalOffer { gm_only, owner, .. } => {
+                                // Addressed delivery: only the connections
+                                // `portal_offer_admitted` names ever see the frame; the rest
+                                // drop it silently.
+                                if portal_offer_admitted(*gm_only, *owner, ctx.user_id, ctx.world_role) {
+                                    send_plain(&mut sink, inner.as_ref()).await.is_err()
+                                } else {
+                                    false
+                                }
+                            }
                             ServerMsg::Evicted { user } => {
                                 // Targeted eviction. Delivery of the frame is
                                 // best-effort; the Close and the `break` are the
@@ -2445,7 +3064,7 @@ async fn egress_loop<S>(
                                 // down when this egress task exits.
                                 if user.is_none() || *user == Some(ctx.user_id) {
                                     let _ = sink.send(text(inner.as_ref())).await;
-                                    let _ = sink.send(Message::Close(None)).await;
+                                    let _ = send_close(&mut sink).await;
                                     true
                                 } else {
                                     false
@@ -2513,7 +3132,7 @@ async fn egress_loop<S>(
                 // Re-evaluate derived scene subscriptions against the current ECS, each with its
                 // own effective view ctx (own, or a GM see-as target); push only when a channel's
                 // payload changed. The read borrow is dropped before awaiting the sink.
-                let (seq, snapshot, grid, grid_shapes) = {
+                let (seq, snapshot, grid, grid_shapes, fog_pooling) = {
                     let ecs = room.scene().read().await;
                     let mut out = Vec::new();
                     for (id, s) in scene_subs.iter() {
@@ -2525,14 +3144,14 @@ async fn egress_loop<S>(
                             crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
-                    (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                    (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes(), ecs.scene_fog_pooling())
                 };
                 for (id, channel, view_ctx, level, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
                             // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
                             let accumulate = view_ctx.user_id == ctx.user_id;
-                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
+                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, fog_pooling: &fog_pooling, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {
@@ -2640,4 +3259,5 @@ pub(crate) async fn reseed_world_config(
 #[cfg(test)]
 mod tests;
 
+mod client_frame;
 mod merge_intents;

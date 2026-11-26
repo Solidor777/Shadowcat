@@ -22,10 +22,33 @@ test("listWorlds returns the world array", async () => {
   expect(worlds[0].name).toBe("W");
 });
 
+test("requests carry the route prefix the server page declared", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const f = mockFetch(200, []);
+    await api.listWorlds();
+    await api.getMe().catch(() => undefined);
+    await api.logout();
+    expect(f.mock.calls.map((c) => String(c[0]))).toEqual([
+      "/ttrpg/api/worlds",
+      "/ttrpg/api/me",
+      "/ttrpg/api/logout",
+    ]);
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
+});
+
 test("getUiState normalizes an empty server blob to defaults", async () => {
   mockFetch(200, {});
   const s = await api.getUiState();
-  expect(s).toEqual({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  expect(s).toEqual({ global: { locale: "en", lastWorld: null }, worlds: {}, modules: {} });
+});
+
+test("getUiState passes a stored modules namespace through", async () => {
+  mockFetch(200, { modules: { m1: { volume: 3 } } });
+  const s = await api.getUiState();
+  expect(s.modules).toEqual({ m1: { volume: 3 } });
 });
 
 test("getUiState passes through a stored blob", async () => {
@@ -145,3 +168,11 @@ test("withRetry's jittered delay never exceeds the base value (pinned to the flo
   }
 });
 
+
+test("getTlsStatus returns the validated tls block and rejects a body without it", async () => {
+  const tls = { enabled: true, source: "self-signed", https_origins: [], alpn: ["h2", "http/1.1"] };
+  mockFetch(200, { initialized: true, tls, onboarding_enabled: true });
+  expect(await api.getTlsStatus()).toEqual(tls);
+  mockFetch(200, { initialized: true });
+  await expect(api.getTlsStatus()).rejects.toThrow();
+});

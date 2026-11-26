@@ -1,8 +1,8 @@
 use super::*;
 
 /// A distinct, valid asset-ref UUID string derived from `i` — every track/entry fixture in
-/// this file needs one, since `PlaylistTrack.asset`/`PlayingTrack.asset` are now format-checked
-/// by `validate_asset_ref` (a placeholder like `"a0"` no longer passes ingress).
+/// this file needs one, since `PlaylistTrack.asset`/`PlayingTrack.asset` are format-checked
+/// by `validate_asset_ref` (a placeholder like `"a0"` fails ingress).
 fn test_asset(i: usize) -> String {
     format!("00000000-0000-0000-0000-{i:012}")
 }
@@ -82,6 +82,7 @@ fn audio_state_engine_rejects_over_cap_playing() {
             loop_: false,
             started_at: 0.0,
             paused_at: None,
+            session_paused: false,
         })
         .collect();
     let state = AudioStateEngine {
@@ -96,4 +97,31 @@ fn audio_state_engine_default_is_empty_and_valid() {
     let state = AudioStateEngine::default();
     assert!(state.playing.is_empty());
     assert!(state.validate().is_ok());
+}
+
+#[test]
+fn simultaneous_playlist_rejects_more_tracks_than_can_play_at_once() {
+    let make = |n: usize, mode: PlaylistMode| PlaylistEngine {
+        tracks: (0..n)
+            .map(|i| PlaylistTrack {
+                asset: test_asset(i),
+                name: None,
+                gain: 1.0,
+                loop_: false,
+            })
+            .collect(),
+        mode,
+        channel: AudioChannel::Music,
+        fade_ms: 0,
+    };
+    assert!(make(MAX_PLAYING_TRACKS, PlaylistMode::Simultaneous)
+        .validate()
+        .is_ok());
+    assert!(make(MAX_PLAYING_TRACKS + 1, PlaylistMode::Simultaneous)
+        .validate()
+        .is_err());
+    // The bound belongs to Simultaneous alone: a Soundboard playlist may be longer.
+    assert!(make(MAX_PLAYING_TRACKS + 1, PlaylistMode::Soundboard)
+        .validate()
+        .is_ok());
 }

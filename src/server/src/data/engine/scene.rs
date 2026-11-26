@@ -1,8 +1,11 @@
-//! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation`
-//! engine bands. Field shapes mirror the client's re-exported
-//! `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
-//! `VisionMode`, and `GradationBand` (minus `name`, which lives on the
-//! envelope instead).
+//! This module defines the engine bands of scenes, world settings, lights and vision.
+//!
+//! The doc_types are `scene`, `world-settings`, `light`, `vision-modes` and `light-gradation`.
+//!
+//! The client's `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
+//! `VisionMode` and `GradationBand` are the TypeScript types generated from these structs. A
+//! scene's or light's name lives on the envelope `name`, so neither `SceneEngine` nor `LightEngine`
+//! carries one.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -105,6 +108,18 @@ pub enum DiagonalRule {
     /// Diagonals cost the same as two orthogonal steps (no diagonal
     /// shortcut; diagonal moves themselves stay legal).
     Manhattan,
+    /// Diagonals cost 1.5x an orthogonal step — a flat multiplier standing in
+    /// for the alternating approximation. Cost-only: a diagonal step stays
+    /// legal, exactly as under `Chebyshev`/`Euclidean`/`Manhattan`.
+    Approximate,
+    /// Diagonal moves are illegal, in the router and in the move executor:
+    /// `SquareGrid::neighbors_with_cost` enumerates only the four orthogonal
+    /// directions under this rule, so a diagonal edge is absent from the search
+    /// graph rather than merely expensive, and `execute_move` halts a non-GM
+    /// walk at any grid step that neighbor set omits (a GM is exempt, like every
+    /// gameplay gate). The one variant that changes ADJACENCY, not just cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
+    /// (six uniform axial neighbors; no diagonal/orthogonal split exists).
+    Orthogonal,
 }
 
 /// Token move-animation easing.
@@ -213,7 +228,9 @@ pub struct GridDistance {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Grid {
-    /// "square" | "hex" — kept a `String` in v1 (asserted by the battery).
+    /// "square" | "hex". Ingress accepts any string within the engine band's
+    /// `MAX_SYSTEM_BYTES` cap; `grid_kind_from` reads `"hex"` as a hex grid and every other
+    /// spelling as square.
     pub kind: String,
     /// Cell size in scene units. For hex grids this is the OUTER radius
     /// (center-to-vertex circumradius) — `HexGrid` and the client's `GridSpec.size`
@@ -222,6 +239,52 @@ pub struct Grid {
     /// Real-world distance scale; absent = unitless.
     #[serde(default)]
     pub distance: Option<GridDistance>,
+}
+
+/// Which `explored_fog` bucket a scene's players accumulate into:
+/// `Individual` keys memory per real `user_id`; `Shared`
+/// pools every player's exploration into one bucket, keyed by the reserved
+/// `Uuid::nil()` sentinel (`scene::explored::explored_fog_key`) — no schema
+/// change, since `Uuid::new_v4()` can never produce the nil UUID.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FogPooling;
+///
+/// assert_ne!(FogPooling::Individual, FogPooling::Shared);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum FogPooling {
+    /// Every player accumulates their own explored-fog memory.
+    Individual,
+    /// Every player reads/writes the SAME explored-fog memory for this scene.
+    Shared,
+}
+
+/// When a player may rotate their own token (`scene::rotation_gate::rotation_refusal` decides;
+/// a GM is never subject to it). `Free` lets a player turn a token at any time; `OwnTurn` lets
+/// them turn it only while the token holds the turn in its scene's active combat, or when no
+/// combat applies to it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FacingTurnRule;
+///
+/// assert_eq!(FacingTurnRule::default(), FacingTurnRule::Free);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum FacingTurnRule {
+    /// A player turns their token at any time.
+    #[default]
+    Free,
+    /// A player turns their token only on its own combat turn.
+    OwnTurn,
 }
 
 /// Per-scene overrides for vision behaviour; absent fields fall back to world
@@ -241,6 +304,10 @@ pub struct Grid {
 ///     observer_vision: None,
 ///     movement_restriction: None,
 ///     movement_model: None,
+///     fog_pooling: None,
+///     auto_rotate_tokens: None,
+///     facing_vision: None,
+///     facing_turn_rule: None,
 /// };
 /// assert_eq!(overrides.los_restriction, Some(true));
 /// ```
@@ -263,6 +330,21 @@ pub struct SceneVisionOverrides {
     /// Movement-engine override.
     #[serde(default)]
     pub movement_model: Option<MovementModel>,
+    /// Explored-fog pooling override (see `FogPooling`).
+    #[serde(default)]
+    pub fog_pooling: Option<FogPooling>,
+    /// Auto-rotate-tokens override (see `WorldSceneDefaults.auto_rotate_tokens`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub auto_rotate_tokens: Option<bool>,
+    /// Facing-limited-vision switch override (see `WorldSceneDefaults.facing_vision`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub facing_vision: Option<bool>,
+    /// Facing turn-rule override (see `WorldSceneDefaults.facing_turn_rule`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub facing_turn_rule: Option<FacingTurnRule>,
 }
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
@@ -332,10 +414,16 @@ pub struct SceneLevel {
     pub background: Option<String>,
 }
 
+/// The largest `SceneEngine::padding`, in grid cells. The padded envelope feeds area-capped
+/// scans (the lit mask, the visibility cache), so an unbounded margin would be a cost lever;
+/// ingress rejects a larger value rather than clamping it.
+pub const MAX_SCENE_PADDING_CELLS: f64 = 100.0;
+
 /// A scene's engine-owned config (mirrors the client's `SceneEngine`).
 /// `bounds` = the authored play-area rectangle in grid units, which the
 /// continuous router and the per-player vision/lighting path both read;
 /// absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+/// `padding` adds a margin around it.
 ///
 /// # Examples
 ///
@@ -346,6 +434,7 @@ pub struct SceneLevel {
 ///     grid: Grid { kind: "square".to_string(), size: 50.0, distance: None },
 ///     background: None,
 ///     bounds: None,
+///     padding: None,
 ///     snap_to_grid: None,
 ///     vision: None,
 ///     lighting: None,
@@ -371,6 +460,13 @@ pub struct SceneEngine {
     /// they can see, not only where a route may run.
     #[serde(default)]
     pub bounds: Option<SceneDimensions>,
+    /// A uniform margin around `bounds`, in grid cells, on all four sides; absent and `0` are the
+    /// same (no margin). Tokens may stand in it and routes, sight and light cross it, because
+    /// `GridShape::world_extent` adds it to the envelope every consumer of `bounds` reads — so a
+    /// positive margin widens what a player is told they can see. Ingress admits finite values in
+    /// `0..=MAX_SCENE_PADDING_CELLS`.
+    #[serde(default)]
+    pub padding: Option<f64>,
     /// Scene-level snap-to-grid toggle, independent of `movementModel`.
     /// Absent ⇒ derived default resolved at read time (false for a
     /// continuous scene, true otherwise) — reading this field alone is NOT
@@ -433,6 +529,22 @@ pub struct WorldSceneDefaults {
     pub movement_model: MovementModel,
     /// Grid gate counts a cell partially inside vision as reachable.
     pub partial_cell_leniency: bool,
+    /// Default explored-fog pooling mode (see `FogPooling`).
+    pub fog_pooling: FogPooling,
+    /// Whether a completed move rotates the mover to face its net movement direction (a token
+    /// whose `TokenEngine.lock_rotation` is set is never rotated). Off by default: an existing
+    /// world sees no behaviour change until it opts in.
+    #[serde(default)]
+    pub auto_rotate_tokens: bool,
+    /// Whether tokens carrying a `FacingVision` see only their forward arc plus bubble instead of
+    /// all round. Off by default: with the switch off every token's `facing_vision` data is
+    /// ignored and sight is unchanged.
+    #[serde(default)]
+    pub facing_vision: bool,
+    /// When a player may rotate their own token (see `FacingTurnRule`). `Free` by default: an
+    /// existing world sees no behaviour change until it opts in.
+    #[serde(default)]
+    pub facing_turn_rule: FacingTurnRule,
 }
 
 /// A scene's ambient playlist override: when this scene becomes the world's active scene
@@ -505,6 +617,13 @@ impl SceneEngine {
             crate::data::engine::geometry::validate_asset_ref(bg)
                 .map_err(|m| format!("background: {m}"))?;
         }
+        if let Some(p) = self.padding {
+            if !(0.0..=MAX_SCENE_PADDING_CELLS).contains(&p) {
+                return Err(format!(
+                    "padding must be finite and within 0..={MAX_SCENE_PADDING_CELLS} cells"
+                ));
+            }
+        }
         if let Some(c) = &self.combat {
             c.validate("combat")?;
         }
@@ -567,7 +686,8 @@ impl SceneEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "camelCase")]
 pub enum Occlusion {
-    /// `los`-band walls attenuate an emitter to `throughWallGain`.
+    /// Walls in the `SceneEcs::sound_walls_for` set (whose resolved `blocks_sound` is true)
+    /// attenuate an emitter to `throughWallGain`.
     Walls,
     /// No occlusion: every emitter's gain is falloff-only, walls ignored.
     None,
@@ -593,8 +713,9 @@ pub struct AudioOverlay {
     pub spatial: Option<bool>,
     /// Wall-occlusion policy; absent = `Occlusion::Walls`.
     pub occlusion: Option<Occlusion>,
-    /// Gain an occluded emitter is reduced to — never silenced entirely, so a player still
-    /// learns something is behind the door; absent = `0.25`.
+    /// Gain a wall-occluded emitter is reduced to — a wall never silences entirely, so a player
+    /// still learns something is behind the door; absent = `0.25`. A sound-blocking region
+    /// (`RegionEngine::occludes`) is stricter: an emitter across its edge has gain `0`.
     #[serde(rename = "throughWallGain")]
     pub through_wall_gain: Option<f64>,
 }
@@ -605,6 +726,70 @@ impl AudioOverlay {
         if let Some(g) = self.through_wall_gain {
             if !g.is_finite() {
                 return Err("throughWallGain must be finite".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Longest `SessionState.message`, in characters.
+pub const MAX_SESSION_MESSAGE_CHARS: usize = 280;
+
+/// The live whole-session pause switch, stored on the world-settings document so every member
+/// receives it through the ordinary document broadcast, resync and reconnect. Absent means not
+/// paused. While `paused`, a non-GM member cannot move tokens or use combat controls
+/// (`ws::session_pause` decides); chat, dice, pings, doors, scene edits and sheets keep working.
+/// It is live world state like `WorldSettingsEngine.active_scene`, not a layer of the settings
+/// chain, and it carries no timestamp: nothing reads one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SessionState;
+///
+/// let s = SessionState::default();
+/// assert!(!s.paused);
+/// assert!(!s.pause_audio);
+/// assert!(s.validate().is_ok());
+/// ```
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+pub struct SessionState {
+    /// `true` while the GM has the session paused.
+    pub paused: bool,
+    /// Plain text shown to every member while paused, at most `MAX_SESSION_MESSAGE_CHARS`
+    /// characters with no control characters. Clients render it as a text node, never HTML.
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
+    /// `true` pauses the world's playing audio when the session pauses and resumes it when the
+    /// session resumes. Absent or `false` leaves audio playing.
+    pub pause_audio: bool,
+}
+
+impl SessionState {
+    /// Ingress validation beyond serde shape: `message` is at most `MAX_SESSION_MESSAGE_CHARS`
+    /// characters and holds no control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::SessionState;
+    ///
+    /// let ok = SessionState { message: Some("Back in ten".into()), ..Default::default() };
+    /// assert!(ok.validate().is_ok());
+    /// let bad = SessionState { message: Some("a\nb".into()), ..Default::default() };
+    /// assert!(bad.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(m) = &self.message {
+            if m.chars().count() > MAX_SESSION_MESSAGE_CHARS {
+                return Err(format!(
+                    "session message exceeds {MAX_SESSION_MESSAGE_CHARS} characters"
+                ));
+            }
+            if m.chars().any(char::is_control) {
+                return Err("session message must not contain control characters".to_string());
             }
         }
         Ok(())
@@ -642,7 +827,7 @@ pub struct WorldSettingsEngine {
     /// Move-animation overlay.
     #[ts(optional = nullable)]
     pub animation: Option<super::system_defaults::AnimationOverlay>,
-    /// The scene players render. `None`/absent/dangling ⇒ the first scene.
+    /// The scene players render. `None`/absent/dangling ⇒ the oldest scene (`created_at`, then `id`).
     #[ts(optional = nullable)]
     pub active_scene: Option<Uuid>,
     /// Combat-rule overrides (movement resource / interpretation / enforcement /
@@ -654,6 +839,9 @@ pub struct WorldSettingsEngine {
     /// back to the engine literals on `AudioOverlay`'s own doc.
     #[ts(optional = nullable)]
     pub audio: Option<AudioOverlay>,
+    /// The whole-session pause switch; absent = not paused.
+    #[ts(optional = nullable)]
+    pub session: Option<SessionState>,
 }
 
 impl WorldSettingsEngine {
@@ -672,6 +860,9 @@ impl WorldSettingsEngine {
         }
         if let Some(a) = &self.audio {
             a.validate()?;
+        }
+        if let Some(s) = &self.session {
+            s.validate()?;
         }
         Ok(())
     }
@@ -695,6 +886,10 @@ impl Default for WorldSceneDefaults {
             movement_restriction: MovementRestriction::Visible,
             movement_model: MovementModel::GridStepped,
             partial_cell_leniency: true,
+            fog_pooling: FogPooling::Individual,
+            auto_rotate_tokens: false,
+            facing_vision: false,
+            facing_turn_rule: FacingTurnRule::Free,
         }
     }
 }
@@ -739,6 +934,10 @@ impl Default for AnimationSettings {
 ///         dim_radius: 10.0,
 ///         falloff: None,
 ///         enabled: true,
+///         active_below_env: None,
+///         angle: None,
+///         rotation: 0.0,
+///         follow_token_rotation: false,
 ///     },
 /// };
 /// assert_eq!(light.emission.bright_radius, 5.0);
@@ -778,6 +977,10 @@ pub struct LightEngine {
 ///     dim_radius: 8.0,
 ///     falloff: None,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
+///     follow_token_rotation: false,
 /// };
 /// assert!(emission.enabled);
 /// ```
@@ -799,6 +1002,27 @@ pub struct LightEmission {
     /// GM toggle; a disabled emission contributes nothing (the suppress path
     /// for a carried emission, the on/off switch for a standalone light).
     pub enabled: bool,
+    /// Darkness-activation threshold: the light contributes only while the scene's
+    /// `settings.env_intensity` is at or below this value (`0.0..=1.0`). Absent = always active.
+    /// Gates placed and carried lights only; the environment ambient term is never suppressed.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub active_below_env: Option<f64>,
+    /// Full arc width of a cone light, degrees (`(0, 360]`). Absent = the full-circle radial
+    /// light.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub angle: Option<f64>,
+    /// Direction of the cone's bisector, degrees: `0` points along +x and the angle grows toward
+    /// +y (clockwise on a y-down canvas, the `TokenEngine::rotation` convention). Any finite
+    /// value is legal; readers normalise. Meaningful only when `angle` is set.
+    #[serde(default)]
+    pub rotation: f64,
+    /// When true and the emission is carried by a token, the effective cone direction is the
+    /// carrying token's `TokenEngine::rotation` plus `rotation`, resolved at each read. Inert on
+    /// a standalone `light` document (no token to follow).
+    #[serde(default)]
+    pub follow_token_rotation: bool,
 }
 
 impl LightEmission {
@@ -808,7 +1032,10 @@ impl LightEmission {
     /// `scene::pathfinding::MAX_FOOTPRINT_CELLS` — the bound the aura and the
     /// footprint already share — so no authored glow can reach a scan bound
     /// the egress clip would otherwise have to fail closed on
-    /// (`ws::move_clip::glow_reaches`).
+    /// (`ws::move_clip::glow_reaches`). `active_below_env`, when present, is finite and in
+    /// `0..=1` (refused rather than clamped: a stored out-of-range threshold has no sensible
+    /// read-side meaning). `rotation` is finite; `angle`, when present, is finite and in
+    /// `(0, 360]` (a zero-width cone lights nothing and is refused as an authoring mistake).
     ///
     /// # Examples
     ///
@@ -830,6 +1057,19 @@ impl LightEmission {
             }
             if r > cap {
                 return Err(format!("{name} exceeds {cap}"));
+            }
+        }
+        if let Some(threshold) = self.active_below_env {
+            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                return Err("activeBelowEnv must be finite and in 0..=1".to_string());
+            }
+        }
+        if !self.rotation.is_finite() {
+            return Err("rotation must be finite".to_string());
+        }
+        if let Some(angle) = self.angle {
+            if !angle.is_finite() || angle <= 0.0 || angle > 360.0 {
+                return Err("angle must be finite and in (0, 360]".to_string());
             }
         }
         Ok(())
@@ -970,10 +1210,129 @@ pub struct VisionMode {
     /// always LOS-gated by the mask pipeline itself.
     #[serde(default = "default_requires_los")]
     pub requires_los: bool,
-    /// Optional client render treatment tag (e.g. a tint); never interpreted
-    /// server-side.
+    /// The visual treatment the client paints over the cells this mode perceives; absent
+    /// behaves as `RenderHint::None`. Validated at ingress (`RenderHint::validate`) and
+    /// otherwise never interpreted server-side.
     #[serde(default)]
-    pub render_hint: Option<String>,
+    pub render_hint: Option<RenderHint>,
+}
+
+/// Longest `RenderHint::Custom` treatment name, in characters.
+pub const MAX_RENDER_TREATMENT_CHARS: usize = 64;
+
+/// The visual treatment a `VisionMode` asks the client to paint over the cells it perceives,
+/// composed on top of the ordinary lit/dim/dark banding (it never replaces a band's darkening).
+/// The four built-in arms are closed and ingress-validated; `Custom` is the one open arm, so a
+/// module-defined sense can bring its own treatment without an engine change. The wire tag is
+/// `kind`, so `Custom` names its treatment in `treatment` (a field also called `kind` would
+/// collide with the tag).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RenderHint;
+///
+/// let wash = RenderHint::ColorWash { color: "#00aa00".to_string(), opacity: 0.25 };
+/// assert!(wash.validate().is_ok());
+/// assert_eq!(serde_json::to_value(&RenderHint::Desaturate).unwrap()["kind"], "desaturate");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RenderHint {
+    /// Flat luminance desaturation wash.
+    Desaturate,
+    /// A uniform colour wash at `opacity`.
+    ColorWash {
+        /// Wash colour, a css `#rrggbb` string.
+        color: String,
+        /// Wash opacity in `0.0..=1.0`.
+        opacity: f64,
+    },
+    /// Outline-only rendering: the perceived cell's silhouette, no fill.
+    Outline {
+        /// Outline colour, a css `#rrggbb` string.
+        color: String,
+    },
+    /// No visual treatment beyond the ordinary lit/dim/dark banding.
+    None,
+    /// A module-defined treatment. `treatment` names what a client module must have registered
+    /// to interpret `params`; an unregistered name renders exactly like `None` (the server
+    /// cannot know which modules a world's clients have installed). `params` is opaque to the
+    /// engine and only size-checked.
+    Custom {
+        /// The registered treatment name.
+        treatment: String,
+        /// Opaque payload the registering module interprets.
+        #[ts(type = "unknown")]
+        params: serde_json::Value,
+    },
+}
+
+impl RenderHint {
+    /// Ingress check: `ColorWash`/`Outline` colours are `#rrggbb` (`validate_hex_color`),
+    /// `ColorWash.opacity` is finite and in `0.0..=1.0`, and a `Custom` treatment name is
+    /// non-empty, at most `MAX_RENDER_TREATMENT_CHARS` long, and its `params` serialize within
+    /// `MAX_SYSTEM_BYTES` (the ceiling the whole `vision-modes` band shares, so one oversized
+    /// payload is refused rather than truncated).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::RenderHint;
+    ///
+    /// let bad = RenderHint::ColorWash { color: "#00aa00".to_string(), opacity: 1.5 };
+    /// assert!(bad.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        use crate::data::engine::geometry::validate_hex_color;
+        match self {
+            Self::Desaturate | Self::None => Ok(()),
+            Self::ColorWash { color, opacity } => {
+                validate_hex_color(color)?;
+                if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                    return Err("color wash opacity must be within 0..=1".to_string());
+                }
+                Ok(())
+            }
+            Self::Outline { color } => validate_hex_color(color),
+            Self::Custom { treatment, params } => {
+                if treatment.is_empty() || treatment.chars().count() > MAX_RENDER_TREATMENT_CHARS {
+                    return Err(format!(
+                        "custom treatment name must be 1..={MAX_RENDER_TREATMENT_CHARS} characters"
+                    ));
+                }
+                let bytes = serde_json::to_vec(params).map_err(|e| e.to_string())?.len();
+                if bytes > crate::data::validation::MAX_SYSTEM_BYTES {
+                    return Err(
+                        "custom treatment params exceed the engine band size cap".to_string()
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl VisionMode {
+    /// Ingress check for one mode: its `render_hint`, when present, passes
+    /// `RenderHint::validate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::VisionModesEngine;
+    ///
+    /// assert!(VisionModesEngine::seed().modes["darkvision"].validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        match &self.render_hint {
+            Some(hint) => hint
+                .validate()
+                .map_err(|m| format!("vision mode `{}`: {m}", self.id)),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The engine body of a "vision-modes" config document.
@@ -1033,7 +1392,7 @@ impl VisionModesEngine {
                 default_range: 12.0,
                 perceives: Perception::Terrain,
                 requires_los: true,
-                render_hint: Some("desaturate".to_string()),
+                render_hint: Some(RenderHint::Desaturate),
             },
         );
         modes.insert(
@@ -1050,6 +1409,19 @@ impl VisionModesEngine {
             },
         );
         Self { modes }
+    }
+
+    /// Ingress check: every mode passes `VisionMode::validate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::VisionModesEngine;
+    ///
+    /// assert!(VisionModesEngine::seed().validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        self.modes.values().try_for_each(VisionMode::validate)
     }
 }
 

@@ -1,3 +1,6 @@
+//! This module holds `roll`, which draws a `RollSpec`'s dice from an `RngSource`, and `evaluate`,
+//! which scores a `RawRoll` without drawing.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -6,21 +9,15 @@ use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};
 use crate::dice::rng::{roll_uniform, RngSource};
 use crate::dice::spec::{DieKind, Expr, Mode, RollSpec};
 
-/// Margin -> pass/tier ladder classification.
 pub mod classify;
-/// Per-die crit-event scoring.
 pub mod crit;
-/// Expertise-budget allocation (bounded knapsack DP).
 pub mod expertise;
-/// Per-group modifier pipeline (reroll/explode/keep/drop).
 pub mod groups;
-/// SuccessCount-mode scoring.
 pub mod success;
-/// Total-mode arithmetic fold (saturating).
 pub mod sum;
 
 /// Roll every die in `spec`'s expression, left-to-right, running each group's
-/// pipeline. The ONLY randomness step; `evaluate` reads `raws.records` deterministically.
+/// pipeline. `evaluate` reads `raws.records` deterministically.
 ///
 /// # Examples
 ///
@@ -72,7 +69,8 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
             roll_expr(lhs, rng, raws, group_index);
             roll_expr(rhs, rng, raws, group_index);
         }
-        Expr::Call { args, .. } => {
+        // `BestOf` rolls every branch unconditionally; the winner is chosen at `evaluate`.
+        Expr::Call { args, .. } | Expr::BestOf(args) => {
             for arg in args {
                 roll_expr(arg, rng, raws, group_index);
             }

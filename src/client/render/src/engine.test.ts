@@ -1,6 +1,6 @@
 import { test, expect, describe, it, vi } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS } from "@shadowcat/core";
-import { RenderEngine, MockBackend } from "./index";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS, parseBars, EMPTY_BARS } from "@shadowcat/core";
+import { RenderEngine, MockBackend, RULER_STALE_MS } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
 
@@ -76,7 +76,7 @@ test("reconcileNow re-resolves the background after an asset rev bump", () => {
   expect(first).toBe(assets.url("u1"));
   // An out-of-band AssetChanged(replaced) bumps the resolver rev (no store change);
   // reconcileNow must re-resolve to the cache-busted URL.
-  assets.onAssetChanged({ uuid: "u1", op: "replaced", version: 1 });
+  assets.onAssetChanged({ uuid: "u1", op: "replaced", version: 2 });
   engine.reconcileNow();
   expect(backend.background?.url).not.toBe(first);
   expect(backend.background?.url).toBe(assets.url("u1"));
@@ -272,6 +272,38 @@ test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle
   expect(modes).toEqual(["all", "masked", "all"]);
 });
 
+test("isTokenRevealed follows the applied fog mask and onVisibilityApplied fires per mask", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  let applied = 0;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    onVisibilityApplied: () => { applied++; },
+  });
+  engine.start();
+  const inside = { x: 150, y: 150 };
+  const outside = { x: 900, y: 900 };
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 });
+  expect(applied).toBe(1);
+  expect(engine.isTokenRevealed("t", outside)).toBe(true);
+  // The GM fog preview paints full fog: nothing is revealed, and the mask change is announced.
+  engine.setFogPreview(true);
+  expect(applied).toBe(2);
+  expect(engine.isTokenRevealed("t", inside)).toBe(false);
+  engine.setFogPreview(false);
+  // A masked frame whose only visible polygon is the square (100,100)-(200,200).
+  onUpdate({
+    payload: { mode: "masked", polygons: [{ scene: "s1", points: [100, 100, 200, 100, 200, 200, 100, 200] }] },
+    computedAtSeq: 1,
+  });
+  expect(backend.visibility!.visible).toHaveLength(1);
+  expect(engine.isTokenRevealed("t", inside)).toBe(true);
+  expect(engine.isTokenRevealed("t", outside)).toBe(false);
+});
+
 test("setViewAsUser re-subscribes vision with as_user and resets the watermark", () => {
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
@@ -465,7 +497,7 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
   });
   engine.start();
   const before = backend.tokens.get("t1")!.visual;
-  assets.onAssetChanged({ uuid: "i1", op: "replaced", version: 1 }); // cache-bust, no store change
+  assets.onAssetChanged({ uuid: "i1", op: "replaced", version: 2 }); // cache-bust, no store change
   engine.reconcileNow();
   expect(backend.tokens.get("t1")!.visual).not.toEqual(before);
   expect((backend.tokens.get("t1")!.visual as { kind: "image"; url: string }).url).toBe(assets.url("i1"));
@@ -499,6 +531,36 @@ test("addEmote anchors above the token at fire time, driven by the ticker; unkno
   expect(backend.emotes).toHaveLength(1);
 });
 
+test("remote rulers are keyed per sending connection, drawn from the ticker, cleared per connection, and a scene switch drops them all", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.setRemoteRuler("a", "o1", [[0, 0], [10, 0]]);
+  engine.setRemoteRuler("b", "o2", [[0, 5], [10, 5]]);
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["a", "b"]);
+  expect(backend.rulers[0].points).toEqual([[0, 0], [10, 0]]);
+
+  // A stop for one sender leaves the other untouched.
+  engine.clearRemoteRuler("a", "o1");
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["b"]);
+
+  // A scene switch ends every remote ruler; the ticker sends the one clearing draw.
+  engine.reapplyViewedScene();
+  backend.tick!(16);
+  expect(backend.rulers).toEqual([]);
+});
+
+test("a remote ruler that is never refreshed expires on its own", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.setRemoteRuler("a", "o1", [[0, 0], [10, 0]]);
+  backend.tick!(16);
+  expect(backend.rulers).toHaveLength(1);
+  backend.tick!(RULER_STALE_MS);
+  expect(backend.rulers).toEqual([]);
+});
+
 test("start registers the backend ticker", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -530,6 +592,31 @@ test("a tool that does not handle pointerdown falls back to camera pan", () => {
   expect(backend.camera!.x).toBe(40); // panned by the screen delta
 });
 
+test("setAuthoredBounds draws the authored rectangle's outline; null clears it; setGrid redraws it", () => {
+  const { engine, backend } = makeEngine(); // square / 100
+  engine.start();
+  expect(backend.boundsOutline).toEqual([]);
+
+  engine.setAuthoredBounds({ width: 10, height: 6 });
+  expect(backend.boundsOutline[0]).toEqual({ x1: 0, y1: 0, x2: 1000, y2: 0 });
+  expect(backend.boundsOutline).toHaveLength(4);
+
+  engine.setGrid({ kind: "square", size: 50 });
+  expect(backend.boundsOutline[0]).toEqual({ x1: 0, y1: 0, x2: 500, y2: 0 });
+
+  engine.setAuthoredBounds(null);
+  expect(backend.boundsOutline).toEqual([]);
+});
+
+test("a camera redraw leaves the bounds outline alone", () => {
+  const { engine, backend } = makeEngine();
+  engine.start();
+  engine.setAuthoredBounds({ width: 4, height: 4 });
+  engine.setViewport(300, 200);
+  engine.applyCamera();
+  expect(backend.boundsOutline).toHaveLength(4);
+});
+
 test("snap delegates to the active grid; setGrid changes it", () => {
   const { engine } = makeEngine(); // square / 100
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 });
@@ -544,6 +631,149 @@ test("setSnapEnabled(false) makes snap identity; true restores the active grid's
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 140, y: 160 }); // identity
   engine.setSnapEnabled(true);
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // restored
+});
+
+test("setSnapMode('vertex') routes the single snap chokepoint through snapVertex; every ctx.scene.snap caller inherits it", () => {
+  const { engine } = makeEngine(); // square / 100
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // default: center mode
+  engine.setSnapMode("vertex");
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 100, y: 200 }); // nearest vertex
+  engine.setSnapMode("center");
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // back to cell centers
+});
+
+test("setSnapMode('edge') routes the single snap chokepoint through snapEdge", () => {
+  const { engine } = makeEngine(); // square / 100
+  engine.setSnapMode("edge");
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 140, y: 200 }); // nearest edge point, not a corner
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 140, y: 170 }); // snap-off stays identity
+  engine.setSnapEnabled(true);
+  engine.setSnapMode("center");
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 150, y: 150 }); // back to cell centers
+});
+
+describe("camera pan-to", () => {
+  /** An engine over a 800x600 viewport, with a reduced-motion switch and a token at (1000,500). */
+  function makePanEngine(reducedMotion: boolean) {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion }),
+    });
+    store.applyCommand(tokenCmd(1, "tok1", 1000));
+    engine.setViewport(800, 600);
+    engine.start();
+    return { engine, backend };
+  }
+  /** The scene point at the viewport center, per the camera transform the backend last received. */
+  const centerOf = (backend: MockBackend) => ({
+    x: (400 - backend.camera!.x) / backend.camera!.scale,
+    y: (300 - backend.camera!.y) / backend.camera!.scale,
+  });
+
+  it("panToPoint tweens the camera across ticker frames and lands on the point", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+    engine.panToPoint(2000, 300, { durationMs: 400 });
+    backend.runTicker(200);
+    expect(centerOf(backend).x).toBeCloseTo(1200); // halfway from 400 to 2000, linear
+    backend.runTicker(200);
+    expect(centerOf(backend).x).toBeCloseTo(2000);
+    expect(centerOf(backend).y).toBeCloseTo(300);
+  });
+
+  it("panToPoint reuses the resolved token-move easing: easeInOut trails linear early in the tween", () => {
+    const eased = makePanEngine(false);
+    eased.engine.setAnimation({ speedCellsPerSec: 6, easing: "easeInOut" });
+    eased.engine.panToPoint(2000, 300, { durationMs: 400 });
+    eased.backend.runTicker(100);
+    expect(centerOf(eased.backend).x).toBeGreaterThan(400); // the tween has started
+    expect(centerOf(eased.backend).x).toBeLessThan(400 + 1600 * 0.25);
+  });
+
+  it("panToToken follows the token's live position and ends on it", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+    engine.panToToken("tok1", { durationMs: 400 });
+    backend.runTicker(400);
+    expect(centerOf(backend).x).toBeCloseTo(1000);
+    expect(centerOf(backend).y).toBeCloseTo(0);
+  });
+
+  it("panToToken on an untracked token leaves the camera alone", () => {
+    const { engine, backend } = makePanEngine(false);
+    const before = { ...backend.camera! };
+    engine.panToToken("nobody");
+    backend.runTicker(500);
+    expect(backend.camera).toEqual(before);
+  });
+
+  it("reduced motion snaps the camera immediately, with no ticker frame needed", () => {
+    const { engine, backend } = makePanEngine(true);
+    engine.panToPoint(2000, 300);
+    expect(centerOf(backend).x).toBeCloseTo(2000);
+    expect(centerOf(backend).y).toBeCloseTo(300);
+  });
+
+  it("onCameraApplied reports the scene point at the viewport center on start and after a pan", () => {
+    const centers: Array<{ x: number; y: number }> = [];
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion: true }),
+      onCameraApplied: (c) => centers.push(c),
+    });
+    engine.setViewport(800, 600);
+    engine.start();
+    expect(centers.at(-1)).toEqual({ x: 400, y: 300 });
+    engine.panToPoint(2000, 700);
+    expect(centers.at(-1)).toEqual({ x: 2000, y: 700 });
+  });
+
+  it("onTransformApplied reports the applied camera transform on start, after a pan and after a zoom", () => {
+    const transforms: Array<{ x: number; y: number; scale: number }> = [];
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion: true }),
+      onTransformApplied: (t) => transforms.push(t),
+    });
+    engine.setViewport(800, 600);
+    engine.start();
+    expect(transforms.at(-1)).toEqual(backend.camera);
+    engine.panToPoint(2000, 700);
+    expect(transforms.at(-1)).toEqual(backend.camera);
+    expect(transforms.at(-1)?.x).not.toBe(0);
+    engine.camera.zoomAt(2, 0, 0);
+    engine.applyCamera();
+    expect(transforms.at(-1)?.scale).toBe(2);
+    expect(transforms.at(-1)).toEqual(backend.camera);
+  });
+
+  it("a user pan mid-tween cancels the pan", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.panToPoint(2000, 300, { durationMs: 400 });
+    backend.runTicker(100);
+    expect(centerOf(backend).x).toBeGreaterThan(400); // the pan was under way
+    engine.dispatchPointerDown({ x: 0, y: 0 }, { pointerId: 1 } as PointerEvent);
+    engine.dispatchPointerMove({ x: 10, y: 0 }, { pointerId: 1 } as PointerEvent);
+    const held = { ...backend.camera! };
+    backend.runTicker(300);
+    expect(backend.camera).toEqual(held);
+  });
+});
+
+test("the snap mode is orthogonal to setSnapEnabled: a snap-off scene stays identity under vertex mode", () => {
+  const { engine } = makeEngine(); // square / 100
+  engine.setSnapMode("vertex");
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 140, y: 160 }); // identity, mode irrelevant
+  engine.setSnapEnabled(true);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 100, y: 200 }); // mode applies again
 });
 
 test("a second pointer mid-gesture is ignored (single-pointer dispatch)", () => {
@@ -603,7 +833,7 @@ test("start renders existing drawing and template docs", () => {
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
       { op: "create", doc: { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "freehand", points: [0, 0, 5, 5] }, stroke: { color: "#fff", width: 1 }, fill: null }, system: {}, created_at: 0, updated_at: 0 } },
-      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, color: "#3388ff" }, system: {}, created_at: 0, updated_at: 0 } },
+      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0, angle: null, width: null }, color: "#3388ff" }, system: {}, created_at: 0, updated_at: 0 } },
     ],
   });
   engine.start();
@@ -707,7 +937,7 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
   });
   onUpdate({ payload: {
     mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
-    renderHints: ["desaturate"], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
+    renderHints: [{ kind: "desaturate" }], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
   }, computedAtSeq: 1 });
   backend.tick?.(1000); // settle the fade
   expect(backend.lighting!.cells.length).toBe(1);
@@ -716,6 +946,30 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
   onUpdate({ payload: { mode: "all" }, computedAtSeq: 2 });
   backend.tick?.(1000);
   expect(backend.lighting!.cells).toEqual([]); // GM → no overlay
+});
+
+test("toLighting narrows tagged renderHints entries and reads a bare string entry as no treatment", () => {
+  const store = new DocumentStore();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend: new MockBackend(), grid: { kind: "square", size: 100 } });
+  engine.start();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1, name: null,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+      embedded: {}, parent_id: null, engine: { grid: { kind: "square", size: 100, distance: null }, background: null, bounds: null, snapToGrid: null, vision: null, lighting: null }, system: {}, created_at: 0, updated_at: 0,
+    } }],
+  });
+  const input = engine.toLightingForTest({
+    mode: "masked", bands: [], lit: [{ scene: "s1", cell: 100, cells: [] }],
+    renderHints: [{ kind: "colorWash", color: "#00aa00", opacity: 0.25 }, "desaturate", { kind: "custom", treatment: "t", params: { x: 1 } }],
+  });
+  expect(input!.hints).toEqual([
+    { kind: "colorWash", color: "#00aa00", opacity: 0.25 },
+    { kind: "none" },
+    { kind: "custom", treatment: "t", params: { x: 1 } },
+  ]);
 });
 
 test("lighting is applied eagerly on a deferred fog frame; fog flush does not restart the fade", () => {
@@ -783,6 +1037,38 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   engine.animateAlongPath("tok1", [[0, 0], [300, 0]]);
   backend.runTicker(500); // advance the injected ticker by 500ms
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
+});
+
+test("an anchored region rides its carrier's move animation, frame by frame, not only at the end", () => {
+  const { store, engine, backend } = makeEngineWithToken("tok1", { x: 0, y: 0 });
+  const region = {
+    ...tokenCmd(2, "r1", 0).ops[0].doc,
+    doc_type: "region",
+    engine: {
+      shape: { kind: "circle", points: [0, 0, 50] }, behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true,
+      triggers: [], elevation: null, ambient_override: null, occludes: null,
+      anchor: { token: "tok1", include_carrier: false, follow_rotation: false },
+    },
+  };
+  store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: region }] });
+  engine.setGrid({ kind: "square", size: 100 });
+  engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+  engine.start();
+  const centreX = () => {
+    const xs = backend.shapes.get("r1")!.points.filter((_, i) => i % 2 === 0);
+    return (Math.min(...xs) + Math.max(...xs)) / 2;
+  };
+  expect(centreX()).toBeCloseTo(0, 5);
+  engine.animateAlongPath("tok1", [[0, 0], [300, 0]]);
+  backend.runTicker(100);
+  const mid = backend.lastTokenX("tok1");
+  expect(mid).toBeGreaterThan(0);
+  expect(mid).toBeLessThan(300);
+  // The region sits where the token's tween currently is. Fails if the engine's ticker stops
+  // calling `RegionView.tick` or the view stops reading the token's live transform.
+  expect(centreX()).toBeCloseTo(mid, 5);
+  backend.runTicker(500);
+  expect(centreX()).toBeCloseTo(300, 0);
 });
 
 // Invariant: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
@@ -1038,7 +1324,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   });
   const li = engine.toLightingForTest({
     mode: "masked", bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
-    renderHints: ["desaturate"],
+    renderHints: [{ kind: "desaturate" }],
     lit: [
       { scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] },      // active: dark band, hint "desaturate"
       { scene: "other", cell: 100, cells: [9, 9, 0, 0, -1] },  // other scene: dropped
@@ -1049,7 +1335,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   expect(li!.cells).toEqual([
     { i: 0, j: 0, band: 2, tint: 0, hint: 0, corners: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] },
   ]);
-  expect(li!.hints).toEqual(["desaturate"]);
+  expect(li!.hints).toEqual([{ kind: "desaturate" }]);
   expect(li!.bands).toEqual([{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }]);
   // GM / garbled → null (cosmetic, no overlay).
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
@@ -1150,8 +1436,8 @@ describe("multi-scene render filtering", () => {
     store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
       { op: "create", doc: buildSceneDoc("w1", { background: "bgA" }, "sA") },
       { op: "create", doc: buildSceneDoc("w1", { background: "bgB" }, "sB") },
-      { op: "create", doc: buildTokenDoc("w1", "sA", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t-a") },
-      { op: "create", doc: buildTokenDoc("w1", "sB", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t-b") },
+      { op: "create", doc: buildTokenDoc("w1", "sA", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "t-a") },
+      { op: "create", doc: buildTokenDoc("w1", "sB", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "t-b") },
     ] });
     return store;
   }
@@ -1920,6 +2206,57 @@ describe("idle-skip", () => {
     expect(backend.renderCount).toBe(1); // the re-reconcile's setToken marked dirty
   });
 
+  it("a nameplatesAndBars flip re-reconciles the token view and drops the plate on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true };
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "always", bars: [] } } } } });
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => settings, bars: () => bars,
+    });
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16);
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+    settings.nameplatesAndBars = false;
+    backend.runTicker(16);
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+  });
+
+  it("reapplyBars projects a newly arrived bars frame without a store commit", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    let bars = EMPTY_BARS;
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 }, bars: () => bars,
+    });
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+    bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "always", bars: [] } } } } });
+    engine.reapplyBars();
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+  });
+
+  it("a pointer move over a token reveals its hover nameplate and leaving the canvas hides it", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "hover", bars: [] } } } } });
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 }, bars: () => bars,
+    });
+    engine.setViewport(400, 400);
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+    const center = engine.camera.sceneToScreen({ x: 0, y: 0 });
+    engine.dispatchPointerMove(center, { pointerId: 1 } as PointerEvent);
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+    engine.clearHoveredToken();
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+  });
+
   it("maps fpsCap uncapped to a 0 frame cap", () => {
     const { backend } = makeIdleEngine({ fpsCap: "uncapped" });
     backend.runTicker(16);
@@ -1939,4 +2276,20 @@ describe("lighting budget", () => {
     expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] });
 
   });
+});
+
+test("a RenderEngine given no viewedSceneId resolves the OLDEST scene, whatever the store order", () => {
+  const { store, backend, engine } = makeEngine();
+  const withBg = (id: string, background: string, createdAt: number) => ({
+    ...buildSceneDoc("w1", { background }, id), created_at: createdAt,
+  });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: withBg("a-newer", "newer-bg", 200) },
+      { op: "create", doc: withBg("z-older", "older-bg", 100) },
+    ],
+  });
+  engine.start();
+  expect(backend.background?.url).toBe(new AssetResolver().url("older-bg"));
 });

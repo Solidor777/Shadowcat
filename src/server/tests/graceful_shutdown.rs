@@ -1,10 +1,11 @@
-//! Reproduces and pins the graceful-shutdown gap named in review: `axum::serve(..)
-//! .with_graceful_shutdown(..)` resolves once ordinary HTTP connections drain, NOT once a live
-//! WebSocket connection's task has finished exiting -- `WebSocketUpgrade::on_upgrade` spawns
-//! that task detached from the hyper connection future that produced the 101 handshake. Drives
-//! `shadowcat::http::serve` (the testable wrapper that adds a post-`axum::serve` drain of live
-//! WebSocket tasks) over a REAL `TcpListener` with a REAL `tokio_tungstenite` client, so this
-//! observes the actual wire behavior rather than an in-process mock.
+//! Reproduces and pins a graceful-shutdown gap of `axum::serve`.
+//!
+//! `axum::serve(..) .with_graceful_shutdown(..)` resolves once ordinary HTTP connections drain, NOT
+//! once a live WebSocket connection's task has finished exiting -- `WebSocketUpgrade::on_upgrade`
+//! spawns that task detached from the hyper connection future that produced the 101 handshake. The
+//! test drives `shadowcat::http::serve` (the testable wrapper that adds a post-`axum::serve` drain
+//! of live WebSocket tasks) over a REAL `TcpListener` with a REAL `tokio_tungstenite` client, so
+//! this observes the actual wire behavior rather than an in-process mock.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -43,6 +44,13 @@ async fn seeded_state() -> (AppState, String, String) {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::new(
+            std::env::temp_dir(),
+            shadowcat::trash::TrashRetention::Disabled,
+        )),
     };
     (state, "u".to_string(), world.id.to_string())
 }
@@ -55,15 +63,10 @@ async fn graceful_shutdown_delivers_a_close_frame_to_a_live_websocket_before_ser
     let addr = listener.local_addr().unwrap();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    // Mirrors `main::shutdown_signal`'s own shape: the future `axum::serve(..)
-    // .with_graceful_shutdown` is given must itself call `WsState::trigger_shutdown()` before
-    // resolving -- `http::serve` does not do this on the caller's behalf, since a caller with no
-    // WebSocket sessions to notify (or a caller composing several shutdown triggers) may not
-    // want it invoked automatically.
-    let trigger_ws = ws_state.clone();
+    // The shutdown future only resolves: `http::serve` itself tells live WebSocket sessions to
+    // close (its drain hook) and waits for them, for a requested shutdown as for an ended source.
     let shutdown_fut = async move {
         let _ = shutdown_rx.await;
-        trigger_ws.trigger_shutdown();
     };
     let serve_task = tokio::spawn(http::serve(listener, state, shutdown_fut));
 
@@ -177,10 +180,8 @@ async fn the_connection_guard_is_live_before_the_upgrade_response_completes() {
     let addr = listener.local_addr().unwrap();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let trigger_ws = ws_state.clone();
     let shutdown_fut = async move {
         let _ = shutdown_rx.await;
-        trigger_ws.trigger_shutdown();
     };
     let serve_task = tokio::spawn(http::serve(listener, state, shutdown_fut));
 
@@ -223,4 +224,148 @@ async fn the_connection_guard_is_live_before_the_upgrade_response_completes() {
     drop(ws);
     shutdown_tx.send(()).unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(10), serve_task).await;
+}
+
+/// A connection source that has already ended.
+struct Exhausted;
+
+impl shadowcat::http::conn_serve::ConnSource for Exhausted {
+    type Io = tokio::net::TcpStream;
+
+    async fn accept(
+        &mut self,
+    ) -> std::io::Result<Option<(tokio::net::TcpStream, shadowcat::tls::ConnMeta)>> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn serve_returns_an_error_when_its_source_ends_without_a_shutdown_request() {
+    let (state, _, _) = seeded_state().await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        http::serve(Exhausted, state, std::future::pending()),
+    )
+    .await
+    .expect("serve must return when its source ends");
+    let err = result.expect_err("a dead source is a failure, not a clean shutdown");
+    assert!(err.to_string().contains("source ended"), "{err}");
+}
+
+/// A WebSocket client over HTTP/1.1 that completes the upgrade and then never reads again, with a
+/// receive buffer small enough that the server cannot park a flood in the kernel.
+async fn non_reading_ws_client(
+    addr: std::net::SocketAddr,
+    cookie: &str,
+    world: &str,
+) -> tokio::net::TcpStream {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    let request = format!(
+        "GET /ws?world={world} HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\n\
+         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: {cookie}\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"),
+        "the upgrade was refused: {}",
+        String::from_utf8_lossy(&head)
+    );
+    stream
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_h1_session_whose_peer_stopped_reading_ends_within_the_shutdown_bound() {
+    use shadowcat::http::conn_serve::ConnLimits;
+
+    let (state, username, world) = seeded_state().await;
+    let ws_state = state.ws.clone();
+    let repo = state.repo.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let drain = Duration::from_secs(1);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = tokio::spawn(http::serve_with(
+        listener,
+        state,
+        async move {
+            let _ = shutdown_rx.await;
+        },
+        ConnLimits {
+            drain_timeout: drain,
+            ..ConnLimits::default()
+        },
+    ));
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("http://{addr}/api/login"))
+        .json(&serde_json::json!({ "username": username, "password": "pw" }))
+        .send()
+        .await
+        .unwrap();
+    let cookie = res
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let _peer = non_reading_ws_client(addr, &cookie, &world).await;
+    assert_eq!(ws_state.live_connection_count(), 1);
+
+    // Far more than the kernel buffers on either side hold: the session blocks inside a send.
+    let room = ws_state
+        .rooms
+        .get_or_create(repo.as_ref(), world.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let filler = "x".repeat(60_000);
+    for _ in 0..20 {
+        for _ in 0..20 {
+            room.broadcast_aux(shadowcat::ws::protocol::ServerMsg::SearchError {
+                request_id: uuid::Uuid::new_v4(),
+                message: filler.clone(),
+            });
+        }
+        // Lets the session task drain the broadcast ring between bursts.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        ws_state.live_connection_count(),
+        1,
+        "the session ended before shutdown; the peer was not stalled"
+    );
+
+    let started = std::time::Instant::now();
+    shutdown_tx.send(()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(30), serve)
+        .await
+        .expect("serve_with never returned")
+        .unwrap();
+    result.expect("a requested shutdown is not an error");
+    assert!(
+        started.elapsed() < drain + http::SESSION_GRACE + Duration::from_millis(500),
+        "serve_with outlasted the shared shutdown bound: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        ws_state.live_connection_count(),
+        0,
+        "the session of a peer that stopped reading outlived the shutdown"
+    );
 }

@@ -122,6 +122,46 @@ describe("PlaylistSheet", () => {
     expect(playOneShot).toHaveBeenCalledWith("a1");
   });
 
+  it("a soundboard track's trigger sends the transport play op and never the local one-shot", async () => {
+    const playOneShot = vi.fn();
+    const transport = vi.fn();
+    const calls: unknown[] = [];
+    const doc = buildPlaylistDoc("w1", "Board", engine([TRACK_A, TRACK_B]));
+    const documents = storeWith(doc);
+    const context = setAppContextForTest({
+      documents,
+      dispatchIntent: confirmingDispatch(documents, calls),
+      canEdit: () => true,
+      audio: {
+        channels: { master: { gain: 1, muted: false } },
+        setChannel: () => {},
+        unlock: async () => {},
+        duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+        playOneShot,
+        serverNow: () => 0,
+        transport,
+      } as unknown as AudioApi,
+    });
+    const { getByTestId, getAllByTestId, queryAllByTestId } = render(PlaylistSheet, {
+      props: { docId: doc.id, systemPrefix: "/system", close: () => {} },
+      context,
+    });
+    // The trigger exists only in soundboard mode.
+    expect(queryAllByTestId("track-trigger")).toHaveLength(0);
+    await fireEvent.change(getByTestId("playlist-mode"), { target: { value: "soundboard" } });
+    await fireEvent.click(getAllByTestId("track-trigger")[0]);
+    expect(transport).toHaveBeenCalledWith({
+      type: "play",
+      playlist: doc.id,
+      asset: null,
+      track_index: 0,
+      channel: null,
+      gain: null,
+      loop: null,
+    });
+    expect(playOneShot).not.toHaveBeenCalled();
+  });
+
   it("the asset picker is scoped to the audio kind", async () => {
     const calls: unknown[] = [];
     const pickAsset = vi.fn().mockResolvedValue("picked-asset");

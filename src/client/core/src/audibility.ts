@@ -12,6 +12,8 @@ export interface AudibleEmitter {
   gain: number;
   /** Stereo pan, `-1..=1`. */
   pan: number;
+  /** Whether wall occlusion reduced `gain` this frame; the player filters the sound while set. */
+  muffled: boolean;
   /** Loop the asset. */
   loop: boolean;
 }
@@ -50,6 +52,7 @@ const sceneAudibilitySchema = z.object({
       asset: z.string(),
       gain: z.number().finite(),
       pan: z.number().finite(),
+      muffled: z.boolean(),
       loop: z.boolean(),
     }),
   ),

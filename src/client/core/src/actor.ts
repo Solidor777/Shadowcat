@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission, FactionStance, Faction, FacingVision } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -36,6 +36,12 @@ export interface EffectiveActor {
   /** The assigned faction's id, or `null` for no faction. Resolve the `Faction` record itself via
    * the world's `FactionRegistryEngine`. */
   faction: string | null;
+  /** The token's effective stance toward the party: the per-token `overrides.disposition`, else
+   * the assigned faction record's `stance`, else `"neutral"` (no faction, or a dangling faction
+   * link). Read from the same faction-registry lookup as `movement`, never a second registry
+   * read. For an identity-hidden token a non-owner never receives the override or the faction
+   * link, so this resolves `"neutral"` — indistinguishable from an unfactioned token. */
+  disposition: FactionStance;
   /** Raw effective condition ids (not display entries); resolve badges via `resolveConditions`. */
   conditions: string[];
   /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
@@ -63,6 +69,11 @@ export interface EffectiveActor {
   sound: SoundEmission | null;
   /** Effective VFX emission, or `null` for none. Same wholesale-override precedence as `aura`. */
   vfx: VfxEmission | null;
+  /** Effective facing-limited field of view, or `null` for an all-round one. Per-token
+   * `overrides.facing_vision` replaces the actor base wholesale, exactly like `visionModes`
+   * (mirrors the server's `SceneEcs::token_facing_vision`). Takes effect only on a scene whose
+   * resolved `facingVision` switch is on; see `resolveTokenFacingVision`. */
+  facingVision: FacingVision | null;
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -70,18 +81,19 @@ export interface EffectiveActor {
  * @param actorDoc The resolved actor document (linked live, or the token's embedded copy).
  * @param base The actor's `engine` body.
  * @param overrides The token's own override whitelist, if any (absent for an embedded/instanced actor).
- * @param factionMovement The linked faction record's `movement` tags ([] when the actor names no
- * faction or the link dangles); unioned into `movement` unless an override replaces the set.
+ * @param faction The linked faction record (`undefined` when the actor names no faction or the
+ * link dangles): its `movement` tags union into `movement` unless an override replaces the set,
+ * and its `stance` is the `disposition` an override does not replace.
  * @returns The projected `EffectiveActor`.
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenActor for the public entry point)
  * declare const actorDoc: WireDocument;
  * declare const token: WireDocument;
- * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides, []);
+ * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides, undefined);
  * ```
  */
-function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null, factionMovement: string[] = []): EffectiveActor {
+function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null, faction?: Faction): EffectiveActor {
   return {
     name: overrides?.name ?? actorDoc.name,
     displayName: base.displayName,
@@ -89,6 +101,8 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     size: overrides?.size ?? base.size,
     shape: (overrides?.shape ?? base.shape) as "square" | "circle",
     faction: base.faction,
+    // Override, else the faction record's stance, else neutral (an unfactioned token).
+    disposition: overrides?.disposition ?? faction?.stance ?? "neutral",
     // Fail-closed: a missing/redacted actor `conditions` yields no conditions, never a throw in
     // the downstream `for...of` (the single chokepoint protecting every EffectiveActor consumer).
     conditions: base.conditions ?? [],
@@ -97,11 +111,12 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     // Wholesale replacement like `visionModes`; an override with `enabled: false` suppresses.
     light: overrides?.light ?? base.light ?? null,
     // Override replaces the whole resolved set; otherwise actor ∪ faction, deduplicated.
-    movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...factionMovement])],
+    movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...(faction?.movement ?? [])])],
     // Emissions follow the same wholesale-override precedence as visionModes; null when absent.
     aura: overrides?.aura ?? base.aura ?? null,
     sound: overrides?.sound ?? base.sound ?? null,
     vfx: overrides?.vfx ?? base.vfx ?? null,
+    facingVision: overrides?.facing_vision ?? base.facing_vision ?? null,
   };
 }
 
@@ -148,23 +163,52 @@ export function actorDisplayName(a: { /** The real name, or `null`/absent when u
  */
 export function resolveTokenActor(token: WireDocument, store: ReadableDocuments): EffectiveActor | null {
   const eng = token.engine as TokenEngine | undefined;
-  // The faction-record join for the `movement` union: a dangling faction id (or an absent
-  // registry singleton) contributes no tags — fail-closed, mirroring `resolveConditions`'s
-  // registry lookup. Read once per resolution so both branches below share the one lookup.
+  // The faction-record join for the `movement` union and the `disposition` fallback: a dangling
+  // faction id (or an absent registry singleton) contributes nothing — fail-closed, mirroring
+  // `resolveConditions`'s registry lookup. Read once per resolution so both branches below share
+  // the one lookup.
   const factions = (store.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined)?.factions ?? {};
-  const factionMovement = (faction: string | null): string[] => (faction ? factions[faction]?.movement ?? [] : []);
+  const factionOf = (faction: string | null | undefined): Faction | undefined => (faction ? factions[faction] : undefined);
   if (eng?.actor_id) {
     const actor = store.get(eng.actor_id);
     if (!actor) return null;
     const base = actor.engine as ActorEngine;
-    return project(actor, base, eng.overrides, factionMovement(base.faction));
+    return project(actor, base, eng.overrides, factionOf(base.faction));
   }
   const embedded = token.embedded?.actor?.[0];
   if (embedded) {
     const base = embedded.engine as ActorEngine;
-    return project(embedded, base, undefined, factionMovement(base.faction));
+    return project(embedded, base, undefined, factionOf(base.faction));
   }
   return null;
+}
+
+/** A token's effective facing-limited field of view, by the precedence of the server's
+ * `SceneEcs::resolve_token_actor_field`: a linked token reads `overrides.facing_vision`, else its
+ * actor's; a dangling link yields `null` (overrides ignored); an instanced token reads its
+ * embedded actor's; an actorless token reads its own `TokenEngine.facing_vision`. The first three
+ * cases are `resolveTokenActor`'s `facingVision`; only the actorless case reads the token body.
+ * The value matters only on a scene whose resolved `facingVision` switch is on.
+ * @param token The token document to resolve.
+ * @param store The document store to resolve a linked actor against.
+ * @returns The effective `FacingVision`, or `null` when the token sees all round.
+ * @example
+ * ```ts
+ * import { resolveTokenFacingVision, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const token: WireDocument;
+ * declare const store: ReadableDocuments;
+ * const facing = resolveTokenFacingVision(token, store);
+ * facing?.arc;
+ * ```
+ */
+export function resolveTokenFacingVision(token: WireDocument, store: ReadableDocuments): FacingVision | null {
+  const eff = resolveTokenActor(token, store);
+  if (eff) return eff.facingVision;
+  const eng = token.engine as TokenEngine | undefined;
+  // A set `actor_id` with no resolvable actor is a dangling link: no fallback to the token body.
+  if (eng?.actor_id) return null;
+  return eng?.facing_vision ?? null;
 }
 
 /** Structural equality for the discriminated `WireScope` union — never `===`, which compares
@@ -269,6 +313,10 @@ interface ConditionDisplayEntry {
    * unfolded), or absent for none — folding into the token's render fx is `TokenView.toSpec`'s
    * job, so display-only consumers can ignore this. */
   fx: Condition["fx"];
+  /** `true` when the registry marks the condition as an overlay (a stored entry with no
+   * `overlay` key reads as `false`); `TokenView.toSpec` renders the first overlay condition in
+   * effective order as one large centered glyph, in addition to its badge. */
+  overlay: boolean;
 }
 
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
@@ -276,7 +324,7 @@ interface ConditionDisplayEntry {
  * never a render error (fail-closed). The single read-through every condition consumer uses.
  * @param token The token to resolve effective conditions for.
  * @param store The document store to resolve the actor + condition registry against.
- * @returns Display entries `{id, name, icon, fx}`, one per effective condition id that IS present in
+ * @returns Display entries `{id, name, icon, fx, overlay}`, one per effective condition id that IS present in
  * the world's condition registry (an unregistered id is dropped, not the whole list); `[]` for a
  * raw/dangling token, or when none of the token's condition ids are registered.
  * @example
@@ -285,7 +333,7 @@ interface ConditionDisplayEntry {
  *
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null }, ...]
+ * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null, overlay: false }, ...]
  * ```
  */
 export function resolveConditions(token: WireDocument, store: ReadableDocuments): ConditionDisplayEntry[] {
@@ -296,7 +344,7 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
   const out: ConditionDisplayEntry[] = [];
   for (const id of eff.conditions) {
     const c = map[id];
-    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx });
+    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx, overlay: c.overlay === true });
   }
   return out;
 }
@@ -367,6 +415,37 @@ export interface TokenBox {
   h: number;
   /** The footprint shape used for hit-testing. */
   shape: "square" | "circle";
+}
+
+/** A point in scene pixels, the coordinate space `TokenBox` is stated in. */
+export interface ScenePoint {
+  /** Scene-pixel x coordinate. */
+  x: number;
+  /** Scene-pixel y coordinate. */
+  y: number;
+}
+
+/** Whether `p` lies inside a token footprint: ellipse containment for a `"circle"`, the
+ * axis-aligned box for a `"square"`. Rotation is ignored and a degenerate box (`w <= 0 || h <= 0`)
+ * contains nothing. The ONE picking predicate — the select tool's hit-test and the canvas hover
+ * both read it, so a token the cursor hovers is the token a click would pick.
+ * @param box The token footprint, as `resolveTokenBox` or a render spec states it.
+ * @param p The scene-coordinate point to test.
+ * @returns `true` when `p` is inside the footprint.
+ * @example
+ * ```ts
+ * import { tokenBoxContains } from "@shadowcat/core";
+ *
+ * tokenBoxContains({ x: 0, y: 0, w: 100, h: 100, shape: "square" }, { x: 40, y: -40 }); // true
+ * ```
+ */
+export function tokenBoxContains(box: TokenBox, p: ScenePoint): boolean {
+  if (box.w <= 0 || box.h <= 0) return false;
+  const dx = p.x - box.x;
+  const dy = p.y - box.y;
+  const hw = box.w / 2;
+  const hh = box.h / 2;
+  return box.shape === "circle" ? (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1 : Math.abs(dx) <= hw && Math.abs(dy) <= hh;
 }
 
 /** See the `TokenBox` doc above for the wire-extent-vs-authored-fallback resolution rule.
@@ -457,9 +536,34 @@ function resolveFace(
   return visual.faces[names[0]];
 }
 
-/** Structural validity of an `"animated"` `RenderVisual`: a finite positive `fps`, and either a
+/** Structural validity of an optional `VisualTransform` on an `"image"`/`"animated"` visual: absent
+ * (`undefined`/`null`) is valid; present needs finite `anchor.x`/`anchor.y`, a finite positive
+ * `scale`, a `#rrggbb` string `tint` when set, and a finite `facing` in `[0, 360)` when set. A hand-edited or legacy document can carry a
+ * value the type system forbids, so the check mirrors the server's `VisualTransform::validate`
+ * and fails the whole visual closed. Not exported (folded into `resolveTokenVisual`'s public
+ * surface).
+ * @param t The transform to validate, or absent.
+ * @returns `true` iff `t` is absent or well-formed.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see resolveTokenVisual for the public entry point)
+ * isValidTransform({ anchor: { x: 0.5, y: 0.5 }, scale: 1, tint: "#ffffff" });
+ * ```
+ */
+function isValidTransform(t: VisualTransform | null | undefined): boolean {
+  if (t === undefined || t === null) return true;
+  if (typeof t !== "object" || !t.anchor || typeof t.anchor !== "object") return false;
+  if (!Number.isFinite(t.anchor.x) || !Number.isFinite(t.anchor.y)) return false;
+  if (!Number.isFinite(t.scale) || t.scale <= 0) return false;
+  if (t.facing !== undefined && t.facing !== null && !(Number.isFinite(t.facing) && t.facing >= 0 && t.facing < 360)) return false;
+  if (t.tint === undefined || t.tint === null) return true;
+  return typeof t.tint === "string" && /^#[0-9a-fA-F]{6}$/.test(t.tint);
+}
+
+/** Structural validity of an `"animated"` `RenderVisual`: a finite positive `fps`, either a
  * non-empty `frames` array (`"frames"` source) or positive-integer `rows`/`cols` (`"sheet"`
- * source). Not exported (folded into `resolveTokenVisual`'s public surface).
+ * source), and a well-formed optional `transform` (`isValidTransform`). Not exported (folded into
+ * `resolveTokenVisual`'s public surface).
  * @param v The animated visual to validate.
  * @returns `true` iff `v` is structurally playable.
  * @example
@@ -469,6 +573,7 @@ function resolveFace(
  * ```
  */
 function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` to its `"animated"` union member. */ kind: "animated" }>): boolean {
+  if (!isValidTransform(v.transform)) return false;
   if (!Number.isFinite(v.fps) || v.fps <= 0) return false;
   if (v.source.type === "frames") return v.source.frames.length > 0;
   return Number.isInteger(v.source.rows) && v.source.rows > 0 && Number.isInteger(v.source.cols) && v.source.cols > 0;
@@ -489,7 +594,7 @@ function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` t
  */
 function isValidGeneratedArt(art: RenderVisual | undefined): boolean {
   if (!art) return false;
-  if (art.kind === "image") return true;
+  if (art.kind === "image") return isValidTransform(art.transform);
   if (art.kind === "animated") return isValidAnimated(art);
   return false;
 }
@@ -523,7 +628,7 @@ export function resolveTokenVisual(
   if (!visual) return null;
   const resolved = visual.kind === "faces" ? resolveFace(visual, eng?.face, actor?.conditions ?? []) : visual;
   if (!resolved) return null;
-  if (resolved.kind === "image") return resolved;
+  if (resolved.kind === "image") return isValidTransform(resolved.transform) ? resolved : null;
   if (resolved.kind === "animated") return isValidAnimated(resolved) ? resolved : null;
   if (resolved.kind !== "generated") return null;
   if (resolved.crop !== "circle" && resolved.crop !== "square") return null;

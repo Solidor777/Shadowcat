@@ -20,6 +20,7 @@ fn diagonal_steps_are_priced_by_the_world_rule() {
         ("manhattan", 2.0),
         ("euclidean", std::f64::consts::SQRT_2),
         ("alternating", 1.0),
+        ("approximate", 1.5),
     ] {
         let (ecs, scene, token) = scene_with_rule(rule);
         let out = execute_move(
@@ -68,6 +69,87 @@ fn alternating_rule_threads_parity_across_consecutive_diagonals() {
     )
     .expect("admissible");
     assert!((out.cost - 4.0).abs() < 1e-9, "1 + 2 + 1, got {}", out.cost);
+}
+
+#[test]
+fn orthogonal_rule_prices_a_gm_hand_dragged_diagonal_by_euclidean_fallback() {
+    // A GM is exempt from the gameplay gates, `Orthogonal` included, so a GM's hand-dragged
+    // one-cell diagonal is a transition `neighbors_with_cost` does not enumerate and
+    // `execute_move`'s GridStepped arm prices it by the Euclidean span: √2 ≈ 1.414.
+    let (ecs, scene, token) = scene_with_rule("orthogonal");
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 100.0)],
+        true,
+        0.4,
+    )
+    .expect("admissible");
+    assert!(
+        (out.cost - std::f64::consts::SQRT_2).abs() < 1e-9,
+        "a dragged diagonal under `orthogonal` prices at the Euclidean fallback span, got {}",
+        out.cost
+    );
+    assert_eq!(out.stop, (100.0, 100.0));
+    assert!(!out.truncated);
+}
+
+#[test]
+fn orthogonal_rule_stops_a_players_hand_built_diagonal_and_leaves_other_rules_alone() {
+    // A crafted `MoveRequest` path is not routed, so the executor itself must refuse the
+    // diagonal step a scene set to `Orthogonal` forbids: the walk halts at the start, uncharged.
+    let (ecs, scene, token) = scene_with_rule("orthogonal");
+    let mask = empty_mask();
+    let gate = || MoveGateInputs {
+        scene,
+        restriction: MovementRestriction::Unrestricted,
+        visible: &mask,
+        cell: FIXTURE_GRID_SIZE,
+        budget: None,
+        traits: MoveTraits::default(),
+        mover_elevation: crate::scene::elevation::GROUND,
+    };
+    let diagonal = [(0.0, 0.0), (100.0, 100.0)];
+    let out = execute_move(&ecs, gate(), token, &diagonal, false, 0.4).expect("admissible");
+    assert_eq!(out.stop, (0.0, 0.0));
+    assert!(out.truncated);
+    assert!(out.cost.abs() < 1e-9);
+
+    // An orthogonal step under the same rule is unaffected.
+    let orthogonal = [(0.0, 0.0), (100.0, 0.0)];
+    let out = execute_move(&ecs, gate(), token, &orthogonal, false, 0.4).expect("admissible");
+    assert_eq!(out.stop, (100.0, 0.0));
+    assert!(!out.truncated);
+
+    // Another rule still admits the same diagonal for a player.
+    let (ecs, scene, token) = scene_with_rule("chebyshev");
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        &diagonal,
+        false,
+        0.4,
+    )
+    .expect("admissible");
+    assert_eq!(out.stop, (100.0, 100.0));
 }
 
 #[test]
@@ -204,9 +286,12 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
 
 /// The exempt-mover flag set: the shape `MoveGateInputs.traits` takes when the caller resolved
 /// a terrain-exempt tag off the mover.
-const EXEMPT_TRAITS: MoveTraits = MoveTraits {
-    ignore_terrain: true,
-};
+fn exempt_traits() -> MoveTraits {
+    MoveTraits {
+        ignore_terrain: true,
+        tags: std::collections::BTreeSet::new(),
+    }
+}
 
 #[test]
 fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_multiplier() {
@@ -232,7 +317,7 @@ fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_
         grounded.cost
     );
     let exempt =
-        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
+        execute_move(&ecs, gate(exempt_traits()), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.0).abs() < 1e-9,
         "exempt mover pays the unweighted step, got {}",
@@ -256,7 +341,7 @@ fn exempt_mover_budget_stop_uses_the_exempt_cost() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
@@ -301,7 +386,7 @@ fn exempt_mover_continuous_transition_and_tail_both_read_unweighted() {
         grounded.cost
     );
     let exempt =
-        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
+        execute_move(&ecs, gate(exempt_traits()), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.1).abs() < 1e-9,
         "exempt mover pays the raw Euclidean span, got {}",
@@ -321,7 +406,7 @@ fn exemption_never_covers_impassable_or_arrest() {
         visible: &mask,
         cell: FIXTURE_GRID_SIZE,
         budget: None,
-        traits: EXEMPT_TRAITS,
+        traits: exempt_traits(),
         mover_elevation: crate::scene::elevation::GROUND,
     };
     let blocked = execute_move(

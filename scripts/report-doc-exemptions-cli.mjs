@@ -9,10 +9,20 @@
 // Cross-platform: node:path/node:fs only.
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CorpusListingError } from "./lib/gate-corpus.mjs";
 import { scanDocExemptions } from "./report-doc-exemptions.mjs";
 
 const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
-const { total, scanned, bySource } = scanDocExemptions(repo);
+let scan;
+try {
+  scan = scanDocExemptions(repo, console.log);
+} catch (e) {
+  // Only a git failure while listing the corpus ends the run quietly; any other error keeps its stack.
+  if (!(e instanceof CorpusListingError)) throw e;
+  console.error(`report-doc-exemptions: ${e.message}`);
+  process.exit(2);
+}
+const { total, scanned, bySource } = scan;
 console.log(
   `typedoc: ${total} documentation exemption(s) active across ${scanned.length} typedoc*.json config(s) scanned`,
 );

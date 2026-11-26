@@ -1,8 +1,11 @@
-//! Server-side rollable-table draws: `handle_draw_table` resolves one or
-//! more draws from a `table` document and posts the result to chat as ONE
-//! `MessageKind::Roll` message, through the exact same `build_message_doc` +
-//! `Room::publish` chokepoint every other message goes through. `draw::
-//! draw_table` does the actual recursive per-draw resolution.
+//! This module resolves server-side rollable-table draws.
+//!
+//! `handle_draw_table` resolves one or more draws from a `table` document and posts the result to
+//! chat as ONE `MessageKind::Roll` message, built by `build_message_doc` and published through
+//! `Room::publish`.
+//!
+//! Each top-level draw becomes one `Segment::TableDraw` in that message, and `draw::draw_table`
+//! does the actual recursive per-draw resolution.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -142,7 +145,9 @@ impl From<SendMessageError> for DrawTableError {
             | SendMessageError::Forbidden
             | SendMessageError::AudienceLocked
             | SendMessageError::Roll(_)
-            | SendMessageError::RollImmutable => DrawTableError::Forbidden,
+            | SendMessageError::RollImmutable
+            | SendMessageError::NoReplyTarget
+            | SendMessageError::BlindNeedsRoll => DrawTableError::Forbidden,
         }
     }
 }
@@ -290,6 +295,7 @@ pub(crate) async fn handle_draw_table(
     let pending = chat::enrich_link_previews(
         &mut content,
         chat::EnrichDeps {
+            world_id: room.world_id,
             repo,
             fetch: preview,
         },
@@ -301,7 +307,15 @@ pub(crate) async fn handle_draw_table(
     )
     .await;
 
-    let doc = chat::build_message_doc(
+    let blind = chat::readers_for_audience(
+        repo,
+        room.world_id,
+        ctx.user_id,
+        actor_owner.as_ref(),
+        &audience,
+    )
+    .await?;
+    let doc = chat::build_message_doc_with_readers(
         room.world_id,
         ctx.user_id,
         MessageDraft {
@@ -311,7 +325,9 @@ pub(crate) async fn handle_draw_table(
             kind: MessageKind::Roll,
             content,
             source: None,
+            system: None,
         },
+        &blind,
         now,
     );
     room.publish(
@@ -326,5 +342,7 @@ pub(crate) async fn handle_draw_table(
     .map_err(DrawTableError::Data)
 }
 
+#[cfg(test)]
+mod nested_depth_tests;
 #[cfg(test)]
 mod tests;

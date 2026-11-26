@@ -10,14 +10,15 @@
  * ```
  * use shadowcat::data::engine::TemplateShape;
  *
- * let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0 };
+ * let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0, angle: None, width: None };
  * assert_eq!(shape.size, 15.0);
  * ```
  */
 export type TemplateShape = { 
 /**
  * "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
- * vocabulary; kept a `String` in v1).
+ * vocabulary). The server stores any string within the engine band's
+ * `MAX_SYSTEM_BYTES` cap and does not read it.
  */
 kind: string, 
 /**
@@ -29,11 +30,34 @@ x: number,
  */
 y: number, 
 /**
- * Radius/length, scene units.
+ * The scale of this field is per-`kind` (`width`'s doc details the full
+ * convention): `"circle"` — radius; `"cone"` — the apex-to-base-corner
+ * distance; `"rect"` — HALF the first-axis side (full side `2*size`);
+ * `"line"` — the full segment length.
  */
 size: number, 
 /**
  * Orientation in degrees; the render layer converts via standard radian
  * math (`TemplateView.toSpec`).
  */
-direction: number, };
+direction: number, 
+/**
+ * The cone's full aperture — the angle BETWEEN the two base corners
+ * (`TemplateView.toSpec`'s `conePoints` halves it to sweep `direction ±
+ * angle/2`), degrees, `(0.0, 180.0)` EXCLUSIVE on both ends: `conePoints`
+ * returns a three-point wedge (apex + two base corners), which is
+ * collinear (zero area) at exactly 180° and opens AWAY from `direction`
+ * past 180° — neither is a representable cone, so both are refused at
+ * ingress rather than silently rendering nothing or backwards. Absent
+ * reproduces the render layer's default 60° cone
+ * (`DEFAULT_CONE_ANGLE_DEGREES` client-side). Unused for
+ * `"circle"`/`"rect"`/`"line"`.
+ */
+angle: number | null, 
+/**
+ * The shape's second/perpendicular dimension, scaled by `kind`: `"rect"` — HALF the
+ * second-axis side (full side `2*width`; the client reads an absent `width` as `size`,
+ * a square of side `2*size`); `"line"` — the FULL perpendicular thickness (absent or
+ * `0.0` is a zero-width segment). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
+ */
+width: number | null, };

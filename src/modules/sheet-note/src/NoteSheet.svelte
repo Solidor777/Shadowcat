@@ -1,9 +1,10 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
-  import { getPointer, firstChannel, parseNoteBody, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
+  import { getAppContext, setField, SegmentList, PermissionsEditor } from "@shadowcat/ui-kit";
+  import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
+  import { collectHeadings, findAnchor, type TocEntry } from "./note-toc";
 
-  // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
+  // Note sheet: title over the envelope band, sharing through `PermissionsEditor`, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
   // author's raw `engine.source`, sort, and parent/children tree navigation. Reads the
   // OPTIMISTIC store; every write's `old` is the RAW current stored value.
@@ -64,9 +65,73 @@
     return firstChannel(ctx.documents);
   });
   const body = $derived.by(() => (doc ? parseNoteBody(doc) : null));
+  /** The headings read from the rendered body, in order; drives the table of contents. */
+  let headings = $state.raw<TocEntry[]>([]);
+  /** The body fieldset; heading collection and anchor scrolling are scoped to it. */
+  let bodyEl = $state<HTMLElement | null>(null);
 
-  const canEditVisibility = $derived(!!doc && ctx.canEdit(doc, "/permissions/default"));
+  // The rendered headings are sanitized markup with no ids. The table of contents and the ids
+  // both come from the rendered heading elements, so they cannot disagree. Re-runs whenever the
+  // body changes, after the new markup is in the DOM.
+  $effect(() => {
+    void body;
+    headings = bodyEl ? collectHeadings(bodyEl) : [];
+  });
+
+  // The body's fragment links are plain anchors inside `{@html}` markup, so the click listener
+  // is attached to the element rather than declared in the template.
+  $effect(() => {
+    const el = bodyEl;
+    if (!el) return;
+    el.addEventListener("click", onBodyClick);
+    return () => el.removeEventListener("click", onBodyClick);
+  });
+
+  /** Scrolls the heading with id `slug` into view inside the note body.
+   * @param slug The heading anchor id.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to TOC and in-body fragment links
+   * scrollToHeading("intro");
+   * ```
+   */
+  function scrollToHeading(slug: string): void {
+    if (bodyEl) findAnchor(bodyEl, slug)?.scrollIntoView({ block: "start" });
+  }
+
+  /** Handles a click on a same-page fragment link in the rendered body: the hash router owns
+   * `location.hash`, so the link scrolls inside the note instead of navigating.
+   * @param event The click event bubbling from the body.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the body fieldset's click
+   * declare const event: MouseEvent;
+   * onBodyClick(event);
+   * ```
+   */
+  function onBodyClick(event: MouseEvent): void {
+    const link = (event.target as Element).closest("a");
+    const href = link?.getAttribute("href");
+    if (!href || !href.startsWith("#")) return;
+    event.preventDefault();
+    scrollToHeading(href.slice(1));
+  }
+  const kindPath = $derived(`${enginePrefix}/kind`);
+  const pageKind = $derived.by(() => (doc ? parseNotePageKind(doc) : ({ kind: "text" } as const)));
+  /** The media asset id of an image/pdf/video page, or `null` for a text page. */
+  const mediaAssetId = $derived(pageKind.kind === "text" ? null : pageKind.asset_id);
+  /** The serve URL for the media asset; the resolver's placeholder when the asset was deleted. */
+  const mediaUrl = $derived(mediaAssetId === null ? null : ctx.assets.url(mediaAssetId));
+  /** Set by the media element's error event; reset whenever the asset id changes. */
+  let mediaErrored = $state(false);
+  let erroredFor = $state<string | null>(null);
+  /** True when the media cannot be shown: the resolver gave its placeholder, or the element failed to load. */
+  const mediaFailed = $derived(
+    mediaUrl === ctx.assets.placeholder() || (mediaErrored && erroredFor === mediaAssetId),
+  );
+
   const canEditSource = $derived(!!doc && ctx.canEdit(doc, sourcePath));
+  const canEditKind = $derived(!!doc && ctx.canEdit(doc, kindPath));
 
   /** The children of this note (`parent_id === docId`), ordered by `(engine.sort, created_at)`. */
   const children = $derived.by((): NoteChildSummary[] => {
@@ -164,7 +229,7 @@
    * @param value The new default visibility (`"none"` or `"observer"`).
    * @example
    * ```
-   * // private function; not part of the public API — wired to the visibility select
+   * // private function; not part of the public API — used by "Present to players"
    * setVisibility("observer");
    * ```
    */
@@ -184,6 +249,54 @@
   function setSort(value: number): void {
     if (!doc) return;
     setField(ctx, docId, sortPath, sort, value);
+  }
+
+  /** Records that the media element for the current asset failed to load.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the media element's error event
+   * markMediaErrored();
+   * ```
+   */
+  function markMediaErrored(): void {
+    mediaErrored = true;
+    erroredFor = mediaAssetId;
+  }
+
+  /** Presents the note to every connected client. A private note is first shared with an
+   * ordinary visibility `Update` (the server never presents an unshared note), and the
+   * presentation request follows on the same ordered connection. A refusal surfaces as a
+   * notification with the server's reason.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the "Present to players" button
+   * void present();
+   * ```
+   */
+  async function present(): Promise<void> {
+    if (!doc) return;
+    if (doc.permissions.default === "none") setVisibility("observer");
+    try {
+      await ctx.notes.present(docId);
+    } catch (e) {
+      ctx.notify(e instanceof Error ? e.message : String(e), "warning");
+    }
+  }
+
+  /** Opens the shared asset picker and swaps the page's media asset, keeping its kind. Cancel
+   * writes nothing. The picker's `kind` filter is `image` for an image page and `other` for a
+   * PDF or video page.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the "Change media" button
+   * void changeMedia();
+   * ```
+   */
+  async function changeMedia(): Promise<void> {
+    if (!doc || pageKind.kind === "text") return;
+    const picked = await ctx.pickAsset({ kind: pageKind.kind === "image" ? "image" : "other" });
+    if (!picked) return;
+    setField(ctx, docId, kindPath, pageKind, { kind: pageKind.kind, asset_id: picked });
   }
 
   /** Creates a new child note under this one and opens it.
@@ -212,16 +325,46 @@
       <input data-testid="note-title" aria-label={t("sheetNote.title")} value={name ?? ""}
         onchange={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></label>
 
-    {#if canEditVisibility}
-      <label>{t("sheetNote.visibility")}
-        <select data-testid="note-visibility" aria-label={t("sheetNote.visibility")} value={doc.permissions.default}
-          onchange={(e) => setVisibility((e.currentTarget as HTMLSelectElement).value === "observer" ? "observer" : "none")}>
-          <option value="none">{t("sheetNote.visibilityPrivate")}</option>
-          <option value="observer">{t("sheetNote.visibilityShared")}</option>
-        </select></label>
+    <PermissionsEditor {docId} />
+
+    {#if ctx.role === "gm"}
+      <button type="button" data-testid="note-present" onclick={() => void present()}>{t("sheetNote.present")}</button>
     {/if}
 
-    <fieldset class="body" disabled={(channel ?? "") === ""} data-testid="note-body">
+    {#if mediaAssetId !== null && mediaUrl !== null}
+      <div class="media" data-testid="note-media" data-media-kind={pageKind.kind}>
+        {#if mediaFailed}
+          <p class="media-missing" data-testid="note-media-missing">{t("sheetNote.mediaMissing")}</p>
+        {:else if pageKind.kind === "image"}
+          <img src={mediaUrl} alt={name ?? ""} onerror={markMediaErrored} />
+        {:else if pageKind.kind === "pdf"}
+          <!-- The server serves a PDF as an attachment, so an inline viewer shows nothing; the page
+               offers a link that opens it in a new tab instead. -->
+          <a class="media-pdf" data-testid="note-media-pdf-link" href={mediaUrl} target="_blank" rel="noopener noreferrer">{t("sheetNote.openPdf")}</a>
+        {:else}
+          <video src={mediaUrl} controls preload="metadata" onerror={markMediaErrored}>
+            <track kind="captions" />
+          </video>
+        {/if}
+        {#if canEditKind}
+          <button type="button" data-testid="note-change-media" onclick={() => void changeMedia()}>{t("sheetNote.changeMedia")}</button>
+        {/if}
+      </div>
+    {/if}
+
+    {#if headings.length > 0}
+      <nav class="toc" data-testid="note-toc" aria-label={t("sheetNote.toc")}>
+        <ul>
+          {#each headings as h (h.slug)}
+            <li style:margin-inline-start="{(h.level - 1) * 12}px">
+              <a href="#{h.slug}" data-testid="note-toc-link" onclick={(e) => { e.preventDefault(); scrollToHeading(h.slug); }}>{h.text}</a>
+            </li>
+          {/each}
+        </ul>
+      </nav>
+    {/if}
+
+    <fieldset class="body" disabled={(channel ?? "") === ""} data-testid="note-body" bind:this={bodyEl}>
       <legend>{t("sheetNote.title")}</legend>
       {#if body}
         <SegmentList segments={body} channel={channel ?? ""} />
@@ -284,6 +427,13 @@
   .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   label { display: flex; flex-direction: column; gap: 2px; }
   .body { border: 1px solid var(--border); border-radius: var(--radius-1); padding: var(--space-1); }
+  .toc ul { list-style: none; margin: 0; padding: 0; }
+  .toc a { display: inline-block; min-height: 44px; line-height: 44px; }
+  .media { display: flex; flex-direction: column; gap: var(--space-1); }
+  .media img, .media video { max-width: 100%; height: auto; }
+  .media-pdf { display: inline-flex; align-items: center; min-height: 44px; }
+  .media button { min-height: 44px; }
+  .media-missing { opacity: 0.7; font-style: italic; }
   .unrenderable, .missing { opacity: 0.7; font-style: italic; }
   .changed-remotely { color: var(--warning, #b45309); }
   .editor-actions { display: flex; gap: var(--space-1); }

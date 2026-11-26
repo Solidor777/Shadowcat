@@ -9,6 +9,25 @@
  * use shadowcat::data::engine::TriggerEvent;
  *
  * assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
+ * assert_ne!(TriggerEvent::Arrest, TriggerEvent::Exit);
+ * // The four turn/round variants spell exactly like `combat::transition`'s
+ * // own phase vocabulary (`phase_name`).
+ * assert_eq!(
+ *     serde_json::to_value(TriggerEvent::TurnStart).unwrap(),
+ *     serde_json::json!("turn_start")
+ * );
+ * assert_eq!(
+ *     serde_json::to_value(TriggerEvent::TurnEnd).unwrap(),
+ *     serde_json::json!("turn_end")
+ * );
+ * assert_eq!(
+ *     serde_json::to_value(TriggerEvent::RoundStart).unwrap(),
+ *     serde_json::json!("round_start")
+ * );
+ * assert_eq!(
+ *     serde_json::to_value(TriggerEvent::RoundEnd).unwrap(),
+ *     serde_json::json!("round_end")
+ * );
  * ```
  */
-export type TriggerEvent = "enter" | "arrest";
+export type TriggerEvent = "enter" | "arrest" | "exit" | "turn_start" | "turn_end" | "round_start" | "round_end";

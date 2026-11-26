@@ -60,3 +60,9 @@ test("i18n's createSubscriber unsubscribes from i18n.subscribe on teardown", () 
 
   subscribeSpy.mockRestore();
 });
+
+test("no player-facing English string names a test or automation tool", async () => {
+  const { en } = await import("./locales/en");
+  const offenders = Object.entries(en).filter(([, text]) => /playwright|puppeteer|selenium|webdriver/i.test(JSON.stringify(text)));
+  expect(offenders).toEqual([]);
+});

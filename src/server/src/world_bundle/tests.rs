@@ -169,7 +169,7 @@ fn read_bundle_round_trips_write_bundle_output() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let imported = read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let imported = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
 
     assert_eq!(imported.manifest.world_id, world);
     assert_eq!(imported.documents.len(), 1);
@@ -197,7 +197,7 @@ fn read_bundle_rejects_row_count_mismatch() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(
         err,
         WorldBundleError::RowCountMismatch {
@@ -220,7 +220,7 @@ fn read_bundle_rejects_unsupported_schema_version() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(
         err,
         WorldBundleError::UnsupportedSchemaVersion(v) if v == BUNDLE_SCHEMA_VERSION + 1
@@ -243,7 +243,7 @@ fn read_bundle_rejects_archive_not_starting_with_manifest() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(err, WorldBundleError::Malformed(_)));
 }
 
@@ -302,7 +302,7 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(
         matches!(&err, WorldBundleError::Malformed(m) if m.contains("duplicate asset entry")),
         "unexpected error: {err:?}"
@@ -314,6 +314,106 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
     assert!(
         leftover.is_empty(),
         "duplicate-id rejection must remove any already-staged file"
+    );
+}
+
+/// A rejected bundle's already staged canonical and sibling files land in the trash. Replacing the
+/// discards with outright removals leaves the trash empty; dropping the canonical loop leaves the
+/// canonical's staged file in the asset directory; dropping the sibling loop leaves the sibling's.
+#[test]
+fn read_bundle_trashes_the_staged_files_of_a_rejected_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let world = crate::test_ids::test_uuid(89);
+    let asset_id = crate::test_ids::test_uuid(889);
+
+    let mut row_counts = std::collections::BTreeMap::new();
+    for table in [
+        "documents",
+        "world_events",
+        "world_members",
+        "world_invites",
+        "explored_fog",
+        "settings",
+    ] {
+        row_counts.insert(table.to_string(), 0);
+    }
+    row_counts.insert("assets".to_string(), 1);
+    let manifest = crate::data::world_bundle::BundleManifest {
+        schema_version: BUNDLE_SCHEMA_VERSION,
+        world_id: world,
+        world_name: "Rejected".to_string(),
+        world_seq: 0,
+        world_created_at: 0,
+        world_updated_at: 0,
+        exported_at_unix_ms: 0,
+        row_counts,
+    };
+
+    let mut builder = tar::Builder::new(Vec::new());
+    append_bytes(
+        &mut builder,
+        "manifest.json",
+        &serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    for table in [
+        "documents",
+        "world_events",
+        "world_members",
+        "world_invites",
+        "assets",
+        "explored_fog",
+        "settings",
+    ] {
+        append_bytes(&mut builder, &format!("rows/{table}.jsonl"), b"").unwrap();
+    }
+    // A canonical and a sibling are staged before the repeated canonical rejects the bundle.
+    append_bytes(&mut builder, &format!("assets/{asset_id}"), b"FIRST").unwrap();
+    append_bytes(
+        &mut builder,
+        &format!("assets/{asset_id}.thumb.webp"),
+        b"THUMB",
+    )
+    .unwrap();
+    append_bytes(&mut builder, &format!("assets/{asset_id}"), b"SECOND").unwrap();
+    let tar_path = tmp.path().join("rejected.tar");
+    std::fs::write(&tar_path, builder.into_inner().unwrap()).unwrap();
+
+    let import_tmp = tempfile::tempdir().unwrap();
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = crate::trash::Trash::new(
+        trash_dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+    let err = read_bundle(&tar_path, import_tmp.path(), &trash).unwrap_err();
+    assert!(matches!(err, WorldBundleError::Malformed(_)), "{err:?}");
+
+    let world_asset_dir = import_tmp.path().join(world.to_string());
+    assert_eq!(std::fs::read_dir(&world_asset_dir).unwrap().count(), 0);
+    let mut trashed: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    trashed.sort();
+    assert_eq!(trashed.len(), 2, "{trashed:?}");
+    assert!(
+        trashed
+            .iter()
+            .any(|n| n.starts_with(&format!("{asset_id}.")) && !n.contains(".thumb.webp")),
+        "the canonical's staged file is trashed: {trashed:?}"
+    );
+    assert!(
+        trashed.iter().any(|n| n.contains(".thumb.webp.")),
+        "the sibling's staged file is trashed: {trashed:?}"
     );
 }
 
@@ -406,7 +506,7 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let tar_path = tmp.path().join("bundle.tar");
     std::fs::write(&tar_path, &bytes).unwrap();
     let import_root = tempfile::tempdir().unwrap();
-    let imported = read_bundle(&tar_path, import_root.path()).unwrap();
+    let imported = read_bundle(&tar_path, import_root.path(), &test_trash()).unwrap();
     assert_eq!(imported.staged_assets.len(), 1);
     assert_eq!(imported.assets[0].tags, vec!["hero".to_string()]);
     assert!(imported.assets[0].meta.original_retained);
@@ -450,7 +550,7 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let bad_path = tmp.path().join("bad.tar");
     std::fs::write(&bad_path, &bad).unwrap();
     let bad_root = tempfile::tempdir().unwrap();
-    let err = read_bundle(&bad_path, bad_root.path()).unwrap_err();
+    let err = read_bundle(&bad_path, bad_root.path(), &test_trash()).unwrap_err();
     assert!(
         matches!(err, WorldBundleError::Malformed(m) if m.contains("unknown asset sibling suffix"))
     );
@@ -458,4 +558,29 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
         .map(|d| d.count())
         .unwrap_or(0);
     assert_eq!(leftovers, 0);
+}
+
+#[test]
+fn a_pre_pooling_fog_row_deserializes_with_the_prior_semantics() {
+    // The row shape a bundle written before per-level fog and pooling existed carries: no
+    // `level_id`, no `pool` key at all — every such row is a real user's own ground-level
+    // memory, so the defaults must reproduce EXACTLY that, not an approximation.
+    let legacy = serde_json::json!({
+        "scene_id": crate::test_ids::test_uuid(200),
+        "username": "mock_player",
+        "cells": [1, 0, 1]
+    });
+    let row: crate::data::world_bundle::ExportedFogRow =
+        serde_json::from_value(legacy).expect("a pre-pooling bundle row must still import");
+    assert_eq!(row.level_id, "", "absent level_id means the ground level");
+    assert!(!row.pool, "absent pool means a real, resolved user");
+    assert_eq!(row.username, Some("mock_player".to_string()));
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

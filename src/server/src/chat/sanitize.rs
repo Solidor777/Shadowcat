@@ -1,16 +1,15 @@
-//! Message-content sanitizer: the single security boundary between raw user
-//! input and a stored `Segment::Html` run. `sanitize` is the ONLY producer of
-//! `Segment::Html` (see `Segment`'s doc comment) — every enrichment path
-//! (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
+//! This module is the security boundary between raw user input and a stored `Segment::Html` run.
+//!
+//! `sanitize` is the ONLY producer of `Segment::Html` (see `Segment`'s doc comment). Every
+//! enrichment path (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
 //! `clean()` call here before anything is persisted or broadcast.
 //!
-//! INVARIANT: an `<img>` carrying a `src` never survives `sanitize` — chat
-//! images travel exclusively as structured `Segment::Image` references
-//! (`[[asset:...]]` spans, or a server-fetched external URL asset-ified by
-//! `chat::post_publish`), never as raw hotlinked markup. `image_urls` on the
-//! returned `Sanitized` is how a Markdown `![alt](url)`/raw `<img src=url>`
-//! source is captured for the post-publish inline-image pipeline; the `<img>`
-//! element itself is always removed from the returned segments.
+//! INVARIANT: an `<img>` carrying a `src` never survives `sanitize`. Chat images travel exclusively
+//! as structured `Segment::Image` references (`[[asset:...]]` spans, or a server-fetched external
+//! URL asset-ified by `chat::post_publish`), never as raw hotlinked markup. `image_urls` on the
+//! returned `Sanitized` is how a Markdown `![alt](url)`/raw `<img src=url>` source is captured for
+//! the post-publish inline-image pipeline; the `<img>` element itself is always removed from the
+//! returned segments.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -205,6 +204,22 @@ fn strip_img_tags(html: &str) -> String {
     out
 }
 
+/// `ammonia::UrlRelativeEvaluate` for every schemeless URL: passes a URL
+/// that is `#` followed by one or more of `A-Za-z0-9_-` (the heading-anchor
+/// slug alphabet) and returns `None` (attribute removed) for any other
+/// relative form, including `//host/path`, `host/path`, `/path` and a
+/// fragment carrying any other character. A same-page fragment never
+/// triggers a request or leaves the page, so this is strictly narrower than
+/// re-allowing relative URLs.
+fn fragment_only_url(url: &str) -> Option<std::borrow::Cow<'_, str>> {
+    let slug = url.strip_prefix('#')?;
+    let valid = !slug.is_empty()
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    valid.then_some(std::borrow::Cow::Borrowed(url))
+}
+
 /// Build the ammonia sanitizer for `policy`. ammonia's DEFAULT already strips
 /// `<script>`/`<style>` (`clean_content_tags`), the `style` attribute (never
 /// whitelisted on any tag or as a generic attribute), and non-allowlisted URL
@@ -237,9 +252,11 @@ fn ammonia_for(
     // -- `url_schemes` below never sees it (there is no scheme to check).
     // Against Shadowcat's whispered/GM-only messages this is a live privacy
     // leak: a smuggled tracking pixel fires for every restricted-audience
-    // recipient. Deny relative URLs outright; only the http/https(/mailto)
-    // absolute schemes below are ever permitted.
-    b.url_relative(ammonia::UrlRelative::Deny);
+    // recipient. Relative URLs are denied outright except a same-page
+    // fragment (see `fragment_only_url`), which can never issue a request;
+    // otherwise only the http/https(/mailto) absolute schemes below are
+    // ever permitted.
+    b.url_relative(ammonia::UrlRelative::Custom(Box::new(fragment_only_url)));
     if !policy.images() {
         b.rm_tags(std::iter::once("img"));
     } else {
@@ -251,10 +268,14 @@ fn ammonia_for(
         // transiently.
         b.attribute_filter(move |element, attribute, value| {
             if element == "img" && attribute == "src" {
-                img_srcs
-                    .lock()
-                    .expect("attribute_filter never panics while holding the lock")
-                    .push(value.to_string());
+                // This filter runs before the relative-URL evaluator, so a relative `src`
+                // (`//host/x`, `#frag`) reaches it; only an absolute URL is collected.
+                if url::Url::parse(value).is_ok() {
+                    img_srcs
+                        .lock()
+                        .expect("attribute_filter never panics while holding the lock")
+                        .push(value.to_string());
+                }
                 return None;
             }
             Some(value.into())

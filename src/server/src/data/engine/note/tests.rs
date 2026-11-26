@@ -16,6 +16,7 @@ fn a_note_with_plain_source_is_accepted() {
         source: "hello".into(),
         body: vec![],
         sort: 0,
+        kind: NotePageKind::Text,
     };
     assert!(note.validate().is_ok());
 }
@@ -26,6 +27,7 @@ fn over_cap_source_is_rejected_by_validate() {
         source: "a".repeat(MAX_NOTE_SOURCE_CHARS + 1),
         body: vec![],
         sort: 0,
+        kind: NotePageKind::Text,
     };
     assert!(note.validate().is_err());
 }
@@ -69,6 +71,7 @@ fn a_labeled_roll_span_becomes_a_roll_button_with_a_label() {
         vec![Segment::RollButton {
             formula: "1d6".to_string(),
             label: Some("Luck".to_string()),
+            flavor: None,
         }]
     );
 }
@@ -85,6 +88,7 @@ fn a_bare_inline_span_becomes_a_roll_button_with_no_label() {
         vec![Segment::RollButton {
             formula: "1d6".to_string(),
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -104,7 +108,7 @@ fn a_doc_span_becomes_a_doc_link() {
                 doc_id: id.parse().unwrap(),
                 embedded_path: None,
             },
-            label: "x".to_string(),
+            label: Some("x".to_string()),
         }]
     );
 }
@@ -161,6 +165,65 @@ fn deny_unknown_fields_rejects_an_extra_key() {
 fn validate_engine_rejects_a_note_body_on_a_non_engine_doc_type() {
     let body = note_body("hello", serde_json::json!([]));
     assert!(crate::data::engine::validate_engine("item", Some(&body)).is_err());
+}
+
+fn stored_with_kind(kind: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "source": "caption", "body": [], "sort": 0, "kind": kind })
+}
+
+#[test]
+fn a_note_stored_without_kind_reads_as_text() {
+    let legacy = note_body("hello", serde_json::json!([]));
+    let typed: NoteEngine = serde_json::from_value(legacy).unwrap();
+    assert_eq!(typed.kind, NotePageKind::Text);
+}
+
+#[test]
+fn every_page_kind_round_trips_through_ingress() {
+    let asset_id = Uuid::new_v4();
+    for (tag, expected) in [
+        ("text", NotePageKind::Text),
+        ("image", NotePageKind::Image { asset_id }),
+        ("pdf", NotePageKind::Pdf { asset_id }),
+        ("video", NotePageKind::Video { asset_id }),
+    ] {
+        let kind = if tag == "text" {
+            serde_json::json!({ "kind": tag })
+        } else {
+            serde_json::json!({ "kind": tag, "asset_id": asset_id })
+        };
+        let normalized = crate::data::engine::normalize_engine_opt(
+            NOTE_DOC_TYPE,
+            Some(&stored_with_kind(kind.clone())),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(normalized["kind"], kind, "{tag} survives ingress unchanged");
+        let typed: NoteEngine = serde_json::from_value(normalized).unwrap();
+        assert_eq!(typed.kind, expected);
+    }
+}
+
+#[test]
+fn a_media_kind_without_an_asset_id_is_a_bad_engine() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "image" }));
+    assert!(crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body)).is_err());
+}
+
+#[test]
+fn an_unknown_page_kind_is_a_bad_engine() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "audio" }));
+    assert!(crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body)).is_err());
+}
+
+#[test]
+fn a_media_kind_keeps_its_caption_derived_from_source() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "image", "asset_id": Uuid::new_v4() }));
+    let normalized = crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body))
+        .unwrap()
+        .unwrap();
+    let typed: NoteEngine = serde_json::from_value(normalized).unwrap();
+    assert!(matches!(typed.body.as_slice(), [Segment::Html { .. }]));
 }
 
 #[test]
@@ -347,4 +410,157 @@ async fn an_update_whose_derived_body_exceeds_the_size_cap_is_rejected() {
     let stored = repo.get_document(doc_id).await.unwrap().unwrap();
     let engine: NoteEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     assert_eq!(engine.source, "hello");
+}
+
+#[tokio::test]
+async fn a_gm_secret_in_a_note_stamps_server_derived_overrides_over_client_ones() {
+    use crate::data::command::{FieldChange, Operation, WriteOrigin};
+    use crate::data::document::{Visibility, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let mut doc = note_doc(world_id, None, "a [[secret:gm|hidden]] b");
+    let doc_id = doc.id;
+    // A client cannot widen or pre-seed the derived keys.
+    doc.permissions
+        .property_overrides
+        .insert("/engine/source".to_string(), Visibility::All);
+    doc.permissions
+        .property_overrides
+        .insert("/engine/body/9/content".to_string(), Visibility::All);
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Create { doc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    let o = &stored.permissions.property_overrides;
+    assert_eq!(o.get("/engine/source"), Some(&Visibility::OwnerOrGm));
+    assert_eq!(o.get("/engine/body/1/content"), Some(&Visibility::GmOnly));
+    assert!(
+        !o.contains_key("/engine/body/9/content"),
+        "a client key under the body is dropped"
+    );
+
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Update {
+            doc_id,
+            changes: vec![FieldChange {
+                path: "/engine/source".to_string(),
+                old: serde_json::json!("a [[secret:gm|hidden]] b"),
+                new: serde_json::json!("plain"),
+                remove: false,
+            }],
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    assert!(
+        stored.permissions.property_overrides.is_empty(),
+        "removing the secret drops the derived overrides"
+    );
+}
+
+// Fails if a note's `/engine/source` override reverts to `GmOnly` (the owner's copy loses
+// `source`) or widens to `All` (a stranger's copy gains it), or if the secret's rendered
+// content stops being `GmOnly` (the owner's copy gains the hidden text in `body`).
+#[tokio::test]
+async fn a_notes_owner_reads_its_source_but_not_the_gm_secret_in_its_body() {
+    use crate::data::command::{Operation, WriteOrigin};
+    use crate::data::document::{WorldCapDefaults, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::data::permission::{filter_command, load_current_docs};
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let mut ids = Vec::new();
+    for name in ["owner", "stranger"] {
+        let id = repo
+            .create_user(name, None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, id, WorldRole::Player)
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let (owner, stranger) = (ids[0], ids[1]);
+
+    let mut doc = note_doc(world_id, None, "pub [[secret:gm|vault code 1234]] end");
+    doc.owner = Some(owner);
+    doc.permissions.default = crate::data::document::DocRole::Observer;
+    let doc_id = doc.id;
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let stored_cmd = repo
+        .apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let current = load_current_docs(&repo, &stored_cmd.command).await;
+
+    let delivered = |who: Uuid, role: WorldRole| {
+        let ctx = PermissionContext {
+            user_id: who,
+            world_role: role,
+        };
+        let ops = filter_command(
+            &stored_cmd.command,
+            &stored_cmd.snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        )
+        .ops;
+        ops.into_iter()
+            .find_map(|op| match op {
+                Operation::Create { doc } if doc.id == doc_id => doc.engine,
+                _ => None,
+            })
+            .expect("the note arrives as a Create")
+    };
+
+    let owner_copy = delivered(owner, WorldRole::Player);
+    assert_eq!(
+        owner_copy["source"], "pub [[secret:gm|vault code 1234]] end",
+        "the owner reads its own source"
+    );
+    assert!(
+        !owner_copy["body"].to_string().contains("1234"),
+        "the rendered secret stays GM-only for the owner: {owner_copy}"
+    );
+
+    let gm_copy = delivered(gm, WorldRole::Gm);
+    assert!(gm_copy["source"].as_str().unwrap().contains("1234"));
+    assert!(gm_copy["body"].to_string().contains("1234"));
+
+    let stranger_copy = delivered(stranger, WorldRole::Player);
+    assert!(
+        stranger_copy.get("source").is_none(),
+        "a non-owner player gets no source"
+    );
+    assert!(!stranger_copy.to_string().contains("1234"));
 }

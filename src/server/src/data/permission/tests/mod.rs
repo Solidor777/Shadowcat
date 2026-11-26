@@ -30,7 +30,7 @@ fn doc(perms: PermissionSet, system: serde_json::Value) -> Document {
 fn perms_with(overrides: &[(&str, Visibility)]) -> PermissionSet {
     let mut p = PermissionSet::default();
     for (ptr, v) in overrides {
-        p.property_overrides.insert((*ptr).into(), *v);
+        p.property_overrides.insert((*ptr).into(), v.clone());
     }
     p
 }
@@ -54,6 +54,7 @@ fn non_gm() -> Access {
         all: false,
         see_gm_only: false,
         is_owner: false,
+        user_id: None,
     }
 }
 
@@ -89,8 +90,7 @@ fn immediate_snapshot<'a>(
         let _ = collect_overrides(d, "", &mut overrides);
         let touches_perms = matches!(
             op,
-            Operation::Update { changes, .. }
-                if changes.iter().any(|c| touches_permissions(&c.path))
+            Operation::Update { changes, .. } if retracts_hidden(&d.doc_type, changes)
         );
         per_op.push(Some(OpSnapshot {
             owner_at_commit: effective_owner_via(d, actor_lookup),
@@ -122,8 +122,14 @@ fn current_doc(doc: Document, created_seq: i64) -> CurrentDoc {
 #[cfg(test)]
 mod core_redaction;
 #[cfg(test)]
+mod gm_only_pointers;
+#[cfg(test)]
+mod identity_hidden;
+#[cfg(test)]
 mod ownership;
 #[cfg(test)]
 mod read_transition;
+#[cfg(test)]
+mod recipients;
 #[cfg(test)]
 mod snapshot_redaction;

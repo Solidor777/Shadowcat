@@ -1,10 +1,26 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
-import { test, expect } from "vitest";
-import { EXAMPLE_EXEMPT, defaultSkillsRoot, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
+import { describe, test, expect } from "vitest";
+import ts from "typescript";
+import {
+  CLIENT_ROOTS,
+  CorpusListingError,
+  EXAMPLE_EXEMPT,
+  REPO_ROOTS,
+  RUST_ROOTS,
+  VENDOR_ROOTS,
+  defaultSkillsRoot,
+  isRustSource,
+  listSkillDirs,
+  norm,
+  repoFiles,
+  skillSources,
+  under,
+} from "./gate-corpus.mjs";
 import { scrubGitEnv } from "./run-git.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const COMMENT_GATE = "scripts/check-comment-refs.mjs";
 const SYMBOL_GATE = "scripts/check-skill-symbol-refs.mjs";
@@ -79,11 +95,261 @@ test("the path primitives are boundary-aware and platform-neutral", () => {
 });
 
 test.skipIf(!existsSync(SKILLS_ROOT))(
-  "sources() finds real markdown files under the skill corpus root",
+  "skillSources() finds real markdown files under the skill corpus root",
   () => {
-    expect(sources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
+    expect(skillSources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
   },
 );
+
+test("skillSources() skips git-ignored generated output directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "gate-corpus-skip-"));
+  for (const dir of ["kept", "test-results", "node_modules"]) {
+    mkdirSync(join(root, dir));
+    writeFileSync(join(root, dir, "a.js"), "");
+  }
+  expect(skillSources(root, [".js"]).map(norm).map((p) => p.slice(norm(root).length + 1))).toEqual(["kept/a.js"]);
+});
+
+describe("repoFiles", () => {
+  const FILES = {
+    ".gitignore": "ignored/\n",
+    "root.config.js": "",
+    "src/tracked.ts": "",
+    "src/untracked.ts": "",
+    "src/ignored/skipped.ts": "",
+    "src/gone.ts": "",
+    "srcx/neighbour.ts": "",
+    "scripts/a.mjs": "",
+    "vendor/crate/lib.rs": "",
+  };
+  const TRACKED = [".gitignore", "root.config.js", "src/tracked.ts", "src/gone.ts", "srcx/neighbour.ts", "scripts/a.mjs", "vendor/crate/lib.rs"];
+  const quiet = () => {};
+  const dir = makeRepo(FILES, TRACKED);
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "gone.ts"), join(dir, "gone-aside.txt"));
+
+  test("lists tracked and untracked files, never an ignored or a working-tree-deleted one", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src"], log: quiet })).toEqual(["src/tracked.ts", "src/untracked.ts"]);
+  });
+
+  test("include tracked reads the index only", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src"], include: "tracked", log: quiet })).toEqual(["src/tracked.ts"]);
+  });
+
+  test("a root is boundary-aware and a set of roots is a union", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src", "scripts"], log: quiet })).toEqual([
+      "scripts/a.mjs",
+      "src/tracked.ts",
+      "src/untracked.ts",
+    ]);
+  });
+
+  test("rootFiles keeps only files directly in the repository root; with roots it adds to them", () => {
+    expect(repoFiles({ cwd: dir, rootFiles: true, exts: [".js"], log: quiet })).toEqual(["root.config.js"]);
+    expect(repoFiles({ cwd: dir, roots: ["scripts"], rootFiles: true, exts: [".js", ".mjs"], log: quiet })).toEqual([
+      "root.config.js",
+      "scripts/a.mjs",
+    ]);
+  });
+
+  test("no roots and no rootFiles keeps the whole corpus, and vendor/ is outside every named set", () => {
+    expect(repoFiles({ cwd: dir, log: quiet })).toContain("vendor/crate/lib.rs");
+    for (const roots of [REPO_ROOTS, CLIENT_ROOTS, RUST_ROOTS]) {
+      expect(repoFiles({ cwd: dir, roots, log: quiet })).not.toContain("vendor/crate/lib.rs");
+    }
+    expect(repoFiles({ cwd: dir, roots: VENDOR_ROOTS, log: quiet })).toEqual(["vendor/crate/lib.rs"]);
+  });
+
+  test("logs the corpus size under the caller's label", () => {
+    const lines = [];
+    const files = repoFiles({ cwd: dir, roots: ["src"], label: "lint:probe", log: (l) => lines.push(l) });
+    expect(lines).toEqual([`corpus lint:probe: ${files.length} files`]);
+  });
+
+  test("throws when git cannot list the files: an unread corpus never passes silently", () => {
+    const failing = () => {
+      throw new Error("git is not installed");
+    };
+    expect(() => repoFiles({ cwd: dir, execFile: failing, log: quiet })).toThrow(/git is not installed/);
+  });
+});
+
+/** The number of `repoFiles(...)` call expressions in `text`.
+ * @param {string} text - module source.
+ * @param {string} name - file name, which selects the TypeScript or JavaScript parser.
+ * @returns {number} the call count.
+ */
+function repoFilesCalls(text, name) {
+  const kind = name.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, kind);
+  let count = 0;
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "repoFiles") count += 1;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return count;
+}
+
+// Each gate that reads files names its direction (a ban gate scans the untracked-inclusive
+// corpus, a declaration index reads tracked files only) by calling `repoFiles`. A walker that
+// came back would bring its own idea of what the repository is.
+describe("the gates read the corpus through repoFiles", () => {
+  const CONVERTED = [
+    "scripts/check-lint-allowances.mjs",
+    "scripts/check-comment-refs.mjs",
+    "scripts/check-file-lines.mjs",
+    "scripts/check-inline-tests.mjs",
+    "scripts/check-module-docs.mjs",
+    "scripts/check-secure-context-apis.mjs",
+    "scripts/check-route-prefix-literals.mjs",
+    "scripts/check-aria-label-keys.mjs",
+    "scripts/check-audio-fixtures.mjs",
+    "scripts/check-vendor.mjs",
+    "scripts/check-walk-sites.mjs",
+    "scripts/check-skill-symbol-refs.mjs",
+    "scripts/check-svelte-runtime-entries.mjs",
+    "scripts/extract-ts-examples.mjs",
+    "scripts/report-doc-exemptions.mjs",
+    "scripts/lib/is-main.test.mjs",
+    "scripts/lib/no-fs-delete-calls.test.mjs",
+    "scripts/lib/run-git.test.mjs",
+    "src/client/shell/e2e-support/playwright-config.test.ts",
+  ];
+  const IMPORTS_REPO_FILES = /import\s*\{[^}]*\brepoFiles\b[^}]*\}\s*from\s*"[^"]*gate-corpus\.mjs"/;
+
+  test.each(CONVERTED)("%s imports repoFiles", (file) => {
+    expect(readFileSync(file, "utf8")).toMatch(IMPORTS_REPO_FILES);
+  });
+
+  // An import with no call pins nothing: the gate could list files some other way.
+  test.each(CONVERTED)("%s calls repoFiles", (file) => {
+    expect(repoFilesCalls(readFileSync(file, "utf8"), file)).toBeGreaterThan(0);
+  });
+
+  test("the call counter finds a call and ignores an import, a comment and a string (positive control)", () => {
+    expect(repoFilesCalls('import { repoFiles } from "./gate-corpus.mjs";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls('// repoFiles({})\nconst s = "repoFiles({})";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls("const f = repoFiles({ roots: [] });\n", "a.mjs")).toBe(1);
+  });
+
+  // A direct-entry gate that cannot list the corpus reports one line naming itself and exits 2; a
+  // stack trace, or a clean exit over an unread corpus, is a defect. git is made unreachable by
+  // giving the child a PATH holding no executables, which fails the same way for every gate
+  // whatever its working directory. Every non-test, non-library script that calls `repoFiles` and
+  // holds an `isDirectEntry(` guard or a top-level `main(` call is listed.
+  const FILE_LIST_FAILURE = "could not determine the file list";
+  const SKILL_LIST_FAILURE = "git could not list the skill corpus";
+  const GIT_FAILURE_GATES = [
+    ["scripts/check-file-lines.mjs", "lint:file-size", FILE_LIST_FAILURE],
+    ["scripts/check-inline-tests.mjs", "lint:inline-tests", FILE_LIST_FAILURE],
+    ["scripts/check-module-docs.mjs", "lint:module-docs", FILE_LIST_FAILURE],
+    ["scripts/check-secure-context-apis.mjs", "lint:secure-context", FILE_LIST_FAILURE],
+    ["scripts/check-route-prefix-literals.mjs", "lint:route-prefix", FILE_LIST_FAILURE],
+    ["scripts/check-aria-label-keys.mjs", "lint:aria-labels", FILE_LIST_FAILURE],
+    ["scripts/check-audio-fixtures.mjs", "lint:audio-fixtures", FILE_LIST_FAILURE],
+    ["scripts/check-vendor.mjs", "lint:vendor", FILE_LIST_FAILURE],
+    ["scripts/check-lint-allowances.mjs", "lint:allowances", FILE_LIST_FAILURE],
+    ["scripts/check-comment-refs.mjs", "lint:comments", FILE_LIST_FAILURE],
+    ["scripts/check-svelte-runtime-entries.mjs", "check:svelte-runtime", FILE_LIST_FAILURE],
+    ["scripts/check-walk-sites.mjs", "lint:walk-sites", FILE_LIST_FAILURE],
+    ["scripts/extract-ts-examples.mjs", "docs:check-examples", FILE_LIST_FAILURE],
+    ["scripts/report-doc-exemptions-cli.mjs", "report-doc-exemptions", FILE_LIST_FAILURE],
+    ["scripts/check-skill-symbol-refs-cli.mjs", "check-skill-symbol-refs", SKILL_LIST_FAILURE],
+  ];
+
+  test("the failure list names every non-library script that calls repoFiles and holds an isDirectEntry guard or a main call", () => {
+    const callers = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => !p.endsWith(".test.mjs") && !p.startsWith("scripts/lib/"))
+      .filter((p) => repoFilesCalls(readFileSync(p, "utf8"), p) > 0)
+      .filter((p) => /isDirectEntry\(|^\s*(?:await\s+)?main\(/m.test(readFileSync(p, "utf8")));
+    const listed = GIT_FAILURE_GATES.map(([gate]) => gate);
+    for (const caller of callers) expect(listed).toContain(caller);
+  });
+
+  /** Runs `args` under node with a PATH holding no executables, so git cannot start.
+   * @param {string[]} args - node arguments.
+   * @returns {import("node:child_process").SpawnSyncReturns<string>} the finished child.
+   */
+  function runWithoutGit(args) {
+    const emptyPath = mkdtempSync(join(tmpdir(), "no-git-path-"));
+    const env = Object.fromEntries(Object.entries(scrubGitEnv()).filter(([key]) => key.toLowerCase() !== "path"));
+    return spawnSync(process.execPath, args, { env: { ...env, PATH: emptyPath }, encoding: "utf8" });
+  }
+
+  test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label, message) => {
+    const r = runWithoutGit([gate]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(new RegExp(`^${label}: ${message}`, "m"));
+    expect(r.stderr).not.toMatch(/\n\s+at /);
+  });
+
+  // The comment gate catches `CorpusListingError` only: a skill directory git tracks but the
+  // working tree lacks is a defect of the checkout, and it must surface with its stack.
+  test("check-comment-refs keeps the stack of an error that is not a listing failure", () => {
+    const skills = makeRepo({ "kept/a.md": "", "gone/b.md": "" }, ["kept/a.md", "gone/b.md"]);
+    renameSync(join(skills, "gone"), join(skills, "gone-aside"));
+    const r = spawnSync(process.execPath, [COMMENT_GATE], {
+      env: { ...scrubGitEnv(), SHADOWCAT_CODEBASE_SKILLS_DIR: skills },
+      encoding: "utf8",
+    });
+    expect(r.status).not.toBe(2);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/ENOENT/);
+    expect(r.stderr).toMatch(/\n\s+at /);
+  });
+
+  test("a git failure is a CorpusListingError, so a gate can tell it from any other error", () => {
+    const failing = () => {
+      throw new Error("git is not installed");
+    };
+    expect(() => repoFiles({ cwd: process.cwd(), execFile: failing, log: () => {} })).toThrow(CorpusListingError);
+  });
+
+  test("only the skill-checkout gates import skillSources", () => {
+    const importers = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => !p.endsWith(".test.mjs"))
+      .filter((p) => /import\s*\{[^}]*\bskillSources\b[^}]*\}\s*from/.test(readFileSync(p, "utf8")));
+    expect(importers).toEqual(["scripts/check-comment-refs.mjs", "scripts/check-skill-symbol-refs.mjs"]);
+  });
+});
+
+/** The `new Set([...])` expressions in `text` whose array holds the string literal `"node_modules"`. */
+function privateSkipSets(text) {
+  const source = ts.createSourceFile("scan", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const found = [];
+  const visit = (node) => {
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "Set" &&
+      node.arguments?.[0] !== undefined &&
+      ts.isArrayLiteralExpression(node.arguments[0]) &&
+      node.arguments[0].elements.some((e) => ts.isStringLiteralLike(e) && e.text === "node_modules")
+    ) {
+      found.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+// A second private skip list is a second opinion about what the repository is; `SKIP_DIRS` (for
+// the skill-checkout walk) is the only one.
+describe("no second private directory skip list", () => {
+  test("the detector finds a private skip set (positive control)", () => {
+    const fixture = 'const SKIP = new Set(["node_modules", "dist"]);\n';
+    expect(privateSkipSets(fixture)).toEqual([1]);
+    expect(privateSkipSets('const ok = new Set(["dist"]);\n')).toEqual([]);
+  });
+
+  test("only lib/gate-corpus.mjs declares one", () => {
+    const declaring = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => privateSkipSets(readFileSync(p, "utf8")).length > 0);
+    expect(declaring).toEqual(["scripts/lib/gate-corpus.mjs"]);
+  });
+});
 
 // Regression: git exports GIT_INDEX_FILE into every process it spawns a hook or script from (e.g.
 // mid `git commit -- <paths>`), and `-C skillsRoot` does not override it — an unrelated repository
@@ -126,3 +392,13 @@ test.skipIf(!existsSync(SKILLS_ROOT))(
     }
   },
 );
+
+test("isRustSource covers tracked .rs under src only", () => {
+  expect(isRustSource("src/server/src/lib.rs")).toBe(true);
+  expect(isRustSource(String.raw`src\server\src\lib.rs`)).toBe(true);
+  expect(isRustSource(String.raw`src\server\build.rs`)).toBe(true);
+  expect(isRustSource("src/client/core/src/a.ts")).toBe(false);
+  expect(isRustSource("scripts/x.rs")).toBe(false);
+  expect(isRustSource("scripts/x.mjs")).toBe(false);
+  expect(isRustSource("target/debug/build/x.rs")).toBe(false);
+});

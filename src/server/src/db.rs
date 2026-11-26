@@ -1,3 +1,9 @@
+//! This module opens the server's SQLite pools and resolves which file a database URL names.
+//!
+//! The read-write pool is single-connection (`connect_pool`, `connect_pool_with_options`), so one
+//! writer serializes transactions; `open_read_only_pool` opens a small read-only pool over the same
+//! database for hot read paths.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -140,6 +146,12 @@ pub async fn connect_pool_with_options(
         // equally to the long-lived server pool and any short-lived pool
         // opened against the same on-disk database.
         .max_connections(1)
+        // An in-memory database exists only while a connection to it is open. sqlx reaps a pool
+        // connection after `idle_timeout` (10 min) or `max_lifetime` (30 min) by default, which
+        // would drop the whole database and let the next connection open an empty one ("no such
+        // table"). Both are disabled so the single connection lives as long as the pool.
+        .idle_timeout(None)
+        .max_lifetime(None)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
                 sqlx::query("PRAGMA foreign_keys = ON;")

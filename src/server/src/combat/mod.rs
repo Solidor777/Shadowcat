@@ -1,9 +1,17 @@
-//! The server-owned combat clock: loads a `CombatSnapshot`, runs a pure
-//! transition (`transition`), and hands ONE command's ops to `Room`.
-//! INVARIANT: every formula a transition acts on is evaluated HERE, through
-//! `crate::formula` over the combatant's formula host (`eval`); an
-//! evaluation failure skips its one write and surfaces as a GM-only chat
-//! notice — the clock never stops on a bad formula.
+//! This module is the server-owned combat clock.
+//!
+//! It loads a `CombatSnapshot`, runs a pure transition (`transition`), and hands ONE command's ops
+//! to `Room`.
+//!
+//! INVARIANT: every formula a transition acts on is evaluated inside this module tree, through
+//! `crate::formula` over the combatant's formula host (`eval`). An evaluation failure skips its one
+//! write and surfaces as a GM-only chat notice, so the clock never stops on a bad formula.
+//!
+//! The transitions `start_with_trigger_plan` and `advance_with_trigger_plan`, which serve the two
+//! intents that cross clock boundaries (`CombatStart`/`CombatAdvance`), return the boundaries they
+//! crossed. `run_intent` passes them to `Room::commit_combat_and_fire`, which hands
+//! them to `Room::fire_turn_round_triggers` after the commit. That fires the turn/round-scoped
+//! region-trigger family (`scene::regions`) room-side, so the transitions stay pure.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -36,13 +44,17 @@ pub mod transition;
 mod tests;
 
 pub use effects::collect_effects;
-pub use snapshot::{load_snapshot, CombatSnapshot, Combatant};
+pub use snapshot::{load_snapshot, CombatSnapshot, Combatant, CombatantGroup};
 /// Test-only seam onto `transition::advance_with_step_count` — see its own
 /// doc comment.
 #[cfg(test)]
 pub(crate) use transition::advance_with_step_count;
 pub use transition::{
-    advance, end, pause, rebuild_order, resource, rewind, roll, sort, start, ResourceOp, RollPost,
+    advance, end, pause, rebuild_order, resource, rewind, roll, roll_with_groups, sort, start,
+    ResourceOp, RollPost,
+};
+pub(crate) use transition::{
+    advance_with_trigger_plan, start_with_trigger_plan, TurnRoundBoundary,
 };
 
 /// Why a combat intent was refused. `Display` yields ONE wording for every
@@ -167,6 +179,8 @@ pub enum CombatError {
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combat_engine = CombatEngine {
@@ -315,7 +329,22 @@ pub async fn handle_combat_intent(
 /// The load → authorize → resolve → commit pipeline for one combat intent,
 /// once `combat_id` has been extracted from `msg`. Returns the committed
 /// command's `seq` on success, so the caller can answer the originator with a
-/// correlated `ServerMsg::CombatResult`.
+/// correlated `ServerMsg::CombatResult`. When the transition crossed
+/// turn/round boundaries (`CombatStart`/`CombatAdvance`), the boundary
+/// record it returns is fired as turn/round-scoped region triggers by
+/// `Room::commit_combat_and_fire`, which commits the transition batch and
+/// runs the fire under ONE `publish_guard` acquisition — a queued write from
+/// another connection can never interleave between the two. The effect batch
+/// is still a SECOND commit under `WriteOrigin::Trigger` (the same split
+/// discipline `Room::execute_move`'s position commit and region-trigger
+/// effect batch keep): the effect ops' OCC pre-images must read committed
+/// post-transition state — `apply_intent` checks each op's pre-image against
+/// PRE-BATCH state and applies ops in order, so an effect op folded into the
+/// transition's batch with a pre-transition pre-image would not be rejected
+/// — it would silently overwrite the transition's own write to the same
+/// path. A committed `CombatRewind` also re-arms the combat's
+/// once-per-turn/round dedup entry (recovery re-runs on the re-crossed
+/// boundaries; the triggers riding them must re-fire too).
 async fn run_intent(
     room: &Room,
     repo: &dyn Repository,
@@ -336,8 +365,23 @@ async fn run_intent(
     // only the snapshot's own existence-hiding refusal.
     let world_defaults = repo.world_cap_defaults(room.world_id).await?;
     authorize(&snap, ctx, &msg, &world_defaults)?;
-    let ops = build_ops(room, repo, ctx, &snap, msg, now).await?;
-    let cmd = room.commit_combat(repo, ctx, ops, now).await?;
+    // Captured before `build_ops` consumes `msg`: a committed rewind's dedup
+    // re-arm rides the commit tail (`CombatTriggerTail::rewind`).
+    let rewind = matches!(msg, ClientMsg::CombatRewind { .. });
+    let (ops, boundaries) = build_ops(room, repo, ctx, &snap, msg, now).await?;
+    let cmd = room
+        .commit_combat_and_fire(
+            repo,
+            ctx,
+            ops,
+            now,
+            crate::ws::room::CombatTriggerTail {
+                snap: &snap,
+                plan: boundaries,
+                rewind,
+            },
+        )
+        .await?;
     Ok(cmd.seq)
 }
 
@@ -351,7 +395,7 @@ async fn run_intent(
 ///
 /// A `combatant` document never carries an actor link (`token_actor_link` is
 /// `token`-only), so the no-join `effective_owner(doc, None)` resolution is
-/// exact — the same reasoning `scene_ping_permitted` states for a scene doc.
+/// exact — the same reasoning `scene_broadcast_permitted` states for a scene doc.
 ///
 /// Returns the whole `Access` because `authorize` asks THREE questions of it —
 /// whole-document `cap::READ`, effective ownership, and (for the intents that
@@ -446,6 +490,26 @@ fn owns_combatant(
     access.is_owner && access.has(cap::READ) && may_write
 }
 
+/// The combatants a `CombatRoll` entry's id names: the one combatant when the
+/// id is a combatant's, every member of the group when it is a
+/// `combatant-group`'s, and `None` for an id that is neither or a group with no
+/// members. `authorize` and `build_ops` both read the expansion from here so
+/// the combatants checked are exactly the combatants written.
+fn roll_target_combatants(snap: &CombatSnapshot, id: Uuid) -> Option<Vec<&Combatant>> {
+    if let Some(c) = snap.combatants.iter().find(|c| c.doc.id == id) {
+        return Some(vec![c]);
+    }
+    if !snap.groups.iter().any(|g| g.doc.id == id) {
+        return None;
+    }
+    let members: Vec<&Combatant> = snap
+        .combatants
+        .iter()
+        .filter(|c| c.engine.group == Some(id))
+        .collect();
+    (!members.is_empty()).then_some(members)
+}
+
 /// Non-GM authorization scope for a combat intent; a GM may always act.
 /// `CombatAdvance` additionally admits the CURRENT turn's owner when
 /// `turn_control == TurnControl::OwnerMayEnd`. `CombatRoll`/`CombatResource`
@@ -502,12 +566,15 @@ fn authorize(
                 return Err(CombatError::Forbidden);
             }
             for entry in rolls {
-                let c = snap
-                    .combatants
-                    .iter()
-                    .find(|c| c.doc.id == entry.combatant_id)
+                // A group entry stamps its one result on every member, so the
+                // caller must own EVERY member; a group the caller owns only
+                // in part is refused whole rather than rolled for some.
+                let targets = roll_target_combatants(snap, entry.combatant_id)
                     .ok_or(CombatError::NotFound)?;
-                if !owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine) {
+                if !targets
+                    .iter()
+                    .all(|c| owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine))
+                {
                     return Err(CombatError::Forbidden);
                 }
             }
@@ -534,7 +601,10 @@ fn authorize(
 /// pure `transition` function (or, for `CombatRoll`, executing the named
 /// rolls first via the channel's resolved dice context). Every other
 /// refusal (`NotRunning`, `Unrewindable`, `Empty`, roll caps, ...) surfaces
-/// from the transition function's/roll executor's own `Result`.
+/// from the transition function's/roll executor's own `Result`. The second
+/// return half is the transition's turn/round boundary record — non-empty
+/// only for `CombatStart`/`CombatAdvance`, the two intents that cross clock
+/// boundaries; `run_intent` fires it as region triggers after the commit.
 async fn build_ops(
     room: &Room,
     repo: &dyn Repository,
@@ -542,24 +612,36 @@ async fn build_ops(
     snap: &CombatSnapshot,
     msg: ClientMsg,
     now: i64,
-) -> Result<Vec<Operation>, CombatError> {
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
     match msg {
-        ClientMsg::CombatStart { .. } => start(snap, now, room.world_id, ctx.user_id),
-        ClientMsg::CombatPause { .. } => pause(snap),
-        ClientMsg::CombatEnd { .. } => end(snap, room.world_id, ctx.user_id, now),
-        ClientMsg::CombatAdvance { .. } => advance(snap, room.world_id, ctx.user_id, now),
-        ClientMsg::CombatRewind { .. } => rewind(snap, now),
-        ClientMsg::CombatSort { .. } => sort(snap),
+        ClientMsg::CombatStart { .. } => {
+            start_with_trigger_plan(snap, now, room.world_id, ctx.user_id)
+        }
+        ClientMsg::CombatAdvance { .. } => {
+            advance_with_trigger_plan(snap, room.world_id, ctx.user_id, now)
+        }
+        ClientMsg::CombatPause { .. } => pause(snap).map(|ops| (ops, Vec::new())),
+        ClientMsg::CombatEnd { .. } => {
+            end(snap, room.world_id, ctx.user_id, now).map(|ops| (ops, Vec::new()))
+        }
+        ClientMsg::CombatRewind { .. } => rewind(snap, now).map(|ops| (ops, Vec::new())),
+        ClientMsg::CombatSort { .. } => sort(snap).map(|ops| (ops, Vec::new())),
         ClientMsg::CombatRoll { channel, rolls, .. } => {
             // INVARIANT: `transition::roll` requires at most one entry per
             // combatant id (its own doc comment names the wire-dispatch
             // layer — this function — as responsible for that); a
             // duplicate would build two `FieldChange`s against the same
             // combatant from one stale pre-image.
+            // A group entry is checked through its members, so naming a group
+            // and one of its members (or the group twice) is a duplicate too.
             let mut seen = HashSet::new();
             for entry in &rolls {
-                if !seen.insert(entry.combatant_id) {
-                    return Err(CombatError::DuplicateRoll);
+                let targets = roll_target_combatants(snap, entry.combatant_id)
+                    .ok_or(CombatError::NotFound)?;
+                for c in targets {
+                    if !seen.insert(c.doc.id) {
+                        return Err(CombatError::DuplicateRoll);
+                    }
                 }
             }
             // The channel the results post to (and whose dice context they
@@ -569,30 +651,46 @@ async fn build_ops(
             }
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;
             let mut posts = Vec::with_capacity(rolls.len());
+            let mut group_posts = Vec::new();
             for entry in &rolls {
                 // Each entry's references resolve against ITS combatant's
                 // formula host — the token-embedded copy or the linked actor,
                 // the one precedence rule `eval::formula_host` declares. A
                 // combatant with no host resolves every reference as unknown
-                // and the intent refuses with the roll error.
-                let host = snap
+                // and the intent refuses with the roll error. A group entry
+                // rolls ONCE against its first member's host (the group has
+                // none of its own) and the single result goes to every member.
+                let is_group = !snap
                     .combatants
                     .iter()
-                    .find(|c| c.doc.id == entry.combatant_id)
+                    .any(|c| c.doc.id == entry.combatant_id);
+                let host = roll_target_combatants(snap, entry.combatant_id)
+                    .and_then(|targets| targets.first().copied())
                     .and_then(|c| eval::formula_host(&snap.hosts, &c.engine.kind));
                 let (formula, outcome, spec, raw) =
                     crate::chat::rolls::execute_roll(&entry.notation, dice_ctx, host)?;
-                posts.push((
-                    entry.combatant_id,
-                    RollPost {
-                        formula,
-                        outcome,
-                        spec,
-                        raw,
-                    },
-                ));
+                let post = RollPost {
+                    formula,
+                    outcome,
+                    spec,
+                    raw,
+                };
+                if is_group {
+                    group_posts.push((entry.combatant_id, post));
+                } else {
+                    posts.push((entry.combatant_id, post));
+                }
             }
-            roll(snap, &posts, room.world_id, ctx.user_id, &channel, now)
+            roll_with_groups(
+                snap,
+                &posts,
+                &group_posts,
+                room.world_id,
+                ctx.user_id,
+                &channel,
+                now,
+            )
+            .map(|ops| (ops, Vec::new()))
         }
         ClientMsg::CombatResource {
             combatant_id,
@@ -604,7 +702,7 @@ async fn build_ops(
                 WireResourceOp::Delta { amount } => ResourceOp::Delta { amount },
                 WireResourceOp::Set { value } => ResourceOp::Set { value },
             };
-            resource(snap, combatant_id, &key, op)
+            resource(snap, combatant_id, &key, op).map(|ops| (ops, Vec::new()))
         }
         // Unreachable: `run_intent` is called only for the eight combat
         // variants extracted by `handle_combat_intent`.
@@ -618,5 +716,6 @@ fn to_server_msg(request_id: Uuid, e: CombatError) -> ServerMsg {
     ServerMsg::CombatError {
         request_id,
         message: e.to_string(),
+        reason: None,
     }
 }

@@ -1,6 +1,8 @@
-//! `GET /api/worlds/{world}/assets` — the filtered, sorted, keyset-paginated
-//! asset query (and, with no query parameters at all, the bare listing the
-//! pre-pipeline clients read).
+//! This module serves `GET /api/worlds/{world}/assets`, the filtered, sorted, keyset-paginated
+//! asset query.
+//!
+//! With none of the `AssetQuery` parameters present the response is the bare `Asset[]` listing.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -32,6 +34,11 @@ const REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// Upper bound on SQL pages one regex query walks before returning what it
 /// has (with a cursor), so a sparse match cannot scan a whole world per call.
 const MAX_REGEX_PAGES: usize = 10;
+/// Most ids one request may name in `ids`. A GET carries them in the URL: 100 canonical UUIDs
+/// are 3.7 KB, under the 8 KB request-line limit common proxies enforce, so the filter stays a
+/// plain GET parameter beside the others (cacheable, same cursor contract). A caller with more
+/// ids sends several requests.
+pub const MAX_IDS: usize = 100;
 /// Separator between the sort key and the id inside a cursor.
 const CURSOR_SEP: char = '\u{1f}';
 
@@ -58,7 +65,7 @@ pub struct AssetQuery {
     pub recursive: Option<bool>,
     /// Comma-separated tags; every one must be present.
     pub tags: Option<String>,
-    /// `image` | `other`.
+    /// `image` | `audio` | `other`.
     pub kind: Option<String>,
     /// Full-text query over the display name and every tag (explicit and
     /// derived), sanitized by `data::search::build_match`.
@@ -71,10 +78,13 @@ pub struct AssetQuery {
     pub limit: Option<u32>,
     /// Opaque keyset cursor from a previous page's `next_cursor`.
     pub cursor: Option<String>,
+    /// Comma-separated asset ids, at most `MAX_IDS`; only these assets can match. Present but
+    /// empty matches nothing.
+    pub ids: Option<String>,
 }
 
 impl AssetQuery {
-    /// Whether no parameter at all was given (the bare-listing contract).
+    /// Whether every field is `None` (the bare-listing contract).
     fn is_bare(&self) -> bool {
         self.folder.is_none()
             && self.recursive.is_none()
@@ -85,6 +95,7 @@ impl AssetQuery {
             && self.sort.is_none()
             && self.limit.is_none()
             && self.cursor.is_none()
+            && self.ids.is_none()
     }
 }
 
@@ -198,6 +209,25 @@ struct Parsed {
     regex: Option<regex::Regex>,
 }
 
+/// Parse the `ids` parameter: comma-separated UUIDs, blanks skipped; more than `MAX_IDS` or a
+/// malformed id is a 400.
+fn parse_ids(text: &str) -> Result<Vec<Uuid>, AppError> {
+    let tokens: Vec<&str> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() > MAX_IDS {
+        return Err(AppError::BadRequest(format!(
+            "ids names more than {MAX_IDS} assets"
+        )));
+    }
+    tokens
+        .into_iter()
+        .map(|t| Uuid::parse_str(t).map_err(|_| AppError::BadRequest("ids must be uuids".into())))
+        .collect()
+}
+
 /// Validate every parameter (each failure is a 400).
 fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
     let folder = match q.folder.as_deref() {
@@ -244,6 +274,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             "limit must be 1..={MAX_LIMIT}"
         )));
     }
+    let ids = q.ids.as_deref().map(parse_ids).transpose()?;
     let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
     let regex = q.name_regex.as_deref().map(compile_regex).transpose()?;
     Ok(Parsed {
@@ -252,6 +283,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             tags,
             kind,
             query: q.q.filter(|n| !n.is_empty()),
+            ids,
         },
         sort,
         limit,
@@ -260,13 +292,12 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
     })
 }
 
-/// `GET /api/worlds/{world}/assets` — membership-gated. With no query
-/// parameters: the bare `Asset[]` listing (the contract every pre-query
-/// consumer reads). With any parameter: an `AssetPage`. The SQL filters
-/// narrow first; `name_regex` is then applied in Rust to the rows the SQL
-/// selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the
-/// page fills — `next_cursor` always marks the last row EXAMINED, so a
-/// caller following cursors never skips a row.
+/// `GET /api/worlds/{world}/assets` — membership-gated. With none of the `AssetQuery`
+/// parameters present (`AssetQuery::is_bare`): the bare `Asset[]` listing. With any of them: an
+/// `AssetPage`. The SQL filters narrow first; `name_regex` is then applied in Rust to the rows
+/// the SQL selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the page fills;
+/// a `next_cursor` then names the last row tested against the pattern, so the next page begins
+/// at the first untested row.
 ///
 /// # Examples
 ///
@@ -293,6 +324,10 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::query::list(
@@ -336,34 +371,43 @@ pub async fn list(
             .await?;
         let has_more = rows.len() as u32 > limit;
         rows.truncate(limit as usize);
-        let last_examined = rows.last().map(|a| AssetCursor {
+        let cursor_of = |a: &Asset| AssetCursor {
             sort_key: sort_key_of(a, sort),
             id: a.id,
-        });
+        };
         match &regex {
             None => {
+                next_cursor = if has_more {
+                    rows.last().map(cursor_of)
+                } else {
+                    None
+                };
                 items = rows;
-                next_cursor = if has_more { last_examined } else { None };
                 break;
             }
             Some(re) => {
-                for a in rows {
-                    if items.len() as u32 >= limit {
-                        break;
-                    }
+                let fetched = rows.len();
+                let mut last_tested = None;
+                let mut rows_untested = false;
+                for (i, a) in rows.into_iter().enumerate() {
+                    last_tested = Some(cursor_of(&a));
                     if re.is_match(&a.original_name) {
                         items.push(a);
                     }
+                    if items.len() as u32 >= limit {
+                        rows_untested = i + 1 < fetched;
+                        break;
+                    }
                 }
-                if !has_more {
+                if !(has_more || rows_untested) {
                     next_cursor = None;
                     break;
                 }
-                next_cursor = last_examined.clone();
+                next_cursor = last_tested.clone();
                 if items.len() as u32 >= limit {
                     break;
                 }
-                after = last_examined;
+                after = last_tested;
             }
         }
     }

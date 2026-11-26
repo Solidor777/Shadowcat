@@ -133,7 +133,7 @@ fn world_settings_partial_overlay_body_is_valid() {
     // complete, valid body — absent leaves fall through the resolution chain.
     let v = json!({ "scene": { "fog": false } });
     assert!(validate_engine("world-settings", Some(&v)).is_ok());
-    // The old full-required shape remains valid (full ⊃ optional).
+    // A body with every leaf present is valid too (full ⊃ optional).
     let full = json!({
         "scene": {
             "losRestriction": true, "fog": true, "lightingEnabled": true,
@@ -280,11 +280,39 @@ fn token_and_light_elevation_absent_default_to_none() {
 
 #[test]
 fn region_unknown_field_is_rejected() {
+    // A structurally-valid shape, so the ONLY defect is the smuggled top-level key —
+    // the rejection must key on the unknown field, not the shape.
     let v = json!({
-        "shape": { "kind": "rect", "points": [] },
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
         "behavior": "terrain", "cost": 1.0, "enabled": true, "bogus": 1
     });
     assert!(validate_engine("region", Some(&v)).is_err());
+}
+
+#[test]
+fn region_legacy_shape_unknown_key_is_rejected() {
+    // The same unknown-key discipline INSIDE the legacy singular `shape` object: a key
+    // `RegionShape` does not declare must reject at ingress, not deserialize-and-strip.
+    let v = region_engine_json(json!({
+        "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0], "bogus": 1
+    }));
+    assert!(validate_engine("region", Some(&v)).is_err());
+}
+
+#[test]
+fn region_compound_part_unknown_key_is_rejected() {
+    // A misspelled `hole` key is authored-intent-destroying if silently ignored (the part
+    // would read as additive): an unknown key inside a compound part must reject at
+    // ingress, never deserialize to `hole: false` by default.
+    let v = region_engine_json(json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] }, "hloe": true }
+    ]));
+    assert!(validate_engine("region", Some(&v)).is_err());
+    // Positive control: the correctly-spelled part list is admitted.
+    let ok = region_engine_json(json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] }, "hole": true }
+    ]));
+    assert!(validate_engine("region", Some(&ok)).is_ok());
 }
 
 #[test]
@@ -569,6 +597,10 @@ fn light_position_and_elevation_must_be_finite() {
             dim_radius: 2.0,
             falloff: None,
             enabled: true,
+            active_below_env: None,
+            angle: None,
+            rotation: 0.0,
+            follow_token_rotation: false,
         },
     };
     assert!(ok.validate().is_ok());
@@ -599,11 +631,84 @@ fn light_emission_rejects_a_malformed_color() {
             dim_radius: 2.0,
             falloff: None,
             enabled: true,
+            active_below_env: None,
+            angle: None,
+            rotation: 0.0,
+            follow_token_rotation: false,
         },
     };
     assert!(bad.validate().is_err());
     bad.emission.color = "#ffffff".into();
     assert!(bad.validate().is_ok());
+}
+
+/// A valid light body with the three new optional fields supplied, for the validate cases below.
+fn light_body(extra: serde_json::Value) -> serde_json::Value {
+    let mut emission = json!({
+        "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+        "enabled": true
+    });
+    for (k, v) in extra.as_object().expect("extra is an object") {
+        emission[k] = v.clone();
+    }
+    json!({ "x": 0.0, "y": 0.0, "emission": emission })
+}
+
+#[test]
+fn light_emission_validate_rejects_out_of_range_active_below_env() {
+    for ok in [0.0, 0.5, 1.0] {
+        let v = light_body(json!({ "activeBelowEnv": ok }));
+        assert!(validate_engine("light", Some(&v)).is_ok(), "{ok}");
+    }
+    for bad in [-0.01, 1.01] {
+        let v = light_body(json!({ "activeBelowEnv": bad }));
+        assert!(validate_engine("light", Some(&v)).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn light_emission_validate_rejects_zero_angle_and_angle_over_360() {
+    for ok in [0.1, 90.0, 360.0] {
+        let v = light_body(json!({ "angle": ok }));
+        assert!(validate_engine("light", Some(&v)).is_ok(), "{ok}");
+    }
+    for bad in [0.0, -10.0, 360.5] {
+        let v = light_body(json!({ "angle": bad }));
+        assert!(validate_engine("light", Some(&v)).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn light_emission_validate_rejects_non_finite_rotation() {
+    let ok = LightEmission {
+        color: "#ffffff".into(),
+        intensity: 1.0,
+        bright_radius: 1.0,
+        dim_radius: 2.0,
+        falloff: None,
+        enabled: true,
+        active_below_env: None,
+        angle: Some(90.0),
+        rotation: -720.0,
+        follow_token_rotation: false,
+    };
+    assert!(ok.validate().is_ok(), "any finite rotation is legal");
+    let mut bad = ok.clone();
+    bad.rotation = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok;
+    bad.active_below_env = Some(f64::NAN);
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn light_emission_without_the_new_fields_deserializes_as_a_radial_always_on_light() {
+    let v = light_body(json!({}));
+    let l: LightEngine = serde_json::from_value(v).expect("old shape parses");
+    assert_eq!(l.emission.active_below_env, None);
+    assert_eq!(l.emission.angle, None);
+    assert_eq!(l.emission.rotation, 0.0);
+    assert!(!l.emission.follow_token_rotation);
 }
 
 #[test]
@@ -781,6 +886,154 @@ fn token_visual_animated_round_trips() {
     assert_eq!(serde_json::to_value(&v).unwrap(), src);
 }
 
+const TRANSFORM_ASSET: &str = "11111111-1111-1111-1111-111111111111";
+
+/// An image visual whose `transform` is the given JSON, deserialized through serde.
+fn image_with_transform(transform: serde_json::Value) -> TokenVisual {
+    serde_json::from_value(
+        json!({ "kind": "image", "asset": TRANSFORM_ASSET, "transform": transform }),
+    )
+    .unwrap()
+}
+
+#[test]
+fn image_visual_with_no_transform_round_trips() {
+    let src = json!({ "kind": "image", "asset": TRANSFORM_ASSET });
+    let v: TokenVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(
+        v,
+        TokenVisual::Image {
+            transform: None,
+            ..
+        }
+    ));
+    // An absent transform stays absent on the wire (no `transform: null` key).
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+    assert!(v.validate().is_ok());
+}
+
+#[test]
+fn image_and_animated_visual_with_transform_round_trip() {
+    let transform = json!({ "anchor": { "x": 0.5, "y": 0.75 }, "scale": 1.5, "tint": "#ffcc88" });
+    let image = json!({ "kind": "image", "asset": TRANSFORM_ASSET, "transform": transform });
+    let v: TokenVisual = serde_json::from_value(image.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&v).unwrap(), image);
+    assert!(v.validate().is_ok());
+
+    let animated = json!({
+        "kind": "animated",
+        "source": { "type": "frames", "frames": [TRANSFORM_ASSET] },
+        "fps": 8.0,
+        "loop": true,
+        "transform": transform,
+    });
+    let a: RenderVisual = serde_json::from_value(animated.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&a).unwrap(), animated);
+    assert!(a.validate().is_ok());
+}
+
+#[test]
+fn visual_transform_tint_is_optional_and_anchor_is_not_clamped() {
+    let v = image_with_transform(json!({ "anchor": { "x": -0.5, "y": 2.0 }, "scale": 3.0 }));
+    assert!(v.validate().is_ok());
+}
+
+#[test]
+fn visual_transform_validate_rejects_non_positive_scale() {
+    for scale in [0.0, -1.0] {
+        let v = image_with_transform(json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": scale }));
+        assert!(v.validate().is_err(), "scale {scale} must be refused");
+    }
+}
+
+#[test]
+fn visual_transform_validate_rejects_bad_tint_hex() {
+    for tint in ["ffcc88", "#ffcc8", "#gg0000", ""] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "tint": tint }),
+        );
+        assert!(v.validate().is_err(), "tint {tint:?} must be refused");
+    }
+}
+
+#[test]
+fn visual_transform_validate_rejects_non_finite_values() {
+    // JSON cannot carry NaN or infinity, so the check is exercised on the typed struct.
+    let transform = |x: f64, scale: f64| VisualTransform {
+        anchor: TransformAnchor { x, y: 0.5 },
+        scale,
+        tint: None,
+        facing: None,
+    };
+    assert!(transform(f64::NAN, 1.0).validate().is_err());
+    assert!(transform(f64::INFINITY, 1.0).validate().is_err());
+    assert!(transform(0.5, f64::NAN).validate().is_err());
+    assert!(transform(0.5, f64::INFINITY).validate().is_err());
+    assert!(transform(0.5, 1.0).validate().is_ok());
+}
+
+#[test]
+fn visual_transform_facing_round_trips_and_is_optional() {
+    let with = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "tint": null, "facing": 270.0 } });
+    let v: TokenVisual = serde_json::from_value(with.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&v).unwrap(), with);
+    assert!(v.validate().is_ok());
+
+    // An absent facing stays absent on the wire (no `facing: null` key).
+    let without = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0 } });
+    let v: TokenVisual = serde_json::from_value(without).unwrap();
+    assert!(serde_json::to_value(&v).unwrap()["transform"]
+        .get("facing")
+        .is_none());
+}
+
+#[test]
+fn visual_transform_validate_rejects_out_of_range_facing() {
+    for facing in [-0.5, 360.0, 720.0] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "facing": facing }),
+        );
+        assert!(v.validate().is_err(), "facing {facing} must be refused");
+    }
+    for facing in [0.0, 90.0, 359.9] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "facing": facing }),
+        );
+        assert!(v.validate().is_ok(), "facing {facing} must be accepted");
+    }
+    // JSON cannot carry NaN or infinity, so the check runs on the typed struct.
+    for facing in [f64::NAN, f64::INFINITY] {
+        let t = VisualTransform {
+            anchor: TransformAnchor { x: 0.5, y: 0.5 },
+            scale: 1.0,
+            tint: None,
+            facing: Some(facing),
+        };
+        assert!(t.validate().is_err());
+    }
+}
+
+#[test]
+fn visual_transform_rejects_unknown_fields() {
+    let bad = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "skew": 1.0 } });
+    assert!(serde_json::from_value::<TokenVisual>(bad).is_err());
+}
+
+#[test]
+fn generated_visual_transform_validates_through_its_art() {
+    let bad: RenderVisual = serde_json::from_value(json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": TRANSFORM_ASSET,
+            "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 0.0 } },
+        "crop": "circle",
+    }))
+    .unwrap();
+    assert!(bad.validate().is_err());
+}
+
 #[test]
 fn token_visual_faces_round_trips() {
     let mut faces = BTreeMap::new();
@@ -788,6 +1041,7 @@ fn token_visual_faces_round_trips() {
         "default".to_string(),
         RenderVisual::Image {
             asset: "a.png".into(),
+            transform: None,
         },
     );
     let v = TokenVisual::Faces {
@@ -880,7 +1134,7 @@ fn generated_crop_literal_set_deserializes() {
     assert!(serde_json::from_value::<GeneratedCrop>(json!("hex")).is_err());
 }
 
-// --- literal-set assertions (client writers emit these strings today) ---
+// --- literal-set assertions: each accepted spelling validates ---
 
 #[test]
 fn shape_literal_set_deserializes() {
@@ -917,7 +1171,7 @@ fn region_shape_kind_literal_set_deserializes() {
 
 #[test]
 fn region_behavior_literal_set_deserializes() {
-    for behavior in ["terrain", "impassable", "arrest"] {
+    for behavior in ["terrain", "impassable", "arrest", "ambient_light"] {
         let v = json!({
             "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
             "behavior": behavior, "cost": 1.0, "enabled": true
@@ -945,9 +1199,13 @@ fn engine_literal_defaults_match_client_default() {
             "lightMode": "environmentLight",
             "environment": { "color": "#0a0e1a", "intensity": 0.0 },
             "observerVision": false,
+            "autoRotateTokens": false,
+            "facingVision": false,
+            "facingTurnRule": "free",
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
+            "fogPooling": "individual",
         })
     );
     assert_eq!(
@@ -967,8 +1225,32 @@ fn engine_literal_defaults_match_client_default() {
             "activeScene": null,
             "combat": null,
             "audio": null,
+            "session": null,
         })
     );
+}
+
+#[test]
+fn the_session_state_defaults_to_running_and_bounds_its_message() {
+    let running = SessionState::default();
+    assert!(!running.paused && !running.pause_audio && running.message.is_none());
+    assert!(running.validate().is_ok());
+
+    let at_limit = SessionState {
+        message: Some("x".repeat(MAX_SESSION_MESSAGE_CHARS)),
+        ..Default::default()
+    };
+    assert!(at_limit.validate().is_ok());
+    for bad in [
+        "x".repeat(MAX_SESSION_MESSAGE_CHARS + 1),
+        "a\u{7}b".to_string(),
+    ] {
+        let s = SessionState {
+            message: Some(bad),
+            ..Default::default()
+        };
+        assert!(s.validate().is_err());
+    }
 }
 
 #[test]
@@ -1137,6 +1419,41 @@ fn combat_history_minimal_body_is_valid_and_cursor_is_bounded() {
         Some(&json!({ "records": [], "cursor": 1 }))
     )
     .is_err());
+}
+
+#[test]
+fn combatant_group_body_needs_a_name_and_a_hex_color() {
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": "#3fb950" }))
+    )
+    .is_ok());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": null }))
+    )
+    .is_ok());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "  ", "color": null }))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": "green" }))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": null, "extra": 1 }))
+    )
+    .is_err());
+}
+
+#[test]
+fn combatant_group_name_is_searchable() {
+    let v = json!({ "name": "Rat swarm", "color": null });
+    assert_eq!(search_text("combatant-group", &v).unwrap(), "Rat swarm");
 }
 
 #[test]
@@ -1367,6 +1684,8 @@ fn condition_registry_seed_content() {
     for (id, name, icon) in expect {
         let c = &s.conditions[*id];
         assert_eq!((c.name.as_str(), c.icon.as_str()), (*name, *icon));
+        // Only the two incapacitation conditions draw as a token overlay.
+        assert_eq!(c.overlay, matches!(*id, "dead" | "unconscious"), "{id}");
     }
     let v = serde_json::to_value(&s).unwrap();
     assert!(validate_engine("condition-registry", Some(&v)).is_ok());
@@ -1395,6 +1714,27 @@ fn condition_without_fx_deserializes_with_none() {
     )
     .unwrap();
     assert_eq!(typed.conditions["dead"].fx, None);
+}
+
+#[test]
+fn condition_overlay_defaults_false_and_round_trips() {
+    // An entry with no `overlay` key reads as `false`; an authored `true` survives a round trip.
+    let typed: ConditionRegistryEngine = serde_json::from_value(json!({ "conditions": {
+        "dead": { "name": "Dead", "icon": "💀" },
+        "stunned": { "name": "Stunned", "icon": "💫", "overlay": true }
+    } }))
+    .unwrap();
+    assert!(!typed.conditions["dead"].overlay);
+    assert!(typed.conditions["stunned"].overlay);
+    let v = serde_json::to_value(&typed).unwrap();
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+    assert_eq!(v["conditions"]["stunned"]["overlay"], json!(true));
+}
+
+#[test]
+fn condition_overlay_wrong_type_is_rejected() {
+    let v = json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀", "overlay": "yes" } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_err());
 }
 
 #[test]
@@ -1450,7 +1790,7 @@ fn vision_modes_seed_content() {
             n.name.as_str(),
             n.illumination_floor.as_str(),
             n.default_range,
-            n.render_hint.as_deref(),
+            n.render_hint.as_ref(),
             n.perceives,
             n.requires_los,
         ),
@@ -1471,7 +1811,7 @@ fn vision_modes_seed_content() {
             d.name.as_str(),
             d.illumination_floor.as_str(),
             d.default_range,
-            d.render_hint.as_deref(),
+            d.render_hint.as_ref(),
             d.perceives,
             d.requires_los,
         ),
@@ -1480,7 +1820,7 @@ fn vision_modes_seed_content() {
             "Darkvision",
             "dark",
             12.0,
-            Some("desaturate"),
+            Some(&RenderHint::Desaturate),
             Perception::Terrain,
             true
         )
@@ -1491,7 +1831,7 @@ fn vision_modes_seed_content() {
             t.id.as_str(),
             t.name.as_str(),
             t.default_range,
-            t.render_hint.as_deref(),
+            t.render_hint.as_ref(),
             t.perceives,
             t.requires_los,
         ),
@@ -1534,6 +1874,122 @@ fn vision_mode_unknown_field_is_rejected() {
     assert!(serde_json::from_value::<VisionMode>(v).is_err());
 }
 
+/// A `vision-modes` body holding one mode whose `renderHint` is `hint`.
+fn vision_modes_with_hint(hint: serde_json::Value) -> serde_json::Value {
+    json!({ "modes": { "m": {
+        "id": "m", "name": "M", "illuminationFloor": "dim", "defaultRange": 0.0,
+        "renderHint": hint
+    } } })
+}
+
+#[test]
+fn render_hint_color_wash_rejects_bad_hex() {
+    let bad =
+        vision_modes_with_hint(json!({ "kind": "colorWash", "color": "green", "opacity": 0.5 }));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+    let ok =
+        vision_modes_with_hint(json!({ "kind": "colorWash", "color": "#00aa00", "opacity": 0.5 }));
+    assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+}
+
+#[test]
+fn render_hint_color_wash_rejects_opacity_out_of_range() {
+    for opacity in [-0.01, 1.01, 7.0] {
+        let bad = vision_modes_with_hint(
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": opacity }),
+        );
+        assert!(
+            validate_engine("vision-modes", Some(&bad)).is_err(),
+            "opacity {opacity}"
+        );
+    }
+    assert!(RenderHint::ColorWash {
+        color: "#00aa00".to_string(),
+        opacity: f64::NAN,
+    }
+    .validate()
+    .is_err());
+    for opacity in [0.0, 1.0] {
+        let ok = vision_modes_with_hint(
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": opacity }),
+        );
+        assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+    }
+}
+
+#[test]
+fn render_hint_outline_rejects_bad_hex() {
+    let bad = vision_modes_with_hint(json!({ "kind": "outline", "color": "#12" }));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+}
+
+#[test]
+fn render_hint_round_trips_every_arm_under_its_tag() {
+    let arms = [
+        (RenderHint::Desaturate, json!({ "kind": "desaturate" })),
+        (RenderHint::None, json!({ "kind": "none" })),
+        (
+            RenderHint::ColorWash {
+                color: "#00aa00".to_string(),
+                opacity: 0.25,
+            },
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": 0.25 }),
+        ),
+        (
+            RenderHint::Outline {
+                color: "#ffffff".to_string(),
+            },
+            json!({ "kind": "outline", "color": "#ffffff" }),
+        ),
+        (
+            RenderHint::Custom {
+                treatment: "blood-sense".to_string(),
+                params: json!({ "pulse": 2 }),
+            },
+            json!({ "kind": "custom", "treatment": "blood-sense", "params": { "pulse": 2 } }),
+        ),
+    ];
+    for (hint, wire) in arms {
+        assert_eq!(serde_json::to_value(&hint).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RenderHint>(wire).unwrap(), hint);
+    }
+}
+
+#[test]
+fn render_hint_legacy_string_form_is_rejected() {
+    let bad = vision_modes_with_hint(json!("desaturate"));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+}
+
+#[test]
+fn render_hint_custom_rejects_empty_or_overlong_treatment() {
+    for treatment in [String::new(), "x".repeat(MAX_RENDER_TREATMENT_CHARS + 1)] {
+        let bad = vision_modes_with_hint(
+            json!({ "kind": "custom", "treatment": treatment, "params": {} }),
+        );
+        assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+    }
+    let longest = "x".repeat(MAX_RENDER_TREATMENT_CHARS);
+    let ok =
+        vision_modes_with_hint(json!({ "kind": "custom", "treatment": longest, "params": {} }));
+    assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+}
+
+#[test]
+fn render_hint_custom_params_bounded_by_document_size_ceiling() {
+    let blob = "x".repeat(crate::data::validation::MAX_SYSTEM_BYTES);
+    let hint = RenderHint::Custom {
+        treatment: "big".to_string(),
+        params: json!({ "blob": blob }),
+    };
+    assert!(hint.validate().is_err());
+    let small = RenderHint::Custom {
+        treatment: "small".to_string(),
+        params: json!({ "blob": "x" }),
+    };
+    assert!(small.validate().is_ok());
+}
+
 #[test]
 fn empty_default_config_bodies_are_valid() {
     let chat = serde_json::to_value(ChatSettingsEngine::default()).unwrap();
@@ -1553,6 +2009,14 @@ fn empty_default_config_bodies_are_valid() {
     assert!(validate_engine("resource-registry", Some(&resources)).is_ok());
     let sd = serde_json::to_value(SystemDefaultsEngine::default()).unwrap();
     assert!(validate_engine("system-defaults", Some(&sd)).is_ok());
+}
+
+#[test]
+fn table_folder_is_engine_type_with_sort_only() {
+    assert!(is_engine_doc_type("table_folder"));
+    assert!(validate_engine("table_folder", Some(&json!({ "sort": 3 }))).is_ok());
+    assert!(validate_engine("table_folder", Some(&json!({ "sort": 3, "name": "x" }))).is_err());
+    assert!(validate_engine("table_folder", None).is_err());
 }
 
 #[test]
@@ -1593,9 +2057,19 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
     // Normalization re-serializes the absent `elevation` key back as an
     // explicit null, the same way an absent `triggers` key re-serializes as an
     // explicit empty list (see
-    // `region_without_triggers_loads_and_normalizes_with_an_empty_list`).
+    // `region_without_triggers_loads_and_normalizes_with_an_empty_list`) — and
+    // the absent `ambient_override` key re-serializes as an explicit null and
+    // the absent `cost_by_tag` key re-serializes as an explicit empty object,
+    // both the same way.
     let mut expected = v.as_object().unwrap().clone();
     expected.insert("elevation".to_string(), serde_json::Value::Null);
+    expected.insert("ambient_override".to_string(), serde_json::Value::Null);
+    expected.insert("occludes".to_string(), serde_json::Value::Null);
+    expected.insert("anchor".to_string(), serde_json::Value::Null);
+    expected.insert(
+        "cost_by_tag".to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    );
     assert_eq!(
         n,
         serde_json::Value::Object(expected),
@@ -1679,6 +2153,28 @@ fn region_trigger_validation_rejects_malformed_payloads() {
         ))
     )
     .is_ok());
+}
+
+#[test]
+fn region_engine_validate_bounds_scrolling_text_length() {
+    let base = |text: &str| {
+        json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true,
+            "triggers": [
+                { "on": "enter", "effect": { "type": "scrolling_text", "text": text } }
+            ]
+        })
+    };
+    // Exactly at the cap is admitted — the SAME `chat::MAX_MESSAGE_CHARS` bound `ChatNotice`
+    // uses (one constant, one precedent); the client display-truncates further, see
+    // `EmoteView`'s own doc for that separate, tighter limit.
+    let cap_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS);
+    assert!(validate_engine("region", Some(&base(&cap_text))).is_ok());
+    // One over the cap is refused — mutation: raising `TriggerEffect::ScrollingText`'s
+    // `RegionEngine::validate` bound (or dropping the arm) flips this from Err to Ok.
+    let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(validate_engine("region", Some(&base(&long_text))).is_err());
 }
 
 // --- search_text: the engine-aware index projection ---
@@ -1913,9 +2409,9 @@ fn search_text_malformed_body_contributes_nothing_rather_than_failing() {
 fn derived_engine_paths_names_are_registered_engine_doc_types() {
     // Every doc_type this registry names a non-empty derivation set for must
     // itself be an engine doc_type -- a derivation on a doc_type with no
-    // typed engine band is a contradiction. `note` is the only such doc_type
-    // today; extend this assertion (not a loop -- clippy flags a single-entry
-    // one) alongside any future registration.
+    // typed engine band is a contradiction. `note` is the only such doc_type;
+    // a further registration extends this assertion (not a loop -- clippy flags a
+    // single-entry one).
     assert!(ENGINE_DOC_TYPES.contains(&"note"));
     assert!(!derived_engine_paths("note").is_empty());
 }
@@ -1945,7 +2441,7 @@ fn dice_settings_sound_field_round_trips() {
 
 #[test]
 fn dice_settings_validate_is_wired_into_normalize_engine() {
-    // DiceSettingsEngine::validate is a no-op today; this pins that
+    // DiceSettingsEngine::validate has no failing case; this pins that
     // normalize_engine's "dice-settings" arm actually calls it (not just a bare
     // round_trip), so the next field to need a check has a home.
     assert!(DiceSettingsEngine::default().validate().is_ok());
@@ -1988,6 +2484,7 @@ fn scene_with_levels(levels: Vec<SceneLevel>) -> SceneEngine {
         },
         background: None,
         bounds: None,
+        padding: None,
         snap_to_grid: None,
         vision: None,
         lighting: None,
@@ -2117,18 +2614,22 @@ fn portal_target_rejects_a_non_finite_elevation_and_an_empty_vfx() {
 /// A `RegionEngine` carrying one `Teleport` trigger whose target is the caller's.
 fn region_with_teleport(target: PortalTarget) -> RegionEngine {
     RegionEngine {
-        shape: RegionShape {
+        shape: RegionGeometry::Single(RegionShape {
             kind: "rect".to_string(),
             points: vec![0.0, 0.0, 1.0, 1.0],
-        },
+        }),
         behavior: "terrain".to_string(),
         cost: 1.0,
+        cost_by_tag: std::collections::BTreeMap::new(),
         enabled: true,
         triggers: vec![RegionTrigger {
             on: TriggerEvent::Enter,
             effect: TriggerEffect::Teleport { target },
         }],
         elevation: None,
+        ambient_override: None,
+        occludes: None,
+        anchor: None,
     }
 }
 
@@ -2161,4 +2662,179 @@ fn teleport_effect_round_trips_through_the_engine_wire_shape() {
         n["triggers"][0]["effect"]["target"]["vfx"],
         "11111111-1111-1111-1111-111111111111"
     );
+}
+
+// --- TriggerEffect::PortalChoice validation ---
+
+/// One valid option; `label` is the caller's.
+fn portal_option(label: &str) -> PortalOption {
+    PortalOption {
+        label: label.to_string(),
+        target: portal_target(5.0, 5.0),
+        reveal_scene: false,
+    }
+}
+
+/// A `RegionEngine` carrying one `PortalChoice` trigger.
+fn region_with_portal_choice(prompt: Option<String>, options: Vec<PortalOption>) -> RegionEngine {
+    let mut region = region_with_teleport(portal_target(0.0, 0.0));
+    region.triggers = vec![RegionTrigger {
+        on: TriggerEvent::Enter,
+        effect: TriggerEffect::PortalChoice { prompt, options },
+    }];
+    region
+}
+
+#[test]
+fn portal_choice_accepts_one_to_the_option_cap() {
+    assert!(region_with_portal_choice(None, vec![portal_option("A")])
+        .validate()
+        .is_ok());
+    let full = (0..MAX_PORTAL_OPTIONS)
+        .map(|_| portal_option("A"))
+        .collect();
+    assert!(region_with_portal_choice(Some("Where?".to_string()), full)
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn portal_choice_rejects_zero_and_over_cap_options() {
+    assert!(region_with_portal_choice(None, vec![]).validate().is_err());
+    let over = (0..=MAX_PORTAL_OPTIONS)
+        .map(|_| portal_option("A"))
+        .collect();
+    assert!(region_with_portal_choice(None, over).validate().is_err());
+}
+
+#[test]
+fn portal_choice_rejects_an_empty_or_over_long_label() {
+    assert!(region_with_portal_choice(None, vec![portal_option("")])
+        .validate()
+        .is_err());
+    let long = "x".repeat(MAX_PORTAL_LABEL_CHARS + 1);
+    assert!(region_with_portal_choice(None, vec![portal_option(&long)])
+        .validate()
+        .is_err());
+    let exact = "x".repeat(MAX_PORTAL_LABEL_CHARS);
+    assert!(region_with_portal_choice(None, vec![portal_option(&exact)])
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn portal_choice_rejects_an_invalid_target_and_an_over_long_prompt() {
+    let mut bad = portal_option("A");
+    bad.target = portal_target(f64::NAN, 0.0);
+    assert!(region_with_portal_choice(None, vec![bad])
+        .validate()
+        .is_err());
+    let over_bound = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+    let mut far = portal_option("A");
+    far.target = portal_target(over_bound, 0.0);
+    assert!(region_with_portal_choice(None, vec![far])
+        .validate()
+        .is_err());
+    let prompt = "p".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(
+        region_with_portal_choice(Some(prompt), vec![portal_option("A")])
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn portal_choice_round_trips_and_refuses_unknown_option_keys() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "portal_choice", "prompt": "Where to?",
+                "options": [
+                    { "label": "Cellar", "target": { "x": 3.0, "y": 4.0 }, "reveal_scene": true },
+                    { "label": "Unknown", "target": { "x": 1.0, "y": 2.0 } }
+                ] } }
+        ]
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    let effect = &n["triggers"][0]["effect"];
+    assert_eq!(effect["type"], "portal_choice");
+    assert_eq!(effect["options"][0]["reveal_scene"], true);
+    // An omitted flag defaults to hidden.
+    assert_eq!(effect["options"][1]["reveal_scene"], false);
+
+    let mut smuggled = v.clone();
+    smuggled["triggers"][0]["effect"]["options"][0]["extra"] = json!(1);
+    assert!(validate_engine("region", Some(&smuggled)).is_err());
+}
+
+/// A base region engine body in the legacy singular wire form; `shape` is replaceable.
+fn region_engine_json(shape: serde_json::Value) -> serde_json::Value {
+    json!({
+        "shape": shape,
+        "behavior": "terrain", "cost": 1.0, "enabled": true, "triggers": [],
+    })
+}
+
+#[test]
+fn region_geometry_round_trips_both_wire_forms_byte_identically() {
+    // The untagged-union migration-freedom contract: a legacy singular `shape` object and a
+    // compound `shape` array each deserialize into `RegionEngine` AND re-serialize to their
+    // OWN form — `normalize_engine`'s typed round-trip can never silently rewrite a stored
+    // document from one form to the other. This is the server-side half of the wire
+    // round-trip the client's generated types also pin.
+    let legacy = json!({ "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] });
+    let n = normalize_engine_opt("region", Some(&region_engine_json(legacy.clone())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        n["shape"], legacy,
+        "the legacy form survives ingress unchanged"
+    );
+
+    let compound = json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false },
+        { "shape": { "kind": "circle", "points": [2.0, 2.0, 1.0] }, "hole": true }
+    ]);
+    let n = normalize_engine_opt("region", Some(&region_engine_json(compound.clone())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        n["shape"], compound,
+        "the compound form survives ingress unchanged"
+    );
+}
+
+#[test]
+fn region_validate_shape_structure_and_part_bounds() {
+    // The ONE structural shape check: an unrecognized kind is rejected at ingress for BOTH
+    // wire forms (it would otherwise be stored and silently dropped read-side — the same
+    // fail-closed outcome, moved to the earliest boundary).
+    assert!(validate_engine(
+        "region",
+        Some(&region_engine_json(
+            json!({ "kind": "hexagon", "points": [] })
+        ))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&region_engine_json(json!([
+            { "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false },
+            { "shape": { "kind": "hexagon", "points": [] }, "hole": true }
+        ])))
+    )
+    .is_err());
+
+    // A compound list must declare at least one part and at most MAX_REGION_SHAPE_PARTS.
+    assert!(validate_engine("region", Some(&region_engine_json(json!([])))).is_err());
+    let over: Vec<serde_json::Value> = (0..=crate::data::engine::MAX_REGION_SHAPE_PARTS)
+        .map(|_| json!({ "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false }))
+        .collect();
+    assert!(validate_engine("region", Some(&region_engine_json(json!(over)))).is_err());
+    let at_cap: Vec<serde_json::Value> = (0..crate::data::engine::MAX_REGION_SHAPE_PARTS)
+        .map(|_| json!({ "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false }))
+        .collect();
+    assert!(validate_engine("region", Some(&region_engine_json(json!(at_cap)))).is_ok());
 }

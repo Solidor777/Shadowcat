@@ -1,5 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
+  import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
+  import { trapFocus } from "./focusTrap";
   import type { ConflictGroup } from "./mergeConflict";
 
   let { groups, onApply, onCancel }: {
@@ -35,13 +37,9 @@
     modalEl?.focus();
   });
 
-  $effect(() => {
-    const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
-  });
+  $effect(() => escapeCoordinator.register(ESCAPE_PRIORITY.MODAL, onCancel));
+
+  $effect(() => (modalEl ? trapFocus(modalEl) : undefined));
 
   /**
    * Render a conflict side's value for display: an absent (`undefined`) side shows the
@@ -80,11 +78,8 @@
 </script>
 
 <div class="modal-scrim" role="presentation">
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={t("templates.conflict.title")}
-       bind:this={modalEl}
-       onclick={(e) => e.stopPropagation()}>
+       bind:this={modalEl}>
     <h2>{t("templates.conflict.title")}</h2>
     {#each groups as g (g.key)}
       {#if g.label !== null}<h3>{g.label}</h3>{/if}

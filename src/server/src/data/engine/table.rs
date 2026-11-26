@@ -1,7 +1,8 @@
-//! Engine body for a rollable table (`TABLE_DOC_TYPE`): a set of weighted or
-//! formula-ranged rows a `DrawTable` frame draws from server-side (see
-//! `crate::tables`). Envelope `name` is the table's display name; this module
-//! owns only the stored shape and its ingress validation.
+//! This module defines the engine body of a rollable table (`TABLE_DOC_TYPE`).
+//!
+//! A table is a set of weighted or formula-ranged rows a `DrawTable` frame draws from server-side
+//! (see `crate::tables`). Envelope `name` is the table's display name; this module owns only the
+//! stored shape and its ingress validation.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -15,7 +16,8 @@ use uuid::Uuid;
 use crate::chat::{DocLinkTarget, MAX_IMAGE_ALT_CHARS};
 
 /// Doc_type for a rollable table: a standalone world document, never embedded
-/// (see `data::validation::validate_containment`'s `table` arm).
+/// (see `data::validation::validate_containment`). Its optional `parent_id`
+/// names a `table_folder` (see `SqliteRepository::check_table_folder_parent`).
 pub const TABLE_DOC_TYPE: &str = "table";
 
 /// Row cap: `TableEngine::validate` refuses a table beyond this size.
@@ -116,7 +118,7 @@ pub struct TableRow {
 /// `TableEngine::validate` already caps well within `i32` via
 /// `chat::rolls::MAX_DIE_SIDES`/`MAX_ROLL_DICE`, and an `i64` here forces
 /// ts-rs to emit a `bigint` field on a type constructed by client authoring
-/// code (`table-docs.ts`'s `buildTableDoc` callers), which `JSON.stringify`
+/// code (`buildTableDoc`'s callers), which `JSON.stringify`
 /// (`WsClient.send`) cannot serialize.
 ///
 /// # Examples

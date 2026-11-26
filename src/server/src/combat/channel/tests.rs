@@ -1,5 +1,8 @@
-//! Unit-level serde/tag checks for the combat channel wire types, independent of ECS behavior
-//! (see scene::tests::combat_index::resolved_combats for the derivation tests).
+//! These tests check the combat channel's wire types.
+//!
+//! They cover the serde tag spelling of `ResourceBindingKind` and the JSON round trip of
+//! `CombatsPayload`. They are independent of ECS behavior: the derivation tests are
+//! `scene::tests::combat_index::resolved_combats`.
 use super::*;
 
 #[test]

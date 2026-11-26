@@ -1,16 +1,16 @@
 import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, deterministicId, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
+  buildWorldSettingsDoc, resolveSessionPause, sessionFreezes, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS, MAX_SCENE_PADDING_CELLS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
-import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
+import { buildRegionDoc, setRegionVisibility, type RegionEngine, type AmbientLightMode, type AmbientLightOverride } from "./scene-docs";
 import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
   newCombatEngine, ENGINE_COMBAT_DEFAULTS,
-  type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
+  type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine, type EffectOrigin,
 } from "./scene-docs";
 import { readFileSync } from "node:fs";
 import {
@@ -38,6 +38,24 @@ describe("resolveSceneSettings", () => {
     expect(r.gridDistance).toEqual({ perCell: 5, unit: "ft" });
   });
 
+  it("falls back to individual pooling, then folds system < world < scene", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const bare = resolveSceneSettings(scene, storeWith(scene));
+    expect(bare.fogPooling).toBe("individual");
+
+    const sd = buildSystemDefaultsDoc("w1", { scene: { fogPooling: "shared" } });
+    const system = resolveSceneSettings(scene, storeWith(sd, scene));
+    expect(system.fogPooling).toBe("shared");
+
+    const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fogPooling: "individual" } }, "ws1");
+    const world = resolveSceneSettings(scene, storeWith(sd, ws, scene));
+    expect(world.fogPooling).toBe("individual");
+
+    const overridden = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: "shared" } }, "scene1");
+    const withScene = resolveSceneSettings(overridden, storeWith(sd, ws, overridden));
+    expect(withScene.fogPooling).toBe("shared");
+  });
+
   it("absent bounds resolves to DEFAULT_SCENE_BOUNDS", () => {
     const scene = buildSceneDoc("w1", {}, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -58,6 +76,28 @@ describe("resolveSceneSettings", () => {
     expect(r.bounds).toEqual(DEFAULT_SCENE_BOUNDS);
   });
 
+  it("absent padding resolves to 0 and an authored padding passes through", () => {
+    const bare = buildSceneDoc("w1", {}, "scene1");
+    expect(resolveSceneSettings(bare, storeWith(bare)).padding).toBe(0);
+    const padded = buildSceneDoc("w1", { padding: 2.5 }, "scene2");
+    expect(resolveSceneSettings(padded, storeWith(padded)).padding).toBe(2.5);
+  });
+
+  it("malformed padding fails closed to 0, the server's sanitize_padding_cells rule", () => {
+    // Each of these would WIDEN the envelope if passed through; every one must resolve to no margin.
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "3"]) {
+      const scene = buildSceneDoc("w1", {}, "scene1");
+      (scene.engine as SceneEngine).padding = bad as unknown as number;
+      expect(resolveSceneSettings(scene, storeWith(scene)).padding).toBe(0);
+    }
+    // 0 and values up to the server cap are kept as authored (the server rejects only > the cap
+    // at ingress; the resolver does not clamp).
+    for (const ok of [0, 1.5, MAX_SCENE_PADDING_CELLS]) {
+      const scene = buildSceneDoc("w1", { padding: ok }, "scene1");
+      expect(resolveSceneSettings(scene, storeWith(scene)).padding).toBe(ok);
+    }
+  });
+
   it("uses world-settings defaults over built-ins", () => {
     const scene = buildSceneDoc("w1", {}, "scene1");
     const ws = buildWorldSettingsDoc("w1", {
@@ -72,7 +112,7 @@ describe("resolveSceneSettings", () => {
 
   it("scene overrides win over world defaults", () => {
     const scene = buildSceneDoc("w1", {
-      vision: { movementRestriction: "revealed", losRestriction: false, fog: null, observerVision: null, movementModel: null },
+      vision: { movementRestriction: "revealed", losRestriction: false, fog: null, observerVision: null, movementModel: null, fogPooling: null },
       lighting: { enabled: false, mode: null, environment: null },
       grid: { kind: "square", size: 100, distance: { perCell: 1.5, unit: "m" } },
     }, "scene1");
@@ -128,7 +168,7 @@ describe("resolveSceneSettings", () => {
   it("movementModel: scene override beats world", () => {
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
+      vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
@@ -140,10 +180,31 @@ describe("resolveSceneSettings", () => {
       scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementModel: "continuous" },
     }, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
+      vision: { movementModel: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
+  });
+
+  it("autoRotateTokens: off by default, world beats the default, scene beats world, null inherits", () => {
+    const bare = resolveSceneSettings(buildSceneDoc("w1", {}, "scene1"), storeWith());
+    expect(bare.autoRotateTokens).toBe(false);
+
+    const ws = buildWorldSettingsDoc("w1", {
+      ...DEFAULT_WORLD_SETTINGS,
+      scene: { ...DEFAULT_WORLD_SETTINGS.scene, autoRotateTokens: true },
+    }, "ws1");
+    expect(resolveSceneSettings(buildSceneDoc("w1", {}, "scene1"), storeWith(ws)).autoRotateTokens).toBe(true);
+
+    const off = buildSceneDoc("w1", {
+      vision: { autoRotateTokens: false, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "scene1");
+    expect(resolveSceneSettings(off, storeWith(ws)).autoRotateTokens).toBe(false);
+
+    const inherit = buildSceneDoc("w1", {
+      vision: { autoRotateTokens: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "scene1");
+    expect(resolveSceneSettings(inherit, storeWith(ws)).autoRotateTokens).toBe(true);
   });
 
   it("snapToGrid defaults to true for a grid-stepped scene", () => {
@@ -154,7 +215,7 @@ describe("resolveSceneSettings", () => {
   });
 
   it("snapToGrid defaults to false for a continuous scene (derived default)", () => {
-    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null } }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.movementModel).toBe("continuous");
     expect(r.snapToGrid).toBe(false);
@@ -163,7 +224,7 @@ describe("resolveSceneSettings", () => {
   it("snapToGrid: an explicit true overrides the continuous default", () => {
     const scene = buildSceneDoc(
       "w1",
-      { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null }, snapToGrid: true },
+      { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null }, snapToGrid: true },
       "scene1",
     );
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -204,6 +265,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     grid: { kind: "square", size: 100, distance: null },
     background: null,
     bounds: null,
+    padding: null,
     snapToGrid: null,
     vision: null,
     lighting: null,
@@ -236,7 +298,7 @@ it("buildSceneDoc's combat chain is unset by default and persists an authored ov
 });
 
 test("buildTokenDoc parents to the scene and preserves the token engine body", () => {
-  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null };
+  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
   const doc = buildTokenDoc("w1", "scene-1", eng);
   expect(doc.doc_type).toBe("token");
   expect(doc.parent_id).toBe("scene-1");
@@ -321,7 +383,7 @@ test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an
 });
 
 test("buildConditionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
-  const conditions: Record<string, Condition> = { dead: { name: "Dead", icon: "💀" } };
+  const conditions: Record<string, Condition> = { dead: { name: "Dead", icon: "💀", overlay: false } };
   const d = buildConditionRegistryDoc("w1", conditions, "creg1");
   expect(d.doc_type).toBe("condition-registry");
   expect(d.parent_id).toBeNull();
@@ -377,7 +439,7 @@ describe("vision-modes registry", () => {
     const m = resolveVisionModes(storeWith(buildVisionModesDoc("w1")));
     expect(Object.keys(m).sort()).toEqual(["darkvision", "normal", "tremorsense"]);
     expect(m.normal).toEqual({ id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null });
-    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" });
+    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } });
     // A creature sense: perceives tokens, ignores walls (requiresLos false); its
     // illuminationFloor is inert (creature perception never reads it).
     expect(m.tremorsense).toEqual({ id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null });
@@ -404,7 +466,7 @@ it("builds a light doc parented to its scene", () => {
     x: 10,
     y: 20,
     elevation: null,
-    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
   });
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");
@@ -418,12 +480,16 @@ describe("buildRegionDoc", () => {
       shape: { kind: "rect", points: [0, 0, 100, 100] },
       behavior: "terrain",
       cost: 2,
+      cost_by_tag: { flying: 1, swimming: 3 },
       enabled: true,
       triggers: [
         { on: "enter", effect: { type: "condition_add", condition: "prone" } },
         { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
       ],
       elevation: null,
+      ambient_override: null,
+      occludes: null,
+      anchor: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -438,14 +504,92 @@ describe("buildRegionDoc", () => {
       shape: { kind: "circle", points: [50, 50, 25] },
       behavior: "arrest",
       cost: 1,
+      cost_by_tag: {},
       enabled: true,
       triggers: [],
       elevation: null,
+      ambient_override: null,
+      occludes: null,
+      anchor: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
     setRegionVisibility(doc, false);
     expect(doc.permissions.property_overrides["/engine"]).toBeUndefined();
+  });
+
+  it("round-trips both region geometry wire forms through JSON byte-identically", () => {
+    // The untagged `RegionGeometry` union's client contract, mirroring the server-side
+    // serde round-trip (the docs-permissions "ts-rs + Zod mirror" invariant's honest
+    // form here — region engine bodies carry NO client Zod schema; the generated union
+    // type plus this JSON round-trip is the parity surface): a legacy singular shape
+    // object and a compound parts array each survive a store/JSON cycle unchanged, and
+    // the array form is distinguishable from the object form by Array.isArray alone.
+    const legacy: RegionEngine = {
+      shape: { kind: "rect", points: [0, 0, 100, 100] },
+      behavior: "terrain",
+      cost: 1,
+      cost_by_tag: {},
+      enabled: true,
+      triggers: [],
+      elevation: null,
+      ambient_override: null,
+      occludes: null,
+      anchor: null,
+    };
+    const compound: RegionEngine = {
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "circle", points: [50, 50, 25] }, hole: true },
+      ],
+      behavior: "impassable",
+      cost: 1,
+      cost_by_tag: {},
+      enabled: true,
+      triggers: [],
+      elevation: null,
+      ambient_override: null,
+      occludes: null,
+      anchor: null,
+    };
+    for (const engine of [legacy, compound]) {
+      const revived = JSON.parse(JSON.stringify(buildRegionDoc("world1", "scene1", engine))) as { engine: RegionEngine };
+      expect(revived.engine).toEqual(engine);
+    }
+    const shape = (JSON.parse(JSON.stringify(compound.shape)) as RegionEngine["shape"]);
+    expect(Array.isArray(shape)).toBe(true);
+    if (Array.isArray(shape)) {
+      expect(shape.map((p) => p.hole)).toEqual([false, true]);
+      expect(shape.map((p) => p.shape.kind)).toEqual(["rect", "circle"]);
+    }
+  });
+
+  it("admits every AmbientLightMode and round-trips ambient_override through JSON", () => {
+    // Mirrors the geometry round-trip test above: region engine bodies carry no client Zod
+    // schema (validation is server-side, `RegionEngine::validate`), so the generated union type
+    // plus this JSON round-trip is the parity surface for `ambient_override` too. Mutation: a
+    // round-trip that dropped `ambient_override` (e.g. omitted from `buildRegionDoc`'s envelope
+    // spread) would fail `toEqual` here.
+    const modes: AmbientLightMode[] = ["darken", "brighten", "override"];
+    for (const mode of modes) {
+      const override: AmbientLightOverride = { mode, level: mode === "override" ? 0.2 : 0.5 };
+      const eng: RegionEngine = {
+        shape: { kind: "rect", points: [0, 0, 10, 10] },
+        behavior: "ambient_light",
+        cost: 1,
+        cost_by_tag: {},
+        enabled: true,
+        triggers: [],
+        elevation: null,
+        ambient_override: override,
+        occludes: null,
+        anchor: null,
+      };
+      const doc = buildRegionDoc("world1", "scene1", eng);
+      expect(doc.engine).toEqual(eng);
+      const revived = JSON.parse(JSON.stringify(doc)) as { engine: RegionEngine };
+      expect(revived.engine.ambient_override).toEqual(override);
+    }
   });
 });
 
@@ -498,6 +642,48 @@ function store(docs: WireDocument[]): DocumentStore {
 function ws(activeScene: string | null): WireDocument {
   return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsEngine);
 }
+
+describe("session pause", () => {
+  const withSession = (session: WorldSettingsEngine["session"]): DocumentStore =>
+    store([buildWorldSettingsDoc("w1", { session } as WorldSettingsEngine)]);
+
+  it("reads not paused with no world-settings doc or no session block", () => {
+    expect(resolveSessionPause(store([]))).toEqual({ paused: false, message: null, pauseAudio: false });
+    expect(resolveSessionPause(store([buildWorldSettingsDoc("w1")])).paused).toBe(false);
+  });
+
+  it("reads the stored flag, message and audio switch", () => {
+    const s = withSession({ paused: true, message: "Back in 5", pauseAudio: true });
+    expect(resolveSessionPause(s)).toEqual({ paused: true, message: "Back in 5", pauseAudio: true });
+  });
+
+  it("freezes every role but the GM while paused, and nobody while not", () => {
+    const paused = withSession({ paused: true, pauseAudio: false });
+    expect(sessionFreezes(paused, "player")).toBe(true);
+    expect(sessionFreezes(paused, "gm")).toBe(false);
+    expect(sessionFreezes(withSession({ paused: false, pauseAudio: false }), "player")).toBe(false);
+  });
+});
+
+describe("scene creation order", () => {
+  const sceneAt = (id: string, createdAt: number): WireDocument => ({ ...buildSceneDoc("w1", {}, id), created_at: createdAt });
+
+  it("lists scenes by created_at, then id, whatever order the store holds them in", () => {
+    const newest = sceneAt("a-newest", 300);
+    const oldest = sceneAt("z-oldest", 100);
+    const tieB = sceneAt("m-tie-b", 200);
+    const tieA = sceneAt("b-tie-a", 200);
+    const s = storeWith(newest, tieB, oldest, tieA);
+    expect(queryScenesInCreationOrder(s).map((d) => d.id)).toEqual(["z-oldest", "b-tie-a", "m-tie-b", "a-newest"]);
+  });
+
+  it("resolveViewedScene falls back to the oldest scene even when it has the larger id", () => {
+    const newerSmallId = sceneAt("a-newer", 200);
+    const olderLargeId = sceneAt("z-older", 100);
+    expect(resolveViewedScene(storeWith(newerSmallId, olderLargeId))).toBe("z-older");
+    expect(resolveViewedScene(storeWith(olderLargeId, newerSmallId))).toBe("z-older");
+  });
+});
 
 describe("resolveViewedScene", () => {
   it("returns null when no scene exists", () => {
@@ -581,7 +767,7 @@ describe("combat document builders", () => {
 
   it("buildCombatantDoc parents to the combat and encodes hidden as an unreadable default role", () => {
     const eng: CombatantEngine = {
-      kind: { type: "actor", token_id: "tok-1", actor_id: null }, initiative: null, tiebreak: 0, resources: {},
+      kind: { type: "actor", token_id: "tok-1", actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {},
     };
     const visible = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1" });
     expect(visible.doc_type).toBe(COMBATANT_DOC_TYPE);
@@ -621,6 +807,17 @@ describe("combat document builders", () => {
     expect(d.system).toEqual({ mechanics: { modifiers: {} } });
   });
 
+  it("buildEffectDoc round-trips an origin through the engine band untouched", () => {
+    const origin: EffectOrigin = { source: "item-1", label: "Aldric's blessing" };
+    const eng: EffectEngine = { active: true, transfer: false, duration: null, origin };
+    const d = buildEffectDoc("world-1", eng, {}, undefined, "Bless");
+    expect((d.engine as EffectEngine).origin).toEqual(origin);
+    const labelOnly = buildEffectDoc("world-1", { ...eng, origin: { label: "Spider Queen" } }, {});
+    expect((labelOnly.engine as EffectEngine).origin).toEqual({ label: "Spider Queen" });
+    const unrecorded = buildEffectDoc("world-1", { active: true, transfer: false, duration: null }, {});
+    expect((unrecorded.engine as EffectEngine).origin).toBeUndefined();
+  });
+
   it("buildCombatHistoryDoc parents to the combat and is GM-only", () => {
     const d = buildCombatHistoryDoc("world-1", "combat-1");
     expect(d.doc_type).toBe(COMBAT_HISTORY_DOC_TYPE);
@@ -634,11 +831,21 @@ describe("system defaults", () => {
   it("resolveSceneSettings folds engine < system < world < scene per field", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
     const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: false, movementRestriction: null, movementModel: null } }, "s1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: false, movementRestriction: null, movementModel: null, fogPooling: null } }, "s1");
     const r = resolveSceneSettings(scene, storeWith(sd, ws, scene));
     expect(r.fog).toBe(true);
     expect(r.observerVision).toBe(false);
     expect(r.animation.speedCellsPerSec).toBe(6);
+  });
+
+  it("resolveSceneSettings folds facingVision and facingTurnRule engine < system < scene", () => {
+    expect(resolveSceneSettings(undefined, storeWith())).toMatchObject({ facingVision: false, facingTurnRule: "free" });
+    const sd = buildSystemDefaultsDoc("w1", { scene: { facingVision: true, facingTurnRule: "own_turn" } });
+    expect(resolveSceneSettings(undefined, storeWith(sd))).toMatchObject({ facingVision: true, facingTurnRule: "own_turn" });
+    const scene = buildSceneDoc("w1", {
+      vision: { facingVision: false, facingTurnRule: "free", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "s1");
+    expect(resolveSceneSettings(scene, storeWith(sd, scene))).toMatchObject({ facingVision: false, facingTurnRule: "free" });
   });
 
   it("resolveSettingProvenance names the layer that supplied the value", () => {
@@ -655,7 +862,7 @@ describe("system defaults", () => {
       },
       "ws1",
     );
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "s1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null } }, "s1");
     const storeWithWorld = storeWith(sdDoc, ws, scene);
     expect(resolveSettingProvenance(storeWithWorld, scene, "scene.fog")).toEqual({
       value: true, source: "scene", systemOrEngine: { value: false, source: "system" },
@@ -671,6 +878,25 @@ describe("system defaults", () => {
     const storeNoWorld = storeWith(sdDoc, scene);
     expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({
       value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+  });
+
+  it("resolveSettingProvenance resolves facingTurnRule and facingVision through scene, world and system", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { scene: { facingTurnRule: "own_turn", facingVision: true } });
+    const bare = storeWith(sdDoc);
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingTurnRule")).toEqual({
+      value: "own_turn", source: "system", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingVision").value).toBe(true);
+
+    const scene = buildSceneDoc("w1", {
+      vision: { facingTurnRule: "free", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "s1");
+    expect(resolveSettingProvenance(storeWith(sdDoc, scene), scene, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "scene", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWith(), undefined, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "engine", systemOrEngine: { value: "free", source: "engine" },
     });
   });
 

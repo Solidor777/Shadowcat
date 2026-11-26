@@ -1,5 +1,14 @@
 use super::*;
 use crate::data::command::Operation;
+use crate::data::engine::TriggerEvent;
+use crate::test_ids::test_uuid;
+
+/// The `(event, round, combatant)` identity of one plan entry — the boundary
+/// half of `Room::turn_round_dedup`'s seen-set key (the region/trigger half
+/// exists only room-side, where regions are known).
+fn boundary_key(b: &TurnRoundBoundary) -> (TriggerEvent, u32, Option<Uuid>) {
+    (b.event, b.round, b.combatant)
+}
 
 #[test]
 fn start_initializes_round_one_and_runs_turn_start_recovery() {
@@ -121,11 +130,34 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
             .collect(),
         ..snap
     };
-    let docs2 = apply(&snap2, &advance(&snap2, WORLD, Uuid::nil(), 0).unwrap());
+    let (advance2_ops, advance2_plan) =
+        advance_with_trigger_plan(&snap2, WORLD, Uuid::nil(), 0).unwrap();
+    let docs2 = apply(&snap2, &advance2_ops);
     let c2: CombatEngine = engine_of(&docs2, combat);
     assert_eq!(
         (c2.round, c2.turn),
         (2, Some(crate::test_ids::test_uuid(10)))
+    );
+    // The wrap's region-trigger boundary record rides the same transition:
+    // ONE round-scoped entry per boundary category (the room expands it
+    // across `covered` — never one record per combatant), flanked by the
+    // outgoing turn's end and the incoming turn's start.
+    let events: Vec<TriggerEvent> = advance2_plan.iter().map(|b| b.event).collect();
+    assert_eq!(
+        events,
+        vec![
+            TriggerEvent::TurnEnd,
+            TriggerEvent::RoundEnd,
+            TriggerEvent::RoundStart,
+            TriggerEvent::TurnStart
+        ],
+        "turn_end(outgoing)@1, the wrap's round pair@2, turn_start(incoming)@2"
+    );
+    let wrap = &advance2_plan[1];
+    assert_eq!(
+        (wrap.round, wrap.combatant.is_none(), wrap.covered.len()),
+        (2, true, 2),
+        "the round-scoped record belongs to the new round and covers the whole order"
     );
 }
 
@@ -428,6 +460,86 @@ fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() 
     assert_eq!(e.turn, Some(crate::test_ids::test_uuid(11)));
 }
 
+/// Marks a combatant defeated, keeping its document body in step with its
+/// decoded engine so `apply` sees the flag.
+fn defeated(mut c: Combatant) -> Combatant {
+    c.engine.defeated = true;
+    c.doc.engine = Some(serde_json::to_value(&c.engine).unwrap());
+    c
+}
+
+/// A defeated combatant is skipped under every `TurnControl`. Mutation caught:
+/// the `defeated` disjunct gated behind `TurnControl::OwnerMayEnd` like the
+/// hidden one, which leaves the `GmOnly` walk parked on the defeated entry.
+#[test]
+fn settle_turn_skips_a_defeated_actor_unconditionally_of_turn_control() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let d = defeated(actor_combatant(11, combat, 0xB, None, false, 0.0));
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    for control in [TurnControl::OwnerMayEnd, TurnControl::GmOnly] {
+        let mut engine = combat_engine(vec![a.doc.id, d.doc.id, c.doc.id], Some(a.doc.id), 1, true);
+        engine.turn_control = control;
+        let snap = snapshot(engine, vec![a.clone(), d.clone(), c.clone()], vec![]);
+        let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+        let e: CombatEngine = engine_of(&docs, combat);
+        assert_eq!(
+            e.turn,
+            Some(crate::test_ids::test_uuid(12)),
+            "the defeated entry is walked past under {control:?}"
+        );
+    }
+}
+
+/// A defeated combatant keeps its boundary processing: `turn_start` then
+/// `turn_end` recovery both run, so ongoing recovery state still ticks.
+/// Mutation caught: skipping `run_turn_end` (or `enter_turn`) for the
+/// auto-resolved defeated entry.
+#[test]
+fn settle_turn_still_runs_turn_end_boundary_for_a_defeated_combatant() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let d = defeated(actor_combatant(11, combat, 0xB, None, false, 20.0));
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    let mut registry = registry_with_movement(Formula::Number(30.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, d.doc.id, c.doc.id], Some(a.doc.id), 1, true),
+        vec![a, d, c],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let d: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
+    assert!(d.defeated, "the flag survives the transition");
+    assert_eq!(
+        d.resources["movement"].current, 20.0,
+        "turn_start's +30 (clamped to max 30) THEN turn_end's -10"
+    );
+}
+
+/// An order of only defeated combatants still ends: the walk's step budget
+/// parks `turn` on the last visited entry and advances the round.
+#[test]
+fn settle_turn_all_defeated_order_terminates_via_the_existing_budget_guard() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = defeated(actor_combatant(10, combat, 0xA, None, false, 0.0));
+    let b = defeated(actor_combatant(11, combat, 0xB, None, false, 0.0));
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(e.round, 2, "the walk wrapped exactly once");
+    assert_eq!(e.turn, Some(crate::test_ids::test_uuid(10)));
+}
+
 #[test]
 fn event_posts_its_message_decrements_lifespan_and_is_deleted_at_zero() {
     let combat = crate::test_ids::test_uuid(1);
@@ -602,6 +714,262 @@ fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
             crate::test_ids::test_uuid(10),
             crate::test_ids::test_uuid(12)
         ]
+    );
+}
+
+/// An ungrouped-fixture combatant moved into `group` with the given initiative.
+fn grouped(mut c: Combatant, group: Uuid, initiative: Option<f64>) -> Combatant {
+    c.engine.group = Some(group);
+    c.engine.initiative = initiative;
+    c
+}
+
+/// A `combatant-group` fixture child of `combat`.
+fn group_member_set(id: u128, combat: Uuid, name: &str) -> CombatantGroup {
+    let engine = CombatantGroupEngine {
+        name: name.to_string(),
+        color: None,
+    };
+    CombatantGroup {
+        doc: doc(
+            id,
+            "combatant-group",
+            Some(combat),
+            serde_json::to_value(&engine).unwrap(),
+        ),
+        engine,
+    }
+}
+
+#[test]
+fn rebuild_order_keeps_group_members_contiguous_regardless_of_arrival_order() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let rat_a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let lone = {
+        let mut c = actor_combatant(11, combat, 0xB, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    let rat_b = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let other = {
+        let mut c = actor_combatant(13, combat, 0xD, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    // A full tie on initiative and tiebreak, with an ungrouped combatant
+    // standing between the two group members in the stored order.
+    let order = rebuild_order(
+        &[rat_a, lone, rat_b, other],
+        &[
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(13),
+        ],
+    );
+    assert_eq!(
+        order,
+        vec![
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(13)
+        ],
+        "the second member joins the first; ungrouped entries keep their relative order"
+    );
+}
+
+#[test]
+fn rebuild_order_sorts_groups_by_their_shared_initiative_against_ungrouped_combatants() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    // The members' initiatives have drifted apart (15 and 5); the group slots
+    // at its highest member, ahead of the ungrouped 10, and stays together.
+    let high = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(15.0),
+    );
+    let low = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        Some(5.0),
+    );
+    let lone = {
+        let mut c = actor_combatant(11, combat, 0xB, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    let order = rebuild_order(
+        &[low, lone, high],
+        &[
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(10),
+        ],
+    );
+    assert_eq!(
+        order,
+        vec![
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11)
+        ]
+    );
+}
+
+#[test]
+fn roll_expansion_applies_identical_outcome_to_every_group_member() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        None,
+    );
+    let b = grouped(
+        actor_combatant(11, combat, 0xB, None, false, 0.0),
+        group,
+        None,
+    );
+    let c = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        None,
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id, c.doc.id], None, 0, false),
+        vec![a, b, c],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let ops = roll_with_groups(
+        &snap,
+        &[],
+        &[(group, RollPost::test_with_total("1d20", 14))],
+        WORLD,
+        crate::test_ids::test_uuid(0x6E),
+        "table",
+        0,
+    )
+    .unwrap();
+    let messages = ops
+        .iter()
+        .filter(|o| matches!(o, Operation::Create { doc } if doc.doc_type == "message"))
+        .count();
+    assert_eq!(
+        messages, 1,
+        "one message for the whole group, not one per member"
+    );
+    let docs = apply(&snap, &ops);
+    for id in [10, 11, 12] {
+        let member: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(id));
+        assert_eq!(member.initiative, Some(14.0));
+    }
+}
+
+#[test]
+fn a_group_roll_with_a_hidden_member_posts_gm_only() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        None,
+    );
+    let h = grouped(
+        actor_combatant(11, combat, 0xB, None, true, 0.0),
+        group,
+        None,
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, h.doc.id], None, 0, false),
+        vec![a, h],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let ops = roll_with_groups(
+        &snap,
+        &[],
+        &[(group, RollPost::test_with_total("1d20", 9))],
+        WORLD,
+        crate::test_ids::test_uuid(0x6E),
+        "table",
+        0,
+    )
+    .unwrap();
+    let message = ops
+        .iter()
+        .find_map(|o| match o {
+            Operation::Create { doc } if doc.doc_type == "message" => Some(doc),
+            _ => None,
+        })
+        .expect("a roll message");
+    assert_eq!(message.permissions.default, DocRole::None);
+}
+
+#[test]
+fn a_group_with_no_members_or_an_unknown_group_is_not_found() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id], None, 0, false),
+        vec![a],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Empty")];
+    for id in [0x50, 0x51] {
+        let result = roll_with_groups(
+            &snap,
+            &[],
+            &[(
+                crate::test_ids::test_uuid(id),
+                RollPost::test_with_total("1d20", 9),
+            )],
+            WORLD,
+            crate::test_ids::test_uuid(0x6E),
+            "table",
+            0,
+        );
+        assert!(matches!(result, Err(CombatError::NotFound)));
+    }
+}
+
+#[test]
+fn settle_turn_still_walks_group_members_individually() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let b = grouped(
+        actor_combatant(11, combat, 0xB, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let engine: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(
+        engine.turn,
+        Some(crate::test_ids::test_uuid(11)),
+        "the next group member takes its own turn; the group does not collapse into one"
     );
 }
 
@@ -957,4 +1325,203 @@ fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals
         !ops.is_empty(),
         "the walk did real work (removed at least one exhausted Event), not an early no-op"
     );
+}
+
+// --- Turn/round-scoped region triggers: the boundary record a transition
+// hands the room (`TurnRoundBoundary`; firing itself is room-side) ---
+
+#[test]
+fn turn_start_fires_a_region_trigger_for_the_active_combatants_token() {
+    // `start` settles the first order entry: the turn-scoped boundary record
+    // names ONLY that combatant (the token resolution itself is room-side,
+    // keyed off this combatant id), never the whole order.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], None, 0, false),
+        vec![a, b],
+        vec![],
+    );
+    let (ops, plan) = start_with_trigger_plan(&snap, 0, WORLD, Uuid::nil()).unwrap();
+    let docs = apply(&snap, &ops);
+    let c: CombatEngine = engine_of(&docs, combat);
+    assert!(c.active && c.round == 1, "the start itself still committed");
+
+    let turn_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::TurnStart)
+        .collect();
+    assert_eq!(
+        turn_starts.len(),
+        1,
+        "exactly one turn_start boundary — the settling entry's"
+    );
+    assert_eq!(
+        boundary_key(turn_starts[0]),
+        (TriggerEvent::TurnStart, 1, Some(test_uuid(10))),
+        "the active combatant's own turn start, in round 1"
+    );
+    assert!(
+        !plan.iter().any(|b| b.combatant == Some(test_uuid(11))),
+        "no boundary record names the combatant whose turn it is not"
+    );
+    // The round-scoped record covers the whole order ONCE (never one record
+    // per combatant — the room expands it across `covered`).
+    let round_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundStart)
+        .collect();
+    assert_eq!(round_starts.len(), 1);
+    assert_eq!(round_starts[0].combatant, None);
+    assert_eq!(
+        round_starts[0].covered,
+        vec![test_uuid(10), test_uuid(11)],
+        "the round boundary covers every combatant in order at crossing time"
+    );
+}
+
+#[test]
+fn round_end_fires_once_per_round_not_once_per_combatant_when_scoped_to_round() {
+    // Advance from the LAST order entry so the walk wraps the round. The
+    // round-scoped boundary record is ONE entry per round boundary (the
+    // firing is scoped to the round), never one per combatant the sweep
+    // visits — `round_wrap`'s own structure, which the recovery sweep's
+    // per-combatant iteration deliberately does NOT leak into the record.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(b.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let (_, plan) = advance_with_trigger_plan(&snap, WORLD, Uuid::nil(), 0).unwrap();
+
+    let round_ends: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundEnd)
+        .collect();
+    assert_eq!(
+        round_ends.len(),
+        1,
+        "one round_end record per round boundary, not one per combatant"
+    );
+    assert_eq!(
+        (round_ends[0].round, round_ends[0].combatant),
+        (2, None),
+        "scoped to the round being entered, not to any one combatant"
+    );
+    assert_eq!(
+        round_ends[0].covered,
+        vec![test_uuid(10), test_uuid(11)],
+        "the room expands the one record across the wrap-time order"
+    );
+    let round_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundStart)
+        .collect();
+    assert_eq!(round_starts.len(), 1, "round_start rides the same rule");
+    // The turn-scoped records around the wrap: the outgoing turn ends in the
+    // OLD round, the incoming turn starts in the NEW one.
+    let turn_keys: Vec<(TriggerEvent, u32, Option<Uuid>)> = plan
+        .iter()
+        .filter(|b| b.combatant.is_some())
+        .map(boundary_key)
+        .collect();
+    assert_eq!(
+        turn_keys,
+        vec![
+            (TriggerEvent::TurnEnd, 1, Some(test_uuid(11))),
+            (TriggerEvent::TurnStart, 2, Some(test_uuid(10))),
+        ],
+        "turn boundaries keep their (round, combatant) identity across the wrap"
+    );
+}
+
+#[test]
+fn turn_end_trigger_dedup_prevents_a_second_fire_within_the_same_turn() {
+    // An all-hidden order under `OwnerMayEnd` auto-resolves every entry, so
+    // the FIRST advance's walk ends both combatants' turns and parks back on
+    // `a` at round 2 — `turn` holds a combatant whose turn_end already ran.
+    // The SECOND advance then ends a's ROUND-2 turn AGAIN: the same
+    // (round, combatant) turn, presenting a byte-identical (event, round,
+    // combatant) boundary identity — exactly what the room's once-per-turn
+    // seen-set (`Room::turn_round_dedup`, the suppression itself e2e-pinned
+    // in `ws::room::tests::region_triggers`) keys on. This test pins the
+    // identity: without it colliding, no downstream dedup could ever catch
+    // the re-ended turn.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, true, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, true, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let (ops1, plan1) = advance_with_trigger_plan(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let ended_a: Vec<(TriggerEvent, u32, Option<Uuid>)> = plan1
+        .iter()
+        .filter(|b| b.event == TriggerEvent::TurnEnd && b.combatant == Some(test_uuid(10)))
+        .map(boundary_key)
+        .collect();
+    assert_eq!(
+        ended_a,
+        vec![
+            (TriggerEvent::TurnEnd, 1, Some(test_uuid(10))),
+            (TriggerEvent::TurnEnd, 2, Some(test_uuid(10))),
+        ],
+        "a's turn ended at BOTH rounds of one walk — two DISTINCT turns, and \
+         distinct identities mean both must fire"
+    );
+
+    let docs = apply(&snap, &ops1);
+    let snap2 = CombatSnapshot {
+        engine: engine_of(&docs, combat),
+        combat: docs[&combat].clone(),
+        combatants: snap
+            .combatants
+            .iter()
+            .map(|x| Combatant {
+                doc: docs[&x.doc.id].clone(),
+                engine: engine_of(&docs, x.doc.id),
+            })
+            .collect(),
+        ..snap
+    };
+    let (_, plan2) = advance_with_trigger_plan(&snap2, WORLD, Uuid::nil(), 0).unwrap();
+    assert_eq!(
+        boundary_key(&plan2[0]),
+        (TriggerEvent::TurnEnd, 2, Some(test_uuid(10))),
+        "the parked turn is re-ended with the SAME boundary identity — the \
+         seen-set suppresses this second fire"
+    );
+    assert!(
+        plan2
+            .iter()
+            .any(|b| boundary_key(b) == (TriggerEvent::TurnEnd, 3, Some(test_uuid(10)))),
+        "the walk then settles a genuinely NEW (round 3, a) turn, whose \
+         differing identity the seen-set admits"
+    );
+}
+
+#[test]
+fn turn_round_trigger_event_serde_spellings_match_the_phase_vocabulary() {
+    // The region-trigger event vocabulary IS the clock's phase vocabulary:
+    // one mapping (`phase_trigger_event`), so a region author and a GM read
+    // identical names — never two independently-typed spellings that could
+    // drift. `phase_name`'s strings are the ones the recovery chain already
+    // uses for the same four boundaries.
+    for phase in [
+        crate::combat::transition::Phase::TurnStart,
+        crate::combat::transition::Phase::TurnEnd,
+        crate::combat::transition::Phase::RoundStart,
+        crate::combat::transition::Phase::RoundEnd,
+    ] {
+        assert_eq!(
+            serde_json::to_value(crate::combat::transition::phase_trigger_event(phase)).unwrap(),
+            serde_json::json!(crate::combat::transition::phase_name(phase)),
+            "the TriggerEvent serde spelling is the phase's own name"
+        );
+    }
 }

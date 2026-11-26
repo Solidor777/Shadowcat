@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@shadowcat/core": "workspace:*",
     "@shadowcat/types": "workspace:*",
     "@shadowcat/ui-kit": "workspace:*"
   },

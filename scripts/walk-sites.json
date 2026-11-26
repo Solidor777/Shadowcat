@@ -1,0 +1,59 @@
+{
+  "sites": [
+    {
+      "id": "scripts/assemble-docs.mjs :: walk :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Walks the generated documentation-site output, which is untracked by design; the assembler reads what the docs build just wrote."
+    },
+    {
+      "id": "scripts/check-brief-rules.mjs :: briefs :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists *-brief.md files under a directory named on the command line; the root is a caller-chosen directory of dispatch briefs, not a repository path."
+    },
+    {
+      "id": "scripts/check-gate-manifest.mjs :: listWorkflowFiles :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists *.yml and *.yaml in a workflow directory passed as a parameter, modelling what GitHub Actions enumerates from a directory the tests inject; not a source scan."
+    },
+    {
+      "id": "scripts/check-skill-api-refs.mjs :: walk :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Walks SKILL.md files under tracked skill directories; the skill checkout is a separate git repository, and membership comes from listSkillDirs."
+    },
+    {
+      "id": "scripts/check-skill-api-refs.mjs :: findSkillFiles :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists the skill directories of the skill checkout, a separate git repository."
+    },
+    {
+      "id": "scripts/check-skill-symbol-refs.mjs :: buildSymbolIndex :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists sibling skill names in the skill checkout, a separate git repository."
+    },
+    {
+      "id": "scripts/check-skill-symbol-refs.mjs :: findMarkdownFiles :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists the tracked skill markdown in the skill checkout, a separate git repository."
+    },
+    {
+      "id": "scripts/clean-build-outputs.mjs :: resolveTargets :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Lists examples/*/dist build output directories; the walk's target is untracked build output, which the script exists to move to the recycle bin."
+    },
+    {
+      "id": "scripts/extract-ts-examples.mjs :: workspacePackageDirs :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Enumerates direct child package directories with the workspace tool's semantics (pnpm-workspace.yaml globs); a directory enumeration, not a file scan."
+    },
+    {
+      "id": "scripts/lib/gate-corpus.mjs :: skillSources :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "The recursive file walk of the skill checkout; only the skill-checkout gates import skillSources, and a test pins its importers."
+    },
+    {
+      "id": "scripts/lib/gate-corpus.mjs :: listSkillDirs :: readdirSync :: 1",
+      "class": "not-corpus",
+      "reason": "Reports the skill directories the skill checkout does not track, by design."
+    }
+  ]
+}

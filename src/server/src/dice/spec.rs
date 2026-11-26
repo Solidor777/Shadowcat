@@ -1,3 +1,8 @@
+//! This module defines the canonical roll-parameter types.
+//!
+//! They are the `Expr` AST and its dice groups, `Mode` with its `TotalConfig` and `SuccessConfig`,
+//! and the crit and tier configuration.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -67,9 +72,8 @@ pub enum DieKind {
 }
 
 /// Construction-time validation error for a `DieKind`. `Numeric` has no
-/// invalid state representable by this type (`sides >= 1` is enforced by the
-/// notation parser's `ParseError::InvalidDieSides`, since only the notation
-/// path constructs `Numeric` from untrusted input today).
+/// invalid state representable by this type (`sides >= 1` is enforced by the notation parser,
+/// which returns `ParseError::InvalidDieSides` before it builds `Numeric { min: 1, max: sides }`).
 ///
 /// # Examples
 ///
@@ -82,8 +86,8 @@ pub enum DieKind {
 pub enum DieKindError {
     /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
     /// non-degenerate range; `roll_uniform` only `debug_assert!`s this (a
-    /// no-op in release). No notation path constructs `Faces` today (it is
-    /// struct-only for face-lists); `chat::rolls::validate_pre_roll` calls
+    /// no-op in release). The notation parser does not construct `Faces`;
+    /// `chat::rolls::validate_pre_roll` calls
     /// `DieKind::validate()` on every parsed group before rolling, so this is
     /// the enforcement point at the untrusted-wire boundary.
     EmptyFaces,
@@ -187,6 +191,46 @@ impl Comparator {
     }
 }
 
+/// Which parity of a die's derived value counts as a success (`SuccessRule::Parity`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::Parity;
+/// assert!(Parity::Even.test(4));
+/// assert!(!Parity::Even.test(3));
+/// assert!(Parity::Odd.test(3));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Parity {
+    /// The value is even.
+    Even,
+    /// The value is odd.
+    Odd,
+}
+
+impl Parity {
+    /// Whether `value` has this parity. Uses `rem_euclid`, which always returns a result in
+    /// `0..2`; the `%` operator keeps the dividend's sign (`-3 % 2 == -1`), so a negative odd
+    /// value would match neither `== 0` nor `== 1` and be scored as no parity at all.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::Parity;
+    /// assert!(Parity::Odd.test(-3));
+    /// assert!(Parity::Even.test(-4));
+    /// assert!(Parity::Even.test(0));
+    /// ```
+    pub fn test(self, value: i32) -> bool {
+        let remainder = value.rem_euclid(2);
+        match self {
+            Parity::Even => remainder == 0,
+            Parity::Odd => remainder == 1,
+        }
+    }
+}
+
 /// How an explode trigger spawns/merges extra rolls.
 ///
 /// # Examples
@@ -244,6 +288,17 @@ pub enum GroupModifier {
         target: i32,
         /// Re-roll at most once per die (`ro`) instead of repeatedly (`r`).
         once: bool,
+    },
+    /// Clamp every kept die's derived `value` (never its `natural`) into `min..=max`. Either
+    /// bound may be absent; a floor and a ceiling are one joint constraint, so notation folds
+    /// `mn<N>` and `mx<N>` into a single modifier. Both bounds `None` is a no-op, and when
+    /// `min > max` the ceiling wins (`chat::rolls` refuses that pair from untrusted notation
+    /// with `RollError::InvalidClamp`).
+    Clamp {
+        /// Lowest value a die may keep, when set.
+        min: Option<i32>,
+        /// Highest value a die may keep, when set.
+        max: Option<i32>,
     },
 }
 
@@ -440,6 +495,15 @@ pub enum Expr {
         /// `name.accepts_arg_count()` at parse time.
         args: Vec<Expr>,
     },
+    /// `best(a, b, ...)`: every branch rolls, and the branch whose own total is best under
+    /// `RollSpec::direction` (greatest for `HighWins`, smallest for `LowWins`; a tie goes to the
+    /// leftmost) supplies this node's value. Every die of a losing branch is marked
+    /// `kept: false` with `DieRecord::best_of_branch` set at `evaluate` time, never at `roll`
+    /// time, so `evaluate` stays pure over the stored `RawRoll`. Total mode only (a
+    /// `SuccessCount` roll pools dice ignoring the arithmetic, so a best total has no meaning
+    /// there). Branches consume group-index slots left to right exactly like `Call`'s arguments.
+    /// At least two branches; the parser enforces it.
+    BestOf(Vec<Expr>),
 }
 
 /// SuccessCount dimension 1: the per-die predicate a die must satisfy to score
@@ -465,6 +529,8 @@ pub enum SuccessRule {
     },
     /// A die succeeds when any kept face carries this symbol.
     HasSymbol(Symbol),
+    /// A die succeeds when its derived value has this parity.
+    Parity(Parity),
 }
 
 impl Default for SuccessRule {

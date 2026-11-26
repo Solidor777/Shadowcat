@@ -10,7 +10,7 @@
   // disables every control; the server stays authoritative.
   // INVARIANT: `doc` must be sourced from `ctx.documents` (the optimistic view), never
   // `ctx.store` (the rollback base) — otherwise every OCC pre-image read here is stale and
-  // edits spuriously conflict [[render-from-optimistic-view]].
+  // edits spuriously conflict.
   let { doc, basePath, root, readOnly }: {
     /** The document edits dispatch against. Must come from the optimistic view (see the
      * INVARIANT above); the editor never reads or writes this itself, only forwards it. */

@@ -4,21 +4,19 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Asset upload/serve routes + the upload rate limiter.
 pub mod assets;
-/// The `CompressionLayer` response predicate `router` installs globally.
+pub mod backups;
 pub mod compression;
-/// The rust-embedded client bundle (`dist/`) served as the SPA.
+pub mod conn_serve;
 pub mod embed;
-/// `AppError` and its status-code mapping.
 pub mod error;
-/// Installed-module discovery + path-guarded static serving.
 pub mod module_routes;
-/// All REST route handlers.
+pub mod peer_slots;
+pub mod port_forward;
 pub mod routes;
-/// Login/invite sliding-window throttles.
+pub mod scheme;
 pub mod throttle;
-/// Per-world export/import bundle routes.
+pub mod trash;
 pub mod world_bundle;
 
 use std::sync::atomic::AtomicBool;
@@ -30,6 +28,8 @@ use axum::Router;
 
 use crate::config::Config;
 use crate::data::sqlite::SqliteRepository;
+
+pub use scheme::into_service;
 
 /// Shared handler state. `initialized` caches "an admin exists" so the init
 /// gate avoids a DB hit per request; `setup_token`, when `Some`, is the value
@@ -57,6 +57,10 @@ use crate::data::sqlite::SqliteRepository;
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
 /// # }
@@ -86,8 +90,18 @@ pub struct AppState {
     pub write_barrier: Arc<tokio::sync::RwLock<()>>,
     /// Process-wide per-URL fetch-lock registry serializing concurrent
     /// `chat::post_publish` link-preview-image/oEmbed-thumbnail resolves for
-    /// the identical URL -- see `chat::post_publish::PreviewFetchLocks`.
+    /// the identical URL in one world -- see `chat::post_publish::PreviewFetchLocks`.
     pub preview_fetch_locks: crate::chat::PreviewFetchLocks,
+    /// Permits bounding the asset files held open while streaming to peers
+    /// (`assets::permits`); its capacity is the descriptor term `fd_budget` reserves.
+    pub file_permits: Arc<assets::permits::StreamedFilePermits>,
+    /// The TLS subsystem: status published by `/api/config` and the admin route.
+    pub tls: Arc<crate::tls::TlsRuntime>,
+    /// The router port-forwarding subsystem: its status and the admin toggle's effect
+    /// (`portmap::PortMapRuntime`).
+    pub portmap: Arc<crate::portmap::PortMapRuntime>,
+    /// The trash every production file removal goes through (`trash::Trash`).
+    pub trash: Arc<crate::trash::Trash>,
 }
 
 impl AppState {
@@ -127,7 +141,8 @@ impl AppState {
 }
 
 /// Build the complete axum router: sessions, request-id + trace layers, all
-/// REST/WS/asset/module routes, and the embedded SPA fallback.
+/// REST/WS/asset/module routes, and the embedded SPA fallback. When `Config.route_prefix` is set
+/// the whole application is nested under that prefix and nothing is served outside it.
 ///
 /// # Examples
 ///
@@ -151,6 +166,10 @@ impl AppState {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let app = router(state).await;
 /// // `no_run`: binding a real listener needs a live socket.
@@ -172,14 +191,13 @@ pub async fn router(state: AppState) -> Router {
 
     // Response headers every route gets. `X-Frame-Options`/`Referrer-Policy`/
     // `X-Content-Type-Options` are unconditional; a Content-Security-Policy is deliberately
-    // NOT set here (owned by module signing/CSP work). `Strict-Transport-Security` is
-    // conditional on `Config.behind_tls_proxy`: HSTS instructs browsers to upgrade every future
-    // request to HTTPS, which is wrong to send over a plain HTTP loopback bind with no TLS
-    // anywhere in the path. These two layers are NOT the outermost wrapping: the request-id +
-    // trace layers below wrap them, so a request-id is stamped and the trace span opened
-    // before these headers ever run, and both propagate onto every response including these
-    // headers' own — but they still land on error responses (not just successful ones), since
-    // they sit inside the trace span rather than inside any per-route handler.
+    // NOT set here. `Strict-Transport-Security` is decided per request by
+    // `scheme::hsts_max_age` (opt-in, client-facing HTTPS only, never for a connection served
+    // with the self-signed fallback certificate): HSTS converts every future `http://host:*` in
+    // the browser to HTTPS, so a static or scheme-blind header would end plain-HTTP play. These
+    // layers are NOT the outermost wrapping: the request-id + trace layers below wrap them, so a
+    // request-id is stamped and the trace span opened before these headers run, and they still
+    // land on error responses.
     let security_headers = ServiceBuilder::new()
         .layer(SetResponseHeaderLayer::overriding(
             header::X_FRAME_OPTIONS,
@@ -193,23 +211,70 @@ pub async fn router(state: AppState) -> Router {
             header::REFERRER_POLICY,
             HeaderValue::from_static("same-origin"),
         ));
-    let hsts_header = tower::util::option_layer(state.config.behind_tls_proxy.then(|| {
-        SetResponseHeaderLayer::overriding(
-            header::STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        )
-    }));
+    let hsts_config = state.config.clone();
+    let hsts_header = axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let max_age = scheme::hsts_max_age(req.extensions(), req.headers(), &hsts_config);
+            async move {
+                let mut res = next.run(req).await;
+                if let Some(secs) = max_age {
+                    if let Ok(v) = HeaderValue::from_str(&format!("max-age={secs}")) {
+                        res.headers_mut()
+                            .insert(header::STRICT_TRANSPORT_SECURITY, v);
+                    }
+                }
+                res
+            }
+        },
+    );
 
-    Router::new()
+    let prefix = state.config.base_path().to_owned();
+    let app = Router::new()
         .route("/health", get(routes::health))
         .route("/api/config", get(routes::config))
-        .route("/ws", get(crate::ws::conn::ws_handler))
+        // GET for HTTP/1.1 upgrades, CONNECT for RFC 8441 WebSockets over HTTP/2 (the
+        // listener advertises `h2` via ALPN, and `conn_serve` enables the extended CONNECT
+        // protocol on its HTTP/2 connections).
+        .route(
+            "/ws",
+            get(crate::ws::conn::ws_handler).connect(crate::ws::conn::ws_handler),
+        )
         .route("/api/debug/rooms", get(routes::debug_rooms))
-        .route("/api/admin/backup", post(routes::admin_backup))
+        .route("/api/admin/backup", post(backups::admin_backup))
+        .route("/api/admin/backups", get(backups::list))
+        .route("/api/admin/backups/prune", post(backups::prune_now))
+        .route(
+            "/api/admin/backups/restore-failed",
+            delete(backups::dismiss_restore_failed),
+        )
+        .route("/api/admin/backups/{id}", delete(backups::delete_backup))
+        .route(
+            "/api/admin/backups/{id}/restore",
+            post(backups::restore_from_backup),
+        )
+        .route("/api/admin/tls", get(routes::admin_tls))
+        .route(
+            "/api/admin/portmap",
+            get(port_forward::get_status).put(port_forward::put_status),
+        )
+        .route("/api/admin/trash", get(trash::list_trash))
+        .route("/api/admin/trash/empty", post(trash::empty_trash))
+        .route(
+            "/api/admin/trash/{entry_id}",
+            delete(trash::delete_trash_entry),
+        )
         .route("/api/me", get(routes::me))
         .route(
             "/api/me/ui-state",
             get(routes::get_ui_state).put(routes::put_ui_state),
+        )
+        .route("/api/account/password", post(routes::change_own_password))
+        .route("/api/account/profile", put(routes::put_profile))
+        .route(
+            "/api/account/avatar",
+            put(routes::put_avatar)
+                .delete(routes::delete_avatar)
+                .layer(DefaultBodyLimit::max(routes::MAX_AVATAR_BYTES)),
         )
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
@@ -240,6 +305,10 @@ pub async fn router(state: AppState) -> Router {
         .route(
             "/api/worlds/{id}/members/{user}",
             delete(routes::remove_member),
+        )
+        .route(
+            "/api/worlds/{id}/members/{user}/avatar",
+            get(routes::get_member_avatar),
         )
         .route(
             "/api/worlds/{id}/invites",
@@ -338,7 +407,21 @@ pub async fn router(state: AppState) -> Router {
             "/api/assets/uploads/{id}",
             delete(assets::uploads::abort_session),
         )
-        .fallback(embed::static_handler)
+        .fallback(embed::static_handler);
+    // Every route above is written at its root-mount path; a configured prefix wraps the whole
+    // application (routes and fallback) in one nest, so the prefix is applied here and nowhere
+    // else. A nest does not match its own prefix followed by a bare slash (`/ttrpg/` is neither
+    // `/ttrpg` nor `/ttrpg/<something>`), so that one path is routed to the embedded page
+    // explicitly. A request outside the prefix matches nothing and gets the default 404. The
+    // layers below wrap the nested router, so they cover every response, including that 404.
+    let mounted = if prefix.is_empty() {
+        app
+    } else {
+        Router::new()
+            .nest(&prefix, app)
+            .route(&format!("{prefix}/"), get(embed::static_handler))
+    };
+    mounted
         .layer(sessions)
         .layer(CompressionLayer::new().compress_when(compression::AssetAndWsSafePredicate::new()))
         .layer(security_headers)
@@ -355,31 +438,56 @@ pub async fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Bound on how long `serve` waits, after `axum::serve(..).await` returns, for any still-live
-/// WebSocket connection task to exit (see `serve`'s own doc for why that wait is needed at
-/// all). A connection whose egress loop is merely draining a large resync replay is expected to
-/// finish well inside this; a connection stuck past it is logged and abandoned rather than
-/// blocking process exit indefinitely.
-const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Bound on the shutdown drain: [`conn_serve::ConnLimits::drain_timeout`], measured from the moment
+/// sessions are told to close. Connections still open past it are closed by an I/O error on their
+/// IO and, after [`conn_serve::ABORT_WAIT`], aborted. A connection whose egress loop is merely
+/// draining a large resync replay is expected to finish well inside this; one stuck past it must
+/// not block process exit indefinitely.
+pub(crate) const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Serve `state`'s router over `listener` until `shutdown_fut` resolves, then return — the
-/// testable core of the `shadowcat` binary's normal (non-backup/restore) startup path.
+/// The least time WebSocket session tasks get to finish after the connection drain returns, even
+/// when the drain deadline has already passed. A session blocked sending to a peer that has
+/// stopped reading ends at its Close bound ([`crate::ws::bounded_sink::CLOSE_SEND_TIMEOUT`]) once
+/// told to close, so the grace is that bound plus one second of scheduling slack. A refused join
+/// obeys the same bound: its error and Close sends end at the Close bound, a failed error send
+/// skips the Close, and its wait for the peer's inbound frames (`ws::conn`'s `drain_inbound`)
+/// ends at once when sessions are told to close.
 ///
-/// `axum::serve(..).with_graceful_shutdown(shutdown_fut)` resolves once `shutdown_fut` completes
-/// AND every ordinary HTTP connection has finished. It does NOT wait for a WebSocket session:
-/// `axum::extract::ws::WebSocketUpgrade::on_upgrade` spawns its callback as a task detached from
-/// the hyper connection future that produced the 101 handshake, so from hyper's perspective that
-/// connection is already finished the moment the upgrade response is sent. Without the drain
-/// step below, `main` could return (and drop the tokio runtime) while a `ws::conn::egress_loop`
-/// task is still mid-`send` on its `Message::Close` frame, silently dropping it before the
-/// client ever observes the close.
+/// Every documented shutdown bound derives from this constant and the drain timeout: `serve_with`
+/// returns within `drain_timeout + SESSION_GRACE`, or `drain_timeout + conn_serve::ABORT_WAIT +
+/// SESSION_GRACE` when a connection task outlives its killed IO.
 ///
-/// So this function does two things `axum::serve` alone does not: it accepts a caller-supplied
-/// `shutdown_fut` (letting a test drive shutdown deterministically instead of waiting on a real
-/// OS signal), and after `axum::serve` returns, it calls `WsState::wait_for_drain` — bounded by
-/// `SHUTDOWN_DRAIN_TIMEOUT` — so every live connection's own `egress_loop` shutdown arm (which
-/// races the SAME `shutdown_fut`-triggered signal via `WsState::trigger_shutdown`) has a real
-/// chance to send its Close frame and exit before this function returns.
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::bounded_sink::CLOSE_SEND_TIMEOUT;
+///
+/// assert!(shadowcat::http::SESSION_GRACE > CLOSE_SEND_TIMEOUT);
+/// ```
+pub const SESSION_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(crate::ws::bounded_sink::CLOSE_SEND_TIMEOUT.as_secs() + 1);
+
+/// How long `serve_with` waits for session tasks once the connection drain has returned at `now`:
+/// whatever remains of the shared drain bound (`deadline`, from
+/// [`conn_serve::ServeOutcome::drain_deadline`]), but never less than [`SESSION_GRACE`], so a
+/// drain that consumed the whole bound still gives sessions time to send their Close frames.
+pub(crate) fn session_wait(
+    deadline: tokio::time::Instant,
+    now: tokio::time::Instant,
+) -> std::time::Duration {
+    deadline.saturating_duration_since(now).max(SESSION_GRACE)
+}
+
+/// Serve `state`'s router over `source` until `shutdown_fut` resolves, then return — the
+/// testable core of the `shadowcat` binary's normal (non-backup/restore) startup path. Runs on
+/// [`conn_serve::ConnLimits::for_config`] of `state.config`, the same derivation the binary uses,
+/// so the configured `egress_window_secs` applies; [`serve_with`] takes the limits.
+///
+/// # Errors
+///
+/// Returns an error when the serve loop ended because `source` ended, not because `shutdown_fut`
+/// resolved: a server that can accept no more connections must exit non-zero so a supervisor
+/// restarts it.
 ///
 /// # Examples
 ///
@@ -403,32 +511,129 @@ const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 /// // A `shutdown_fut` that resolves immediately, for illustration only.
 /// shadowcat::http::serve(listener, state, async {}).await.unwrap();
 /// # }
 /// ```
-pub async fn serve(
-    listener: tokio::net::TcpListener,
+pub async fn serve<S>(
+    source: S,
     state: AppState,
     shutdown_fut: impl std::future::Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: conn_serve::ConnSource,
+{
+    let limits = conn_serve::ConnLimits::for_config(&state.config);
+    serve_with(source, state, shutdown_fut, limits).await
+}
+
+/// [`serve`] with explicit connection `limits`.
+///
+/// The serve loop also stops when `WsState::trigger_shutdown` is called from inside the server
+/// (the admin restore route), exactly as when `shutdown_fut` resolves.
+///
+/// [`conn_serve::serve_router`] runs `WsState::trigger_shutdown` as its `on_drain` hook, before
+/// it drains, for both causes (`shutdown_fut` resolving and `source` ending): an HTTP/2
+/// WebSocket is a stream inside its connection, so a drain that waited for connections before
+/// telling sessions to close would wait on them forever. `axum`'s `WebSocketUpgrade::on_upgrade`
+/// also detaches an HTTP/1.1 session from the hyper connection that produced its 101, so after
+/// the loop returns this function calls `WsState::wait_for_drain` (bounded by
+/// `limits.drain_timeout`) so every session's `egress_loop` has a real chance to send its Close
+/// frame and exit before the runtime is dropped. That wait shares the drain's bound (one
+/// deadline, `limits.drain_timeout` after the hook ran) and is never shorter than
+/// [`SESSION_GRACE`].
+///
+/// # Errors
+///
+/// Returns an error when the serve loop ended because `source` ended, not because `shutdown_fut`
+/// resolved.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::http::AppState;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(false)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+/// let limits = ConnLimits { max_live_per_peer: 8, ..ConnLimits::default() };
+/// shadowcat::http::serve_with(listener, state, async {}, limits).await.unwrap();
+/// # }
+/// ```
+pub async fn serve_with<S>(
+    source: S,
+    state: AppState,
+    shutdown_fut: impl std::future::Future<Output = ()> + Send + 'static,
+    limits: conn_serve::ConnLimits,
+) -> anyhow::Result<()>
+where
+    S: conn_serve::ConnSource,
+{
     let ws_state = state.ws.clone();
+    // A `WsState::trigger_shutdown` from inside the server (the admin restore route) stops the
+    // serve loop the same way `shutdown_fut` does; both causes then run the one drain below.
+    let mut stop_requested = ws_state.shutdown.clone();
+    let shutdown_fut = async move {
+        tokio::select! {
+            () = shutdown_fut => {}
+            _ = stop_requested.wait_for(|requested| *requested) => {}
+        }
+    };
+    // Module-placed regions with a declared duration are removed by this task; it ends with the
+    // shutdown request the serve loop above also watches.
+    crate::ws::room::spawn_placement_expiry_sweep(
+        ws_state.rooms.clone(),
+        state.repo.clone(),
+        ws_state.shutdown.clone(),
+        crate::ws::room::PLACEMENT_EXPIRY_PERIOD,
+    );
     let app = router(state).await;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_fut)
-    .await?;
-    if !ws_state.wait_for_drain(SHUTDOWN_DRAIN_TIMEOUT).await {
+    let drain_ws = ws_state.clone();
+    let outcome = conn_serve::serve_router(source, app, shutdown_fut, limits, move || {
+        drain_ws.trigger_shutdown()
+    })
+    .await;
+    let wait = session_wait(outcome.drain_deadline, tokio::time::Instant::now());
+    if !ws_state.wait_for_drain(wait).await {
         tracing::warn!(
             live = ws_state.live_connection_count(),
+            blocked_sends = ws_state.pending_sends(),
             "graceful shutdown timed out waiting for websocket connections to close"
         );
     }
-    Ok(())
+    match outcome.end {
+        conn_serve::ServeEnd::Shutdown => Ok(()),
+        conn_serve::ServeEnd::SourceEnded => Err(anyhow::anyhow!(
+            "the connection source ended without a shutdown request; the server can accept no more connections"
+        )),
+    }
 }
 
 #[cfg(test)]

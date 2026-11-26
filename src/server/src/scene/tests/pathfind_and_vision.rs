@@ -54,6 +54,7 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     let outcome = r.expect("GM route");
@@ -103,6 +104,7 @@ explored: // GM: unrestricted mask
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -158,6 +160,7 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
                 budget_cells: Some(4.0),
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -216,6 +219,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("grid-stepped straight route");
@@ -230,6 +234,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous straight route");
@@ -299,6 +304,7 @@ explored: // GM: unrestricted mask
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("start == goal must succeed, not Unreachable");
@@ -423,6 +429,7 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("weighted continuous route");
@@ -497,7 +504,12 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
     // neighbour arrests too, so the whole ring is checked rather than the two cells the route
     // happens to pass through.
     let field = ecs
-        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(10),
+            None,
+            elevation::GROUND,
+            None,
+        )
         .expect("scene exists");
     assert!(
         field.is_arrest(arrest_cell),
@@ -527,6 +539,7 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("hex continuous route");
@@ -575,6 +588,7 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("polyanya route");
@@ -623,6 +637,7 @@ fn pathfind_continuous_impassable_routes_around() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("route around impassable");
@@ -684,6 +699,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("player route");
@@ -712,6 +728,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("gm route");
@@ -768,6 +785,7 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("clip truncates the route short of the unseen goal rather than failing outright");
@@ -854,9 +872,9 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     );
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
     assert!(
-        ecs.region_field(scene_id, Some(user), elevation::GROUND)
+        ecs.region_field(scene_id, Some(user), elevation::GROUND, None)
             .expect("scene exists")
-            .has_terrain_or_impassable(),
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "the terrain region flips the Continuous dispatch to the weighted sub-path"
     );
 
@@ -881,6 +899,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("weighted route to a visible goal succeeds");
@@ -913,6 +932,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -982,6 +1002,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("player route");
@@ -1015,6 +1036,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("gm route");
@@ -1116,6 +1138,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("the player's route ignores a wall it cannot see");
@@ -1182,6 +1205,7 @@ fn gm_route_does_not_cross_a_gm_only_wall() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
@@ -1217,6 +1241,7 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     let outcome = r.expect("GM route");
@@ -1257,6 +1282,7 @@ fn pathfind_nongm_visible_is_bounded_by_the_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
@@ -1286,6 +1312,7 @@ fn pathfind_revealed_unions_explored_memory() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -1574,6 +1601,120 @@ fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound
     assert_eq!(
         poly_from_polygons, poly_from_inputs,
         "player_vision_polygons and player_vision_polygons_at must compute the identical bound for the same wall-less scene"
+    );
+}
+
+/// One-way-wall parity between the rest polygon and the streamed re-raycast: the wall set
+/// `SightSources::los_at` re-raycasts through is the same `sight_wall_entries`-collected set
+/// (carrying `Seg::one_way`) the committed polygon was built from, so a one-way wall behaves
+/// identically in both reads — the streamed-vision parity pin for the one-way kernel change.
+#[test]
+fn one_way_wall_is_transparent_in_the_rest_polygon_and_the_streamed_recast_alike() {
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // Vertical wall x=100 spanning y±200: `(b - a) × (p - a)` = `-400 * (p.x - 100)`, so
+    // `blockingSide: 1.0` makes the x<100 side the solid one — the token at (50,50) is on the
+    // blocking side; a viewpoint at (150,50) is on the transparent side.
+    let wall = entity_doc_eng(
+        12,
+        10,
+        "wall",
+        json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                "blocksSight": true, "direction": { "blockingSide": 1.0 } }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+    // The rest read from the committed (blocking-side) viewpoint: (150,50) is occluded.
+    let rest = ecs
+        .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
+        .into_iter()
+        .find(|(sid, _, _)| *sid == scene)
+        .map(|(_, _, p)| p)
+        .expect("the owned token yields a polygon for its scene");
+    assert!(
+        !vision::point_in_poly(&rest, (150.0, 50.0)),
+        "from the blocking side the one-way wall occludes like any wall"
+    );
+    assert!(vision::point_in_poly(&rest, (50.0, 150.0)));
+
+    // The streamed re-raycast at the SAME viewpoint must agree vertex-for-vertex (identical
+    // wall set, identical one-way metadata).
+    let streamed_same = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+    assert_eq!(
+        streamed_same.first(),
+        Some(&rest),
+        "the streamed re-raycast must reuse the same one-way wall set as the rest polygon"
+    );
+
+    // Re-raycast from the transparent side: the wall is absent, the polygon extends past it.
+    let streamed_far = ecs.player_vision_polygons_at(user, scene, token_id, (150.0, 50.0));
+    assert!(
+        vision::point_in_poly(&streamed_far[0], (50.0, 50.0)),
+        "from the transparent side the streamed polygon sees straight through the wall"
+    );
+}
+
+/// Proximity-wall parity between the rest polygon and the streamed re-raycast: a wall whose
+/// `proximity` tier names sight is absent for a viewpoint within the tier's distance and solid
+/// beyond it, on both paths, because both re-raycast through the `sight_wall_entries` set that
+/// carries `Seg::open_within`. Fails when the streamed path builds its walls without the tier
+/// (the near viewpoint would then stay occluded) or ignores the distance (the far one would see
+/// through).
+#[test]
+fn proximity_wall_opens_within_range_in_the_rest_polygon_and_the_streamed_recast_alike() {
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // Vertical sight wall at x=100 opening for a viewer within 1 cell (100 units at the 100-unit
+    // grid), so the token's rest viewpoint (50,50), 50 units away, sees through it.
+    let wall = entity_doc_eng(
+        12,
+        10,
+        "wall",
+        json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                "blocksSight": true,
+                "proximity": { "within": 1.0, "senses": ["sight"], "soundGain": null } }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+    let rest = ecs
+        .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
+        .into_iter()
+        .find(|(sid, _, _)| *sid == scene)
+        .map(|(_, _, p)| p)
+        .expect("the owned token yields a polygon for its scene");
+    assert!(
+        vision::point_in_poly(&rest, (150.0, 50.0)),
+        "within the tier's distance the rest polygon sees through the wall"
+    );
+
+    let streamed_near = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+    assert_eq!(
+        streamed_near.first(),
+        Some(&rest),
+        "the streamed re-raycast at the same viewpoint matches the rest polygon"
+    );
+
+    // 150 units from the wall: beyond the 100-unit tier, the wall blocks again.
+    let streamed_far = ecs.player_vision_polygons_at(user, scene, token_id, (-50.0, 50.0));
+    assert!(
+        !vision::point_in_poly(&streamed_far[0], (150.0, 50.0)),
+        "beyond the tier's distance the streamed polygon is occluded by the wall"
     );
 }
 
@@ -2353,6 +2494,7 @@ fn strict_lenient_band_span(ecs: &SceneEcs, scene: Uuid, token: Uuid) -> (i64, i
         &walls,
         settings.los_restriction,
         grid.world_extent(settings.bounds),
+        None,
     );
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for &(x, y) in &poly {
@@ -2523,6 +2665,7 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: elevation::GROUND,
+                    token: None,
                 },
             )
             .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
@@ -2595,6 +2738,7 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a position inside an authored hex must be on-mesh and routable");
@@ -2656,6 +2800,7 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a hex cell inside the authored bounds must be routable");
@@ -2704,10 +2849,15 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
     // predicate fires. Asserted rather than assumed: with an empty field the pure-polyanya
     // path runs instead and the cost assertion would be measuring a different function.
     let field = ecs
-        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(10),
+            None,
+            elevation::GROUND,
+            None,
+        )
         .expect("the fixture's scene resolves a region field");
     assert!(
-        field.has_terrain_or_impassable(),
+        field.has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "fixture: the terrain region must select the weighted sub-path"
     );
     let a = g.cell_center((1, 1));
@@ -2731,6 +2881,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("hex continuous weighted route");
@@ -2906,6 +3057,7 @@ fn route_and_execute_at(
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: mover_elevation,
+                token: None,
             },
         )
         .expect("a route exists (bounds admit a detour around the wall's endpoint)");

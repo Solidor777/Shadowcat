@@ -7,6 +7,9 @@ import { sceneScopedDocs } from "./scene-scope";
  * hidden walls are a later permission refinement). */
 const WALL_COLOR = 0xd06060;
 const WALL_WIDTH = 4;
+/** Dash pattern of a wall carrying a proximity tier (`WallEngine.proximity`), so a GM can tell it
+ * from an ordinary wall. */
+const PROXIMITY_DASH = { on: 12, off: 8 };
 
 /** Reconciles `doc_type:"wall"` documents into the `walls` layer as line segments. */
 export class WallView {
@@ -48,7 +51,7 @@ export class WallView {
    * is treated as absent — never added to `seen`, so it is torn down on this same pass if
    * it was tracked. The rendered segment is a single uniform color/width regardless of
    * `blocksSight`/`blocksMove`/`blocksLight` — this view does not visually distinguish
-   * those flags.
+   * those flags; a wall carrying a `proximity` tier is dashed.
    * @example
    * ```ts
    * import { WallView, MockBackend } from "@shadowcat/render";
@@ -102,7 +105,7 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     layer: "walls",
     points: [x1, y1, x2, y2],
     closed: false,
-    stroke: { color: WALL_COLOR, width: WALL_WIDTH },
+    stroke: { color: WALL_COLOR, width: WALL_WIDTH, ...(s.proximity ? { dash: PROXIMITY_DASH } : {}) },
     fill: null,
   };
 }

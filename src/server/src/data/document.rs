@@ -1,3 +1,6 @@
+//! This module defines the `Document` envelope, its permission types, the capability and contract
+//! declaration types, and the structural schema types.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -129,8 +132,14 @@ pub enum DocRole {
 /// assert_eq!(OwnerStanding::Owner.relate(Visibility::OwnerOrGm), Visibility::OwnerOrGm);
 /// // Wire form is snake_case.
 /// assert_eq!(serde_json::to_value(Visibility::OwnerOrGm).unwrap(), "owner_or_gm");
+/// // A recipient list serializes as an object, distinct from the bare-string tiers.
+/// let ids = vec![uuid::Uuid::nil()];
+/// assert_eq!(
+///     serde_json::to_value(Visibility::Recipients { recipients: ids }).unwrap(),
+///     serde_json::json!({ "recipients": ["00000000-0000-0000-0000-000000000000"] })
+/// );
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum Visibility {
@@ -141,6 +150,19 @@ pub enum Visibility {
     /// Readable by the document's owner and the GM; redacted from everyone else.
     /// The recipient's owner-status is `Access::is_owner`.
     OwnerOrGm,
+    /// Readable only by the listed users, by exact membership against
+    /// `Access::user_id`. Never grants by role: a GM sees it only when
+    /// individually listed, the same rule as `Audience::Whisper`'s recipients.
+    ///
+    /// Untagged so the wire form stays `{"recipients": [...]}` while the
+    /// `recipients` property is a declared field that carries its own doc in
+    /// the generated type.
+    #[serde(untagged)]
+    Recipients {
+        /// Ids of the users who may read the subtree; matched exactly against
+        /// the recipient's user id.
+        recipients: Vec<Uuid>,
+    },
 }
 
 /// The standing an instance's effective owner held on the instance's
@@ -562,9 +584,13 @@ pub enum SchemaType {
 /// `additionalProperties`: a bool (`false` = closed, `true` = any) or a subschema
 /// every non-`properties` key must match. Serialized untagged (`boolean | Schema`);
 /// the hand-written `Deserialize` routes a JSON object straight into `Schema` via
-/// `MapAccessDeserializer` so the inner schema's `deny_unknown_fields` is enforced
-/// (an untagged/internally-tagged derive would buffer through `Content` and drop
-/// that check — the same serde limitation documented for `TokenVisual`).
+/// `MapAccessDeserializer` so errors name the offending key, and so the inner
+/// schema's `deny_unknown_fields` enforcement never depends on derive-buffering
+/// behavior. (The serde gap this tree works around applies to INTERNALLY-TAGGED
+/// enums — the injected tag key collides with `deny_unknown_fields`, see
+/// `TokenVisual`; an untagged derive over newtype-struct variants retains the
+/// inner check, as `data::engine::RegionGeometry`'s ingress pins witness, but
+/// reports only the generic variant-mismatch error.)
 ///
 /// # Examples
 ///
@@ -832,7 +858,7 @@ pub struct Document {
     #[ts(type = "unknown")]
     pub engine: Option<serde_json::Value>,
     /// Opaque game-system band: structurally validated only (size, JSON,
-    /// optional tier-2 shape schema) — the server NEVER interprets its meaning.
+    /// optional structural shape schema) — the server NEVER interprets its meaning.
     #[ts(type = "unknown")]
     pub system: serde_json::Value,
     /// Creation time, Unix epoch milliseconds.

@@ -13,8 +13,11 @@ features precede polish; the module API stays 0.x until evidence proves it.
 
 Complete: M1–M13, the Phase-1 cleanup burndown, the close-out campaign, Phase 1b replay
 redaction, all Bucket C follow-on sub-projects, and the debt-burndown campaign. Full record in
-[`HISTORY.md`](HISTORY.md). `docs/OPEN_BUGS.md` is empty; `docs/TODO.md` holds only items blocked
-on unbuilt Phase-2+ infrastructure or on external circumstances.
+[`HISTORY.md`](HISTORY.md). `docs/OPEN_BUGS.md` holds the open defects; `docs/TODO.md` holds
+the items that await an owner ruling, a physical device or the final CI pass, and the work blocked
+on unbuilt infrastructure. The options batch (the comparative-survey items the owner approved,
+backups, port forwarding, the route prefix, guided tours and module-placed effects) is built;
+see the last `HISTORY.md` entry.
 
 ## Phase 2 — Full table ✅
 
@@ -107,7 +110,16 @@ conjunction with current state. This milestone generalizes that into a queryable
 lands it must become the single producer feeding the existing redaction-context interface — a
 second, independently-derived source for the same decision is the fork-a-decision class this
 codebase produces most.**
-→ Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution) → compendium/pack serving (`Scope::Compendium` is stored and indexed since M2 but every route 404s it; scope and priority await the owner ruling logged in `TODO.md`).
+→ Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, Steam OpenID + plain-executable distribution) → compendium/pack serving (`Scope::Compendium` is stored and indexed since M2 but every route 404s it; scope and priority await the owner ruling logged in `TODO.md`).
+## Built-in HTTPS — ACME issuance (unbuilt remainder)
+The listener, certificate sources (operator PEM, self-signed), degradation ladder, scheme decider,
+per-scheme cookies, HSTS and client changes are built (see [`design/built-in-https.md`](design/built-in-https.md)).
+Remaining: automatic certificates through `instant-acme` — `tls-alpn-01` (resolver challenge slot
+and `acme-tls/1` selection already exist) and `http-01` (unauthenticated `/.well-known/acme-challenge/{token}`
+route), account persistence under the `tls` directory, renewal and backoff, private-CA support through
+`acme_ca_root`, and a `reqwest`-backed ACME `HttpClient`. The `acme_*` keys are already parsed and
+validated; until issuance lands a configured `acme_domains` degrades to the self-signed certificate.
+
 ## Documentation campaign (cross-phase, runs alongside feature work)
 
 Infrastructure, guides, and Sweeps 1–14 are complete (record in [`HISTORY.md`](HISTORY.md)).
@@ -134,7 +146,7 @@ Remaining, in order:
   and start authoring real incremental migrations from that point on.
 - Desync-convergence test (M4): maintained throughout.
 - Backups: the basic backup + snapshot-restore deliverable (M12.5) satisfies the dogfood gate;
-  Phase 4 adds scheduling / automation.
+  the in-app list, restore, delete and retention are built. Phase 4 adds scheduling / automation.
 - Rate limiting on WS / upload: introduced with the surfaces it protects, not only at hardening.
 - Account model: self-host, admin-provisioned accounts (admin-only `POST`/`GET /api/users`) plus a
   GM-minted world invite the invitee redeems from their own session. Deliberately no

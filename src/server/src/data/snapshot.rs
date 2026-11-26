@@ -1,9 +1,11 @@
-//! Commit-time redaction snapshot: `StoredCommand`, `CommandSnapshot`, `OpSnapshot`. Carries
-//! the policy in force AT COMMIT alongside a `Command`, so replay redaction can compute the
-//! recipient's hidden set as `hidden_current ∪ hidden_commit` instead of re-deriving
-//! `hidden_commit` from today's (wrong) policy. Server-internal only: never serialized to the
-//! wire — `Operation`/`Command`/`ClientMsg`/`ServerMsg` and their ts-rs/Zod mirrors are
-//! untouched by this module's existence.
+//! This module defines the commit-time redaction snapshot: `StoredCommand`, `CommandSnapshot` and
+//! `OpSnapshot`.
+//!
+//! They carry the policy in force AT COMMIT alongside a `Command`, so replay redaction can compute
+//! the recipient's hidden set as `hidden_current ∪ hidden_commit` instead of re-deriving
+//! `hidden_commit` from the policy in force at replay time. The types are server-internal: they are
+//! never serialized to the wire, and `Operation`, `Command`, `ClientMsg`, `ServerMsg` and their
+//! ts-rs/Zod mirrors do not contain them.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -63,7 +65,7 @@ pub struct OpSnapshot {
     /// whole document), this is the full, unpruned set.
     pub overrides_at_commit: Vec<(String, Visibility)>,
     /// Present only when this `Update` op's own `changes` narrow visibility
-    /// (`permission::touches_permissions`): the FULL (unpruned) commit-time hidden-pointer set
+    /// (`permission::retracts_hidden`): the FULL (unpruned) commit-time hidden-pointer set
     /// for the document, with each pointer's `Visibility` tier retained (never a bare pointer
     /// list — the tier is needed to filter per-recipient via `Access::can_see` at replay time,
     /// not apply the same retraction to every recipient regardless of their own access). Always

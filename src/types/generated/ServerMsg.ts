@@ -7,6 +7,8 @@ import type { ContractDeclaration } from "./ContractDeclaration";
 import type { LightSample } from "./LightSample";
 import type { MergeErrorKind } from "./MergeErrorKind";
 import type { MergeOutcome } from "./MergeOutcome";
+import type { PathErrorReason } from "./PathErrorReason";
+import type { PortalOfferOption } from "./PortalOfferOption";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
@@ -69,9 +71,9 @@ capability_requirements: Array<CapabilityRequirement>,
  */
 contract_declarations: Array<ContractDeclaration>, 
 /**
- * The world's structural schema declarations (tier-2), so the client
- * can mirror expectations. Informational/parity only — tier-1 Zod
- * validates client-side; this is NOT a client enforcement gate.
+ * The world's structural schema declarations, so the client
+ * can mirror expectations. Informational/parity only — the client Zod
+ * gate validates client-side; this is NOT a client enforcement gate.
  */
 schema_declarations: Array<SchemaDeclaration>, 
 /**
@@ -79,7 +81,14 @@ schema_declarations: Array<SchemaDeclaration>,
  * `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
  * role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
  */
-role_capabilities: RoleCapabilities, } | { "type": "event", 
+role_capabilities: RoleCapabilities, 
+/**
+ * The members with at least one live connection in this world at send time, read from
+ * the same `Room::presence_online` state the `Presence` frames' transitions maintain.
+ * Includes the receiving user (their own connection is counted before this frame is
+ * built). Sent to every member, the audience the member roster already reaches.
+ */
+online_users: Array<string>, } | { "type": "event", 
 /**
  * The committed, per-recipient-filtered command.
  */
@@ -225,7 +234,35 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "emote", 
+user: string, } | { "type": "modules_changed" } | { "type": "presence", 
+/**
+ * The member whose presence changed.
+ */
+user: string, 
+/**
+ * `true` when the member's first connection opened, `false` when the last one closed.
+ */
+online: boolean, } | { "type": "member_profile", 
+/**
+ * The member the row describes.
+ */
+user: string, 
+/**
+ * The member's username, the name the roster and chat show.
+ */
+username: string, 
+/**
+ * Colour accent as `#rrggbb`, or `None` when unset.
+ */
+colour: string | null, 
+/**
+ * Pronouns text, or `None` when unset.
+ */
+pronouns: string | null, 
+/**
+ * Whether the member has an avatar.
+ */
+has_avatar: boolean, } | { "type": "emote", 
 /**
  * Scene the token stands on.
  */
@@ -241,7 +278,59 @@ user: string,
 /**
  * The emote glyph(s).
  */
-emote: string, } | { "type": "path_result", 
+emote: string, } | { "type": "ruler", 
+/**
+ * The measuring user (server-stamped, never client-asserted).
+ */
+from: string, 
+/**
+ * Scene the ruler is measured on.
+ */
+scene: string, 
+/**
+ * The route preview's vertices in scene coordinates, start through goal; empty exactly
+ * when `active` is `false`.
+ */
+points: Array<[number, number]>, 
+/**
+ * `false` ends `from`'s ruler for this recipient (`points` is then empty).
+ */
+active: boolean, 
+/**
+ * The sending connection's opaque token, relayed unchanged from
+ * `ClientMsg::RulerUpdate::origin`. Not server-verified: a forged value can only make
+ * the client holding that token hide the forger's own ruler.
+ */
+origin: string, } | { "type": "explored_fog_reset", 
+/**
+ * The scene whose explored memory was reset.
+ */
+scene: string, 
+/**
+ * The user the reset was scoped to, or `None` for every user.
+ */
+user: string | null, 
+/**
+ * The level the reset was scoped to, or `None` for every level.
+ */
+level: string | null, } | { "type": "scrolling_text", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the overlay plays over.
+ */
+token: string, 
+/**
+ * The overlay text.
+ */
+text: string, 
+/**
+ * True when the firing region is not visible to every world member — the frame is
+ * delivered only to GM connections.
+ */
+gm_only: boolean, } | { "type": "path_result", 
 /**
  * The originating pathfind's correlation token.
  */
@@ -275,9 +364,13 @@ budget_cells: number | null, } | { "type": "path_error",
  */
 request_id: string, 
 /**
- * Player-presentable failure text.
+ * Player-presentable failure text (`PathErrorReason::message`).
  */
-message: string, } | { "type": "move_error", 
+message: string, 
+/**
+ * The typed failure a client chooses its notice from.
+ */
+reason: PathErrorReason, } | { "type": "move_error", 
 /**
  * The refused move's correlation token.
  */
@@ -285,7 +378,12 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "chat_error", 
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the move; `None` for every
+ * other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "chat_error", 
 /**
  * The refused chat op's correlation token.
  */
@@ -301,7 +399,12 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "combat_result", 
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the intent; `None` for
+ * every other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "combat_result", 
 /**
  * The confirmed combat intent's correlation token.
  */
@@ -309,7 +412,65 @@ request_id: string,
 /**
  * The committed command's sequence number — matches the broadcast `Event`'s `seq`.
  */
-seq: bigint, } | { "type": "move_stream", 
+seq: bigint, } | { "type": "door_toggle_error", 
+/**
+ * The refused toggle's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned — see the variant doc).
+ */
+message: string, } | { "type": "place_effect_error", 
+/**
+ * The refused request's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned, see the variant doc).
+ */
+message: string, } | { "type": "portal_offer", 
+/**
+ * Identifies the offer in `ClientMsg::ChoosePortal`.
+ */
+offer_id: string, 
+/**
+ * The scene the token stands on.
+ */
+scene: string, 
+/**
+ * The token that may take a portal.
+ */
+token: string, 
+/**
+ * The GM-authored heading, if any.
+ */
+prompt: string | null, 
+/**
+ * The destinations in display order.
+ */
+options: Array<PortalOfferOption>, 
+/**
+ * True when only GM connections receive the frame.
+ */
+gm_only: boolean, 
+/**
+ * The token's effective owner, the one non-GM recipient of a public offer; `None` for
+ * a token with no owner.
+ */
+owner: string | null, } | { "type": "portal_choice_error", 
+/**
+ * The refused request's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned — see the variant doc).
+ */
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the answer; `None` for
+ * every other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */
@@ -449,4 +610,12 @@ elevation: number | null,
 /**
  * Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
  */
-id: string, };
+id: string, } | { "type": "present_note", 
+/**
+ * The `note` document being presented.
+ */
+note_id: string, 
+/**
+ * The GM who presented it (server-stamped).
+ */
+presented_by: string, };

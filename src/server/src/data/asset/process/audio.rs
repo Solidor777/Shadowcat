@@ -1,13 +1,17 @@
-//! Audio transcode: sniffs the real container/codec via `symphonia`'s probe (never trusting
-//! the client-declared `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes
-//! Opus (VBR) via `opus`, and muxes the encoded frames into the container(s) the import
-//! selected — Ogg pages via `ogg`, WebM via this module's own minimal EBML writer (no extra
-//! dependency for a fixed single-audio-track shape) — each written as a SIBLING derivative.
-//! The canonical file is NEVER rewritten, unlike the image pipeline's canonical swap; the
-//! uploaded original stays every non-GM player's playback fallback on the ordinary serve
-//! route. Over-cap input or any pipeline failure falls back to pass-through with
-//! `audio:untranscoded` (tagged by the caller via `tags::derive`, not here) and no derivative
-//! — there is no lazy on-demand regeneration for a minutes-long transcode.
+//! This module transcodes an uploaded audio file into Opus sibling derivatives.
+//!
+//! It sniffs the real container/codec via `symphonia`'s probe (never trusting the client-declared
+//! `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes Opus (VBR) via `opus`, and
+//! muxes the encoded frames into the container(s) the import selected — Ogg pages via `ogg`, WebM
+//! via the `webm` submodule's own minimal EBML writer (no extra dependency for a fixed
+//! single-audio-track shape) — each written as a SIBLING derivative.
+//!
+//! `process_staged` dispatches an `audio/` upload here before the image branch. The canonical file
+//! is NEVER rewritten, unlike the image pipeline's canonical swap; the uploaded original stays
+//! the playback fallback every client can request on the ordinary serve route. Over-cap input or
+//! any pipeline failure falls back to pass-through with `audio:untranscoded` (tagged by the
+//! caller via `tags::derive`, not here) and no derivative. There is no lazy on-demand
+//! regeneration for a minutes-long transcode.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -40,9 +44,15 @@ pub const MAX_AUDIO_SAMPLES: u64 = 1 << 28;
 pub const OPUS_TARGET_SAMPLE_RATE: u32 = 48_000;
 /// Opus frame size in milliseconds (20 ms is Opus's recommended default for VBR speech/music).
 pub const OPUS_FRAME_MS: u32 = 20;
-/// Frames per WebM cluster: the relative block timecode is a signed i16 of milliseconds, so a
-/// cluster must span well under 32.7 seconds.
-const WEBM_CLUSTER_FRAMES: usize = 64;
+/// Samples per channel in one Opus frame at `OPUS_TARGET_SAMPLE_RATE`.
+const OPUS_FRAME_SAMPLES: u64 = OPUS_TARGET_SAMPLE_RATE as u64 * OPUS_FRAME_MS as u64 / 1000;
+/// The vendor string the Ogg muxer writes into `OpusTags`. `process::audio::upgrade` defines how
+/// it marks a sibling current.
+pub(crate) const OPUS_VENDOR_MARKER: &str = "shadowcat-opus/2";
+
+pub(super) mod webm;
+
+pub(crate) mod upgrade;
 
 /// Which Opus derivative container(s) an audio import emits. Selected at import time
 /// (`CreateUploadRequest.audio_containers` / the multipart `containers` field); `Both` is the
@@ -60,9 +70,9 @@ const WEBM_CLUSTER_FRAMES: usize = 64;
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum AudioContainers {
-    /// `.opus.ogg` only.
+    /// The Ogg sibling (`OPUS_SUFFIX`) only.
     Ogg,
-    /// `.opus.webm` only.
+    /// The WebM sibling (`WEBM_SUFFIX`) only.
     #[serde(rename = "webm")]
     WebM,
     /// Both derivatives (the import default).
@@ -287,7 +297,8 @@ fn resample_to_target(decoded: &Decoded) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
-/// One encoded 20 ms Opus frame plus the running granule (48 kHz sample count) it ends at.
+/// The encoded Opus stream both containers are muxed from: the 20 ms packets, the encoder's
+/// pre-skip and the exact valid-sample count the end-trim values derive from.
 struct OpusStream {
     /// The encoded frames, in order.
     packets: Vec<Vec<u8>>,
@@ -299,7 +310,8 @@ struct OpusStream {
 }
 
 /// Encode 48 kHz PCM to 20 ms Opus frames (VBR; 96 kbps stereo / 64 kbps mono). The final
-/// partial frame is zero-padded with silence.
+/// partial frame is zero-padded with silence, and further silent frames follow until the packets
+/// cover `pre_skip + total_valid` samples (the encoder lookahead flush).
 fn encode_opus_frames(pcm_48k: &[f32], channels: u16) -> Result<OpusStream, String> {
     let bitrate = if channels >= 2 { 96_000 } else { 64_000 };
     let mut encoder = opus::Encoder::new(
@@ -320,8 +332,7 @@ fn encode_opus_frames(pcm_48k: &[f32], channels: u16) -> Result<OpusStream, Stri
         .unwrap_or(0)
         .clamp(0, u16::MAX as i32) as u16;
 
-    let frame_samples =
-        (OPUS_TARGET_SAMPLE_RATE as usize * OPUS_FRAME_MS as usize / 1000) * channels as usize;
+    let frame_samples = OPUS_FRAME_SAMPLES as usize * channels as usize;
     let mut packets = Vec::new();
     let mut absolute_pos: usize = 0;
     while absolute_pos < pcm_48k.len() {
@@ -338,10 +349,23 @@ fn encode_opus_frames(pcm_48k: &[f32], channels: u16) -> Result<OpusStream, Stri
     if packets.is_empty() {
         return Err("nothing to encode".to_string());
     }
+    // Lookahead flush: the encoder emits each input sample `pre_skip` samples late, so a decoder
+    // that drops `pre_skip` from the front recovers every valid sample only when the packets cover
+    // `pre_skip + total_valid` samples. Silence is fed until they do (RFC 7845 section 4.5,
+    // end-trim by the final granule position, the Opus-in-WebM mapping's `DiscardPadding`).
+    let total_valid = pcm_48k.len() as u64 / channels as u64;
+    let silence = vec![0.0f32; frame_samples];
+    while (packets.len() as u64) * OPUS_FRAME_SAMPLES < pre_skip as u64 + total_valid {
+        packets.push(
+            encoder
+                .encode_vec_float(&silence, 4000)
+                .map_err(|e| e.to_string())?,
+        );
+    }
     Ok(OpusStream {
         packets,
         pre_skip,
-        total_valid: pcm_48k.len() as u64 / channels as u64,
+        total_valid,
     })
 }
 
@@ -373,6 +397,17 @@ fn rand_serial() -> u32 {
 /// Mux the Opus frames into Ogg pages: the `OpusHead`/`OpusTags` header packets every Ogg/Opus
 /// decoder requires first, then one packet per audio frame, granule counting 48 kHz samples.
 fn mux_ogg(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<u8>, String> {
+    mux_ogg_with_vendor(stream, channels, source_rate, OPUS_VENDOR_MARKER)
+}
+
+/// `mux_ogg` with an explicit `OpusTags` vendor string, so a file of the unmarked layout can be
+/// built to exercise the upgrade sweep's selection.
+fn mux_ogg_with_vendor(
+    stream: &OpusStream,
+    channels: u16,
+    source_rate: u32,
+    vendor: &str,
+) -> Result<Vec<u8>, String> {
     use ogg::writing::{PacketWriteEndInfo, PacketWriter};
     let mut out = Vec::new();
     let mut writer = PacketWriter::new(&mut out);
@@ -385,16 +420,18 @@ fn mux_ogg(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<u
             0,
         )
         .map_err(|e| e.to_string())?;
-    // OpusTags: empty vendor string, zero user comments.
-    let mut tags = Vec::with_capacity(16);
+    // OpusTags: the encoder's vendor marker, zero user comments.
+    let vendor = vendor.as_bytes();
+    let mut tags = Vec::with_capacity(16 + vendor.len());
     tags.extend_from_slice(b"OpusTags");
-    tags.extend_from_slice(&0u32.to_le_bytes());
+    tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    tags.extend_from_slice(vendor);
     tags.extend_from_slice(&0u32.to_le_bytes());
     writer
         .write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)
         .map_err(|e| e.to_string())?;
 
-    let frame_samples = (OPUS_TARGET_SAMPLE_RATE as u64 * OPUS_FRAME_MS as u64) / 1000;
+    let frame_samples = OPUS_FRAME_SAMPLES;
     let mut granule: u64 = 0;
     let last = stream.packets.len() - 1;
     for (i, packet) in stream.packets.iter().enumerate() {
@@ -415,118 +452,6 @@ fn mux_ogg(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<u
             .write_packet(packet.clone(), serial, end, g)
             .map_err(|e| e.to_string())?;
     }
-    Ok(out)
-}
-
-/// An EBML element id-length-prefixed size, or the all-ones "unknown size" marker used only
-/// where a length is genuinely not computed (never emitted by this writer: every element's
-/// size is known up front, the strictest shape a demuxer accepts).
-fn ebml_size(out: &mut Vec<u8>, value: u64) {
-    let bytes = if value < 0x7F {
-        1
-    } else if value < 0x3FFF {
-        2
-    } else if value < 0x1F_FFFF {
-        3
-    } else if value < 0xFFF_FFFF {
-        4
-    } else {
-        8
-    };
-    let marker = 1u64 << (7 * bytes);
-    let encoded = marker | value;
-    out.extend_from_slice(&encoded.to_be_bytes()[8 - bytes as usize..]);
-}
-
-/// Append one EBML element: `id` (already the wire bytes), then vint size, then `payload`.
-fn ebml_element(out: &mut Vec<u8>, id: &[u8], payload: &[u8]) {
-    out.extend_from_slice(id);
-    ebml_size(out, payload.len() as u64);
-    out.extend_from_slice(payload);
-}
-
-/// Append one EBML unsigned-integer element, zero-extended to `width` bytes.
-fn ebml_uint(out: &mut Vec<u8>, id: &[u8], value: u64, width: usize) {
-    out.extend_from_slice(id);
-    ebml_size(out, width as u64);
-    out.extend_from_slice(&value.to_be_bytes()[8 - width..]);
-}
-
-/// Append one EBML float element (always 8 bytes, f64).
-fn ebml_float(out: &mut Vec<u8>, id: &[u8], value: f64) {
-    out.extend_from_slice(id);
-    ebml_size(out, 8);
-    out.extend_from_slice(&value.to_be_bytes());
-}
-
-/// Mux the Opus frames into a minimal single-audio-track WebM (EBML): header, Segment with
-/// Info/Tracks (`A_OPUS`, `CodecPrivate` = `OpusHead`, `CodecDelay` = the pre-skip,
-/// `SeekPreRoll` = 80 ms per the Opus-in-WebM mapping), then clusters of
-/// `WEBM_CLUSTER_FRAMES` SimpleBlocks each (a block's relative timecode is a signed i16 of
-/// milliseconds, so clusters stay small). Every element's size is computed, never unknown —
-/// the strictest shape a demuxer accepts.
-fn mux_webm(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-
-    // EBML header.
-    let mut header = Vec::new();
-    ebml_uint(&mut header, &[0x42, 0x86], 1, 1); // EBMLVersion
-    ebml_uint(&mut header, &[0x42, 0xF7], 1, 1); // EBMLReadVersion
-    ebml_uint(&mut header, &[0x42, 0xF2], 4, 1); // EBMLMaxIDLength
-    ebml_uint(&mut header, &[0x42, 0xF3], 8, 1); // EBMLMaxSizeLength
-    ebml_element(&mut header, &[0x42, 0x82], b"webm"); // DocType
-    ebml_uint(&mut header, &[0x42, 0x87], 4, 1); // DocTypeVersion
-    ebml_uint(&mut header, &[0x42, 0x85], 2, 1); // DocTypeReadVersion
-    ebml_element(&mut out, &[0x1A, 0x45, 0xDF, 0xA3], &header);
-
-    // Info: millisecond timecode scale.
-    let mut info = Vec::new();
-    ebml_uint(&mut info, &[0x2A, 0xD7, 0xB1], 1_000_000, 4); // TimecodeScale (ns per tick)
-    ebml_element(&mut info, &[0x4D, 0x80], b"shadowcat"); // MuxingApp
-    ebml_element(&mut info, &[0x57, 0x41], b"shadowcat"); // WritingApp
-
-    // Tracks: one audio track, A_OPUS.
-    let mut entry = Vec::new();
-    ebml_uint(&mut entry, &[0xD7], 1, 1); // TrackNumber
-    ebml_uint(&mut entry, &[0x73, 0xC5], 1, 4); // TrackUID
-    ebml_uint(&mut entry, &[0x83], 2, 1); // TrackType: 2 = audio (1 is video)
-    ebml_element(&mut entry, &[0x86], b"A_OPUS"); // CodecID
-    ebml_element(
-        &mut entry,
-        &[0x63, 0xA2],
-        &opus_head(channels, stream.pre_skip, source_rate),
-    );
-    // CodecDelay (ns) + SeekPreRoll (ns), per the Opus-in-WebM mapping.
-    let codec_delay_ns = stream.pre_skip as u64 * 1_000_000_000 / OPUS_TARGET_SAMPLE_RATE as u64;
-    ebml_uint(&mut entry, &[0x56, 0xAA], codec_delay_ns, 8);
-    ebml_uint(&mut entry, &[0x56, 0xBB], 80_000_000, 8);
-    let mut audio = Vec::new();
-    ebml_float(&mut audio, &[0xB5], OPUS_TARGET_SAMPLE_RATE as f64); // SamplingFrequency
-    ebml_uint(&mut audio, &[0x9F], channels as u64, 1); // Channels
-    ebml_element(&mut entry, &[0xE1], &audio);
-    let mut tracks = Vec::new();
-    ebml_element(&mut tracks, &[0xAE], &entry);
-
-    // Segment payload: Info + Tracks + one Cluster per WEBM_CLUSTER_FRAMES frames.
-    let mut segment = Vec::new();
-    ebml_element(&mut segment, &[0x15, 0x49, 0xA9, 0x66], &info);
-    ebml_element(&mut segment, &[0x16, 0x54, 0xAE, 0x6B], &tracks);
-    for (cluster_index, chunk) in stream.packets.chunks(WEBM_CLUSTER_FRAMES).enumerate() {
-        let base_ms = (cluster_index * WEBM_CLUSTER_FRAMES) as u64 * OPUS_FRAME_MS as u64;
-        let mut cluster = Vec::new();
-        ebml_uint(&mut cluster, &[0xE7], base_ms, 8); // Cluster Timecode
-        for (i, packet) in chunk.iter().enumerate() {
-            let mut block = Vec::new();
-            block.push(0x81); // track number 1 as a 1-byte vint
-            let rel_ms = (i * OPUS_FRAME_MS as usize) as i16;
-            block.extend_from_slice(&rel_ms.to_be_bytes());
-            block.push(0x80); // keyframe, no lacing
-            block.extend_from_slice(packet);
-            ebml_element(&mut cluster, &[0xA3], &block);
-        }
-        ebml_element(&mut segment, &[0x1F, 0x43, 0xB6, 0x75], &cluster);
-    }
-    ebml_element(&mut out, &[0x18, 0x53, 0x80, 0x67], &segment);
     Ok(out)
 }
 
@@ -562,6 +487,42 @@ fn untranscoded(content_type: &str, byte_size: i64, note: String) -> Processed {
         meta,
         converted: false,
     }
+}
+
+/// A source decoded, resampled and encoded: the Opus stream both containers are muxed from and
+/// the facts the container headers and the asset row need.
+struct Transcoded {
+    /// The encoded frames with their pre-skip and valid-sample count.
+    stream: OpusStream,
+    /// Channel count of the stream (1 or 2).
+    channels: u16,
+    /// The source's own sample rate, recorded as the `OpusHead` input rate and as
+    /// `AssetMeta.sample_rate`.
+    source_rate: u32,
+    /// Duration of the decoded source, seconds.
+    duration_secs: f64,
+}
+
+/// Decodes `staged`, resamples to 48 kHz and encodes it (BLOCKING). The `Err` is the
+/// `conversion_note` of the pass-through outcome: the source is unreadable, over the admission cap,
+/// or a stage failed. The one transcode both the import pipeline and the derivative upgrade sweep
+/// run, so a re-transcode of a stored original produces the encoding an import would.
+fn transcode(staged: &Path) -> Result<Transcoded, String> {
+    let decoded = decode_audio(staged).map_err(|e| format!("decode failed: {e}"))?;
+    if decoded.duration_secs > MAX_AUDIO_DURATION_SECS
+        || (decoded.samples.len() as u64) > MAX_AUDIO_SAMPLES
+    {
+        return Err("over-cap: duration or sample count".to_string());
+    }
+    let resampled = resample_to_target(&decoded).map_err(|e| format!("resample failed: {e}"))?;
+    let stream = encode_opus_frames(&resampled, decoded.channels)
+        .map_err(|e| format!("opus encode failed: {e}"))?;
+    Ok(Transcoded {
+        stream,
+        channels: decoded.channels,
+        source_rate: decoded.sample_rate,
+        duration_secs: decoded.duration_secs,
+    })
 }
 
 /// Process a staged audio upload (BLOCKING — decode/resample/encode are CPU-bound; the caller,
@@ -615,49 +576,28 @@ pub fn process_staged_audio(
     original_byte_size: i64,
     containers: AudioContainers,
 ) -> io::Result<Processed> {
-    let decoded = match decode_audio(staged) {
-        Ok(d) => d,
-        Err(e) => {
+    let transcoded = match transcode(staged) {
+        Ok(t) => t,
+        Err(note) => {
             return Ok(untranscoded(
                 original_content_type,
                 original_byte_size,
-                format!("decode failed: {e}"),
-            ));
-        }
-    };
-    if decoded.duration_secs > MAX_AUDIO_DURATION_SECS
-        || (decoded.samples.len() as u64) > MAX_AUDIO_SAMPLES
-    {
-        return Ok(untranscoded(
-            original_content_type,
-            original_byte_size,
-            "over-cap: duration or sample count".into(),
-        ));
-    }
-    let resampled = match resample_to_target(&decoded) {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(untranscoded(
-                original_content_type,
-                original_byte_size,
-                format!("resample failed: {e}"),
-            ));
-        }
-    };
-    let stream = match encode_opus_frames(&resampled, decoded.channels) {
-        Ok(s) => s,
-        Err(e) => {
-            return Ok(untranscoded(
-                original_content_type,
-                original_byte_size,
-                format!("opus encode failed: {e}"),
+                note,
             ));
         }
     };
     for (suffix, _content_type) in containers.siblings() {
         let bytes = match *suffix {
-            OPUS_SUFFIX => mux_ogg(&stream, decoded.channels, decoded.sample_rate),
-            _ => mux_webm(&stream, decoded.channels, decoded.sample_rate),
+            OPUS_SUFFIX => mux_ogg(
+                &transcoded.stream,
+                transcoded.channels,
+                transcoded.source_rate,
+            ),
+            _ => webm::mux_webm(
+                &transcoded.stream,
+                transcoded.channels,
+                transcoded.source_rate,
+            ),
         };
         let bytes = match bytes {
             Ok(b) => b,
@@ -679,8 +619,8 @@ pub fn process_staged_audio(
         content_type: original_content_type.to_string(), // canonical stays the arrived type
         byte_size: original_byte_size,                   // canonical bytes are unchanged
         meta: AssetMeta {
-            duration_ms: Some((decoded.duration_secs * 1000.0).round() as i64),
-            sample_rate: Some(decoded.sample_rate as i64),
+            duration_ms: Some((transcoded.duration_secs * 1000.0).round() as i64),
+            sample_rate: Some(transcoded.source_rate as i64),
             ..AssetMeta::unprocessed(original_content_type, original_byte_size)
         },
         converted: false, // the CANONICAL is untouched; only sibling derivatives were added
@@ -688,4 +628,4 @@ pub fn process_staged_audio(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

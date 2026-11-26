@@ -1,0 +1,11 @@
+{
+  "maxProximityCells": 1000,
+  "proximityWithin": { "accepted": [0.5, 1, 1000], "rejected": [0, -1, 1000.5] },
+  "templateAngle": { "accepted": [0.1, 90, 179.9], "rejected": [0, 180, 200, -5] },
+  "templateWidth": { "accepted": [0, 4, 1000], "rejected": [-1, -0.5] },
+  "ambientLevel": {
+    "override": { "accepted": [0, 0.5, 1], "rejected": [-0.1, 1.1, 2] },
+    "darken": { "accepted": [0, 0.5, 3], "rejected": [-0.1, -1] },
+    "brighten": { "accepted": [0, 0.5, 3], "rejected": [-0.1, -1] }
+  }
+}

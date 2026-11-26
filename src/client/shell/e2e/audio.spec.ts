@@ -1,35 +1,12 @@
 import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { buildSilentWav } from "../e2e-support/wav";
+import { latchAttributeMax } from "./attribute-latch";
 
-/** A minimal valid WAV (PCM16, mono, 8kHz, ~0.2s of silence) — small enough to keep the upload
- * fast, long enough for `symphonia`'s WAV decoder to report a non-zero `duration_ms` and for the
- * transport handler's elapsed-duration gate (`audio::transport::handle_transport`) to have
- * something to compare against. Mirrors the synthetic-WAV builder `process::audio`'s own
- * Rust-side tests use (`sample_rate`, `data`/`fmt ` chunk layout), reimplemented in JS since this
- * runs in the Playwright/Node process, not the server.
- * @param seconds Duration of silence to encode.
- * @returns The WAV file bytes.
- */
-function buildSilentWav(seconds: number): Buffer {
-  const sampleRate = 8000;
-  const numSamples = Math.round(sampleRate * seconds);
-  const dataSize = numSamples * 2; // 16-bit mono
-  const buf = Buffer.alloc(44 + dataSize);
-  buf.write("RIFF", 0, "ascii");
-  buf.writeUInt32LE(36 + dataSize, 4);
-  buf.write("WAVE", 8, "ascii");
-  buf.write("fmt ", 12, "ascii");
-  buf.writeUInt32LE(16, 16); // fmt chunk size
-  buf.writeUInt16LE(1, 20); // PCM
-  buf.writeUInt16LE(1, 22); // mono
-  buf.writeUInt32LE(sampleRate, 24);
-  buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
-  buf.writeUInt16LE(2, 32); // block align
-  buf.writeUInt16LE(16, 34); // bits per sample
-  buf.write("data", 36, "ascii");
-  buf.writeUInt32LE(dataSize, 40);
-  // Remaining bytes are already zero (`Buffer.alloc` zero-fills) — silence.
-  return buf;
-}
+/** The short silent WAV the upload tests use: PCM16, mono, 8kHz, about 0.2s — small enough to keep
+ * the upload fast, long enough for `symphonia`'s WAV decoder to report a non-zero `duration_ms` and
+ * for the transport handler's elapsed-duration gate (`audio::transport::handle_transport`) to have
+ * something to compare against. */
+const SHORT_WAV = buildSilentWav({ seconds: 0.2, sampleRate: 8000, channels: 1 });
 
 // Dual-session (GM + player), same rationale `combat-tracker.spec.ts`/`tables.spec.ts` state for
 // their own dual-session assertions: the server is the sole authority for what each recipient's
@@ -75,7 +52,7 @@ test("audio: GM uploads a track, creates a playlist, plays it, and a player sees
     await openPanel(gm, "asset-browser:panel");
     await gm
       .getByTestId("asset-upload-input")
-      .setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: buildSilentWav(0.2) });
+      .setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: SHORT_WAV });
     const tile = gm.getByTestId("asset-tile");
     await expect(tile).toHaveCount(1);
 
@@ -131,4 +108,56 @@ test("audio: GM uploads a track, creates a playlist, plays it, and a player sees
   } finally {
     await playerCtx.close();
   }
+});
+
+// The two playlist modes that start more than one entry or none-advancing entries. The silent track
+// lasts about 0.2s and is not looped, so each entry leaves `audio-state` on its own almost at once:
+// the live count is latched (`latchAttributeMax`) rather than polled, since a poll can straddle the
+// whole window and read 0 both times.
+test("audio: a simultaneous playlist starts every track at once and a soundboard track plays once then leaves", async ({
+  page,
+  account,
+}) => {
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
+  const worldName = `Audio Modes ${Date.now().toString(36)}`;
+
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill(worldName);
+  await page.getByRole("button", { name: "Create world" }).click();
+  await expect(page.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await openPanel(page, "asset-browser:panel");
+  await page.getByTestId("asset-upload-input").setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: SHORT_WAV });
+  await expect(page.getByTestId("asset-tile")).toHaveCount(1);
+
+  await openPanel(page, "audio:panel");
+  await page.getByTestId("audio-unlock").click();
+  await page.getByTestId("playlists-name").fill("Layers");
+  await page.getByTestId("playlists-create").click();
+  const sheet = page.getByRole("dialog", { name: "Sheet" });
+  await expect(sheet).toBeVisible({ timeout: 15_000 });
+  for (const n of [1, 2]) {
+    await sheet.getByTestId("playlist-add-track").click();
+    const pickDialog = page.getByTestId("asset-pick-dialog");
+    await expect(pickDialog).toBeVisible({ timeout: 15_000 });
+    await pickDialog.getByTestId("asset-tile").click();
+    await page.getByTestId("pick-confirm").click();
+    await expect(sheet.getByTestId("track-row")).toHaveCount(n);
+  }
+
+  const panel = page.getByTestId("audio-panel");
+  await sheet.getByTestId("playlist-mode").selectOption("simultaneous");
+  await page.getByTestId("playlists-search").fill("Layers");
+  await expect(page.getByTestId("playlist-row")).toHaveCount(1);
+  const layers = await latchAttributeMax(panel, "data-audio-playing");
+  await page.getByTestId("playlist-play-all").click();
+  await expect.poll(() => layers.max(), { timeout: 15_000 }).toBe(2);
+  await expect(panel).toHaveAttribute("data-audio-playing", "0", { timeout: 15_000 });
+
+  await sheet.getByTestId("playlist-mode").selectOption("soundboard");
+  await expect(sheet.getByTestId("track-trigger")).toHaveCount(2);
+  const shot = await latchAttributeMax(panel, "data-audio-playing");
+  await sheet.getByTestId("track-trigger").first().click();
+  await expect.poll(() => shot.max(), { timeout: 15_000 }).toBe(1);
+  await expect(panel).toHaveAttribute("data-audio-playing", "0", { timeout: 15_000 });
 });

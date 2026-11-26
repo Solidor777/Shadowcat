@@ -1,12 +1,13 @@
-//! Ingress-guard integration test: a client `Intent` that authors a `message`
-//! doc directly (bypassing `SendMessage`) is rejected, never reaching
-//! `apply_intent` — the security half of server-authoritative chat ingest.
+//! Ingress-guard integration test: a client `Intent` that authors a `message` doc directly
+//! (bypassing `SendMessage`) is rejected.
+//!
+//! The intent is never forwarded to `apply_intent` — the security half of server-authoritative chat ingest.
 //! Harness mirrors `ws_convergence`'s `spawn`/`connect`/`intent_msg` pattern.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use shadowcat::auth::password::hash_password;
 use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
@@ -44,6 +45,13 @@ async fn spawn() -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash: Arc::new(shadowcat::trash::Trash::new(
+            std::env::temp_dir(),
+            shadowcat::trash::TrashRetention::Disabled,
+        )),
     };
     let app = http::router(state).await;
 
@@ -156,7 +164,7 @@ fn create_message_op(world: Uuid, doc_id: Uuid) -> serde_json::Value {
 async fn client_authored_message_create_is_rejected() {
     let h = spawn().await;
     let mut ws = h.connect().await;
-    let _ = ws.next().await; // Welcome
+    shadowcat_test_support::drain_until_type(&mut ws, "welcome").await;
 
     let doc_id = test_doc_id(9000);
     ws.send(intent_msg(
@@ -166,12 +174,9 @@ async fn client_authored_message_create_is_rejected() {
     .await
     .unwrap();
 
-    // Expect exactly a reject frame, never an authored event.
-    let Ok(Some(Ok(m))) = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
-    else {
-        panic!("no frame received");
-    };
-    let frame: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+    // Expect a reject frame, never an authored event. The connection's own `presence` frame
+    // can arrive before or after the reply, so it is skipped.
+    let frame = shadowcat_test_support::next_non_presence_frame(&mut ws).await;
     assert_eq!(frame["type"], "reject");
     assert_eq!(frame["reason"], "forbidden");
 

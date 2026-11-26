@@ -1,3 +1,13 @@
+//! These tests drive the link-preview enrich stage through the ingest path.
+//!
+//! They call `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`,
+//! against a real stub `axum` target on `127.0.0.1`. The fixture builds its client through
+//! `link_preview::build_client_with_resolve_fn` with a resolver closure that answers every host
+//! with the loopback address, so a host name such as `stub.test` reaches the stub. They live in
+//! their own `mod` (not folded into `chat::tests`) because the link-preview tests need a stub
+//! server and a hyperlink-enabling policy (`hyperlinks_on`) that `chat::tests` does not set up.
+//! The same fixture also drives the oEmbed segment tests and the per-channel dice-mode tests.
+
 use super::*;
 use crate::auth::role::ServerRole;
 use crate::data::document::WorldRole;
@@ -9,10 +19,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Spawns a stub HTTP target on a random loopback port, returning the
 /// port. Mirrors `link_preview`'s own `spawn_stub` test helper. Callers address it
-/// via the fake domain `stub.test` (never a literal `127.0.0.1` URL,
+/// through a domain such as `stub.test` (never a literal `127.0.0.1` URL,
 /// which `validate_url` blocks unconditionally regardless of any
-/// loopback allowance) — `Fixture::new`'s client resolves that name to
-/// this stub's real loopback IP.
+/// loopback allowance) — `Fixture::new`'s client resolves every host name to
+/// the loopback IP this stub binds.
 async fn spawn_stub(router: Router) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -94,10 +104,10 @@ impl Fixture {
             room,
             ctx,
             rate: PingRateLimiter::new(),
-            // Maps the fake domain `stub.test` to real loopback — the
-            // ONLY way to reach a `127.0.0.1`-bound stub, since
-            // `validate_url` rejects a literal `127.0.0.1` host outright
-            // regardless of any loopback allowance (see that fn's doc).
+            // Resolves every host name to real loopback, so a domain such as `stub.test`
+            // reaches a `127.0.0.1`-bound stub; a literal `127.0.0.1` URL cannot, since
+            // `validate_url` rejects that host outright regardless of any loopback allowance
+            // (see that fn's doc).
             preview_client: link_preview::build_client_with_resolve_fn(|_host| {
                 Ok(vec!["127.0.0.1".parse().unwrap()])
             }),
@@ -141,6 +151,7 @@ impl Fixture {
             content.into(),
             None,
             Audience::Public,
+            None,
         )
         .await
         .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -206,6 +217,7 @@ impl Fixture {
             content.into(),
             None,
             Audience::Public,
+            None,
         )
         .await
         .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -322,6 +334,114 @@ async fn page_with_og_image_yields_a_pending_image_job_and_no_asset_id_yet() {
         }
         other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
     }
+}
+
+// Fails if `enrich` queues a `PreviewImage` job without charging the per-user fetch budget:
+// the cached preview then re-queues its image fetch with the budget spent.
+#[tokio::test]
+async fn a_cached_preview_charges_the_fetch_budget_for_its_image_job() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Hello</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let body = format!("check out [link](http://stub.test:{addr}/)");
+
+    let (_, first) = f.send_full(&body, 1).await.unwrap();
+    assert_eq!(
+        first.len(),
+        1,
+        "control: a fresh preview queues its image job"
+    );
+
+    // Spend what is left of the budget inside the same window.
+    while f
+        .preview_rate
+        .check(f.ctx.user_id, 1, PREVIEW_FETCH_PER_MIN)
+    {}
+
+    let (_, second) = f.send_full(&body, 2).await.unwrap();
+    assert!(
+        second.is_empty(),
+        "a cached preview must not re-queue its image fetch past the budget, got {second:?}"
+    );
+}
+
+#[tokio::test]
+async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candidate() {
+    let addr = spawn_stub(
+        Router::new()
+            .route(
+                "/start",
+                get(|| async { axum::response::Redirect::to("/final") }),
+            )
+            .route(
+                "/final",
+                get(|| async {
+                    axum::response::Html(
+                        r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                    )
+                }),
+            ),
+    )
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let candidate = format!("http://stub.test:{addr}/start");
+    let (cmd, pending) = f
+        .send_full(&format!("check out [link]({candidate})"), 1)
+        .await
+        .unwrap();
+    let PendingEnrichment::PreviewImage {
+        cache_urls,
+        preview_url,
+        title,
+        description,
+        ..
+    } = &pending[0]
+    else {
+        panic!("expected a PreviewImage job, got {:?}", pending[0]);
+    };
+    assert_eq!(*cache_urls, vec![candidate.clone()]);
+    assert!(
+        preview_url.ends_with("/final"),
+        "the segment url is the post-redirect address, got {preview_url}"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    match sys.content.last() {
+        Some(Segment::LinkPreview {
+            url,
+            title: segment_title,
+            description: segment_description,
+            ..
+        }) => {
+            assert_eq!(url, preview_url);
+            assert_eq!(segment_title, title);
+            assert_eq!(segment_description, description);
+            assert_eq!(title, "Landed");
+        }
+        other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
+    }
+    assert!(
+        f.repo
+            .get_link_preview_cache(f.room.world_id, &cache_urls[0])
+            .await
+            .unwrap()
+            .is_some(),
+        "the persisted row is keyed on the posted candidate"
+    );
+    assert_eq!(
+        f.repo
+            .get_link_preview_cache(f.room.world_id, preview_url)
+            .await
+            .unwrap(),
+        None,
+        "no row exists under the post-redirect address"
+    );
 }
 
 #[tokio::test]
@@ -555,6 +675,51 @@ async fn edit_re_derives_preview_from_new_content() {
         "an edit removing the link must drop the stale preview: {:?}",
         sys_after.content
     );
+}
+
+/// An edit's preview fetch is cached under the room's world, not under another world or the nil
+/// world.
+#[tokio::test]
+async fn edit_caches_its_preview_under_the_rooms_world_only() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async { axum::response::Html("<title>Edited</title>") }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let other_world = f.repo.create_world("other", 0).await.unwrap().id;
+    let sent = f.send("no links yet", 1).await.unwrap();
+    let doc_id = match &sent.ops[0] {
+        Operation::Create { doc } => doc.id,
+        _ => unreachable!(),
+    };
+    let url = format!("http://stub.test:{addr}/");
+
+    f.edit(doc_id, &format!("now [link]({url})"), 2)
+        .await
+        .unwrap();
+
+    let row = f
+        .repo
+        .get_link_preview_cache(f.room.world_id, &url)
+        .await
+        .unwrap();
+    assert_eq!(
+        row.expect("row under the room's world").title.as_deref(),
+        Some("Edited")
+    );
+    assert!(f
+        .repo
+        .get_link_preview_cache(other_world, &url)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(f
+        .repo
+        .get_link_preview_cache(Uuid::nil(), &url)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
@@ -810,4 +975,338 @@ async fn oembed_and_generic_preview_urls_in_one_message_both_queue_correctly() {
     let (url, title) = generic_preview.unwrap();
     assert!(url.contains(&addr.to_string()));
     assert_eq!(title, "Generic");
+}
+
+#[tokio::test]
+async fn unnormalized_candidate_without_a_redirect_keys_its_job_on_the_candidate() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Bare</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let candidate = format!("http://stub.test:{addr}");
+    let (cmd, pending) = f
+        .send_full(&format!("check out [link]({candidate})"), 1)
+        .await
+        .unwrap();
+    let PendingEnrichment::PreviewImage {
+        cache_urls,
+        preview_url,
+        ..
+    } = &pending[0]
+    else {
+        panic!("expected a PreviewImage job, got {:?}", pending[0]);
+    };
+    assert_eq!(*cache_urls, vec![candidate.clone()]);
+    assert_eq!(
+        *preview_url,
+        format!("{candidate}/"),
+        "the fetch reports the normalized address, which gains the root path"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    match sys.content.last() {
+        Some(Segment::LinkPreview { url, .. }) => assert_eq!(url, preview_url),
+        other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
+    }
+    assert!(
+        f.repo
+            .get_link_preview_cache(f.room.world_id, &candidate)
+            .await
+            .unwrap()
+            .is_some(),
+        "the persisted row is keyed on the candidate as posted"
+    );
+    assert_eq!(
+        f.repo
+            .get_link_preview_cache(f.room.world_id, preview_url)
+            .await
+            .unwrap(),
+        None,
+        "no row exists under the normalized address"
+    );
+}
+
+#[tokio::test]
+async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
+    let addr = spawn_stub(
+        Router::new()
+            .route(
+                "/a",
+                get(|| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    axum::response::Redirect::to("/final")
+                }),
+            )
+            .route(
+                "/b",
+                get(|| async { axum::response::Redirect::to("/final") }),
+            )
+            .route(
+                "/final",
+                get(|| async {
+                    axum::response::Html(
+                        r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                    )
+                }),
+            ),
+    )
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let first = format!("http://stub.test:{addr}/a");
+    let second = format!("http://stub.test:{addr}/b");
+    let (cmd, pending) = f
+        .send_full(&format!("see [one]({first}) and [two]({second})"), 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "candidates ending on one address share a job"
+    );
+    let PendingEnrichment::PreviewImage {
+        cache_urls,
+        preview_url,
+        ..
+    } = &pending[0]
+    else {
+        panic!("expected a PreviewImage job, got {:?}", pending[0]);
+    };
+    assert_eq!(
+        *cache_urls,
+        vec![first.clone(), second.clone()],
+        "message order, though the second candidate's fetch completes first"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    let urls: Vec<&String> = sys
+        .content
+        .iter()
+        .filter_map(|seg| match seg {
+            Segment::LinkPreview { url, .. } => Some(url),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(urls, vec![preview_url, preview_url]);
+    for candidate in [&first, &second] {
+        assert!(
+            f.repo
+                .get_link_preview_cache(f.room.world_id, candidate)
+                .await
+                .unwrap()
+                .is_some(),
+            "the persisted row of {candidate} is keyed on the candidate"
+        );
+    }
+}
+
+#[tokio::test]
+async fn fetched_previews_append_in_message_order_not_completion_order() {
+    let addr = spawn_stub(
+        Router::new()
+            .route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    axum::response::Html("<title>Slow</title>")
+                }),
+            )
+            .route(
+                "/fast",
+                get(|| async { axum::response::Html("<title>Fast</title>") }),
+            ),
+    )
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let slow = format!("http://stub.test:{addr}/slow");
+    let fast = format!("http://stub.test:{addr}/fast");
+    let (cmd, _pending) = f
+        .send_full(&format!("see [one]({slow}) and [two]({fast})"), 1)
+        .await
+        .unwrap();
+    let sys = f.stored_engine(&cmd).await;
+    let titles: Vec<&str> = sys
+        .content
+        .iter()
+        .filter_map(|seg| match seg {
+            Segment::LinkPreview { title, .. } => Some(title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, vec!["Slow", "Fast"]);
+}
+
+/// Seeds an asset row and a fresh persisted cache row for `known_url` carrying that asset, so the
+/// url resolves from the persisted tier with an `image_asset_id`.
+async fn seed_imaged_row(f: &Fixture, known_url: &str) -> Uuid {
+    let asset = crate::data::asset::Asset {
+        id: Uuid::new_v4(),
+        world_id: f.room.world_id,
+        storage_key: "k".into(),
+        original_name: "og.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 1,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    };
+    f.repo.insert_asset(&asset).await.unwrap();
+    f.repo
+        .upsert_link_preview_cache(f.room.world_id, known_url, Some("Landed"), Some("D"), 0)
+        .await
+        .unwrap();
+    f.repo
+        .set_link_preview_cache_image(f.room.world_id, known_url, asset.id)
+        .await
+        .unwrap();
+    asset.id
+}
+
+/// A persisted-row candidate that already carries an asset and a fresh candidate whose fetch
+/// ends on the persisted candidate's address are the same preview: no job is queued, both
+/// segments carry the known asset, and the fresh candidate's row records it, in either message
+/// order.
+#[tokio::test]
+async fn fresh_candidate_ending_on_a_persisted_imaged_address_reuses_its_asset() {
+    for known_first in [true, false] {
+        let addr = spawn_stub(
+            Router::new()
+                .route(
+                    "/q",
+                    get(|| async { axum::response::Redirect::to("/final") }),
+                )
+                .route(
+                    "/final",
+                    get(|| async {
+                        axum::response::Html(
+                            r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                        )
+                    }),
+                ),
+        )
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let known = format!("http://stub.test:{addr}/final");
+        let fresh = format!("http://stub.test:{addr}/q");
+        let asset_id = seed_imaged_row(&f, &known).await;
+        let body = if known_first {
+            format!("see [one]({known}) and [two]({fresh})")
+        } else {
+            format!("see [two]({fresh}) and [one]({known})")
+        };
+        let (cmd, pending) = f.send_full(&body, 1).await.unwrap();
+        assert!(
+            pending.is_empty(),
+            "no image job when the address already has an asset: {pending:?}"
+        );
+        let sys = f.stored_engine(&cmd).await;
+        let ids: Vec<Option<Uuid>> = sys
+            .content
+            .iter()
+            .filter_map(|seg| match seg {
+                Segment::LinkPreview { image_asset_id, .. } => Some(*image_asset_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![Some(asset_id), Some(asset_id)]);
+        let row = f
+            .repo
+            .get_link_preview_cache(f.room.world_id, &fresh)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.image_asset_id, Some(asset_id));
+    }
+}
+
+/// A preview cached in memory by an earlier message reads the asset a background job has since
+/// recorded on its persisted row: the later message carries the asset and queues no job.
+#[tokio::test]
+async fn memory_cached_preview_reads_an_asset_recorded_on_its_row_since() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let link = format!("http://stub.test:{addr}/");
+    let (_, first) = f.send_full(&format!("see [one]({link})"), 1).await.unwrap();
+    assert_eq!(first.len(), 1, "the fresh fetch queues the image job");
+    let asset_id = seed_imaged_row(&f, &link).await;
+    let (cmd, second) = f
+        .send_full(&format!("again [one]({link})"), 2)
+        .await
+        .unwrap();
+    assert!(
+        second.is_empty(),
+        "the row already holds the asset: {second:?}"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    assert!(
+        matches!(
+            sys.content.last(),
+            Some(Segment::LinkPreview { image_asset_id: Some(id), .. }) if *id == asset_id
+        ),
+        "the segment carries the recorded asset: {:?}",
+        sys.content
+    );
+}
+
+/// A persisted candidate without an asset and a fresh candidate ending on its address share one
+/// job whose `cache_urls` lists both candidates in message order, so the fetched asset lands on
+/// the persisted candidate's row too.
+#[tokio::test]
+async fn fresh_candidate_ending_on_a_persisted_unimaged_address_shares_its_job() {
+    for persisted_first in [true, false] {
+        let addr = spawn_stub(
+            Router::new()
+                .route(
+                    "/q",
+                    get(|| async { axum::response::Redirect::to("/final") }),
+                )
+                .route(
+                    "/final",
+                    get(|| async {
+                        axum::response::Html(
+                            r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                        )
+                    }),
+                ),
+        )
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let persisted = format!("http://stub.test:{addr}/final");
+        let fresh = format!("http://stub.test:{addr}/q");
+        f.repo
+            .upsert_link_preview_cache(f.room.world_id, &persisted, Some("Landed"), Some("D"), 0)
+            .await
+            .unwrap();
+        let body = if persisted_first {
+            format!("see [one]({persisted}) and [two]({fresh})")
+        } else {
+            format!("see [two]({fresh}) and [one]({persisted})")
+        };
+        let (_, pending) = f.send_full(&body, 1).await.unwrap();
+        assert_eq!(pending.len(), 1, "one shared job: {pending:?}");
+        let PendingEnrichment::PreviewImage { cache_urls, .. } = &pending[0] else {
+            panic!("expected a PreviewImage job, got {:?}", pending[0]);
+        };
+        let expected = if persisted_first {
+            vec![persisted.clone(), fresh.clone()]
+        } else {
+            vec![fresh.clone(), persisted.clone()]
+        };
+        assert_eq!(*cache_urls, expected);
+    }
 }

@@ -1,5 +1,8 @@
+import { renameSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "vitest";
-import { scanInlineTests, isRustSource } from "./check-inline-tests.mjs";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
+import { scanInlineTests } from "./check-inline-tests.mjs";
 
 test("a braced test module body is a violation", () => {
   const src = "fn a() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n";
@@ -37,9 +40,31 @@ test("two modules in one file are both reported", () => {
   expect(scanInlineTests(src).map((v) => v.module)).toEqual(["a", "b"]);
 });
 
-test("isRustSource covers tracked .rs under src only", () => {
-  expect(isRustSource("src/server/src/lib.rs")).toBe(true);
-  expect(isRustSource("src\\server\\build.rs")).toBe(true);
-  expect(isRustSource("scripts/x.mjs")).toBe(false);
-  expect(isRustSource("target/debug/build/x.rs")).toBe(false);
+// The corpus is the repository file list: an untracked, non-ignored Rust file is scanned before it
+// is added to git, an ignored one never, and a tracked file deleted in the working tree is not read.
+const GATE = "scripts/check-inline-tests.mjs";
+const INLINE = "#[cfg(test)]\nmod tests {\n}\n";
+
+test("an untracked Rust file with an inline test module fails the gate before git add", () => {
+  const dir = makeRepo({ "src/a/lib.rs": "fn a() {}\n", "src/a/new.rs": INLINE }, ["src/a/lib.rs"]);
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("src/a/new.rs");
+});
+
+test("the same file under an ignored path passes", () => {
+  const dir = makeRepo(
+    { ".gitignore": "ignored/\n", "src/a/lib.rs": "fn a() {}\n", "src/a/ignored/new.rs": INLINE },
+    [".gitignore", "src/a/lib.rs"],
+  );
+  expect(runScriptIn(dir, GATE).status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT", () => {
+  const dir = makeRepo({ "src/a/lib.rs": "fn a() {}\n", "src/a/gone.rs": "fn g() {}\n" });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "a", "gone.rs"), join(dir, "gone-aside.rs"));
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
 });

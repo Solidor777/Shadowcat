@@ -1,8 +1,12 @@
-//! Throwaway WS server for manual/external clients and the Node<->Rust e2e
-//! harness. In-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one
-//! world, a player-owned document, and a declarative capability requirement on
-//! `/engine/vision`. Prints the bind address and a machine-readable
-//! `e2e-fixture:` JSON line the harness parses.
+//! This throwaway WS server serves manual/external clients and the Node<->Rust e2e harness.
+//!
+//! The server runs on an in-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one world, a
+//! player-owned document, and a declarative capability requirement on `/engine/vision`. It prints
+//! the bind address and a machine-readable `e2e-fixture:` JSON line the harness parses.
+//!
+//! The fixture credentials are fixed and public, so `--bind` accepts only a specific interface
+//! address (loopback or one assigned to this machine); a wildcard address (`0.0.0.0`, `::`) is
+//! refused because it would expose those credentials on every network the machine is attached to.
 //!
 //! # Examples
 //!
@@ -34,16 +38,36 @@ use uuid::Uuid;
 
 use clap::Parser;
 
-/// `--modules-dir <path>`: overrides the modules folder the embedded router
-/// scans/serves from (default: none installed). Lets the Node<->Rust e2e
-/// harness — and an external module repo's own smoke script — point a
-/// fresh `test_server` at a fixture-populated temp folder without touching the
-/// hardcoded in-memory fixture data below.
+/// Command-line arguments. `--modules-dir <path>` overrides the modules folder the embedded
+/// router scans/serves from (default: none installed), letting the Node<->Rust e2e harness — and
+/// an external module repo's own smoke script — point a fresh `test_server` at a
+/// fixture-populated temp folder without touching the hardcoded in-memory fixture data below.
+/// The remaining flags select the listen address and the built-in HTTPS behaviour, mirroring the
+/// production `Config` keys of the same names, so the browser suite can drive the server over
+/// both schemes on a real (non-loopback) interface address.
 #[derive(Parser, Debug, Default)]
 struct Args {
     /// Modules folder the embedded router scans/serves; `None` = none installed.
     #[arg(long)]
     modules_dir: Option<String>,
+    /// Listen address (`host:port`); default an ephemeral loopback port.
+    #[arg(long)]
+    bind: Option<String>,
+    /// Built-in HTTPS mode (`auto` | `off`).
+    #[arg(long, value_enum)]
+    tls: Option<shadowcat::config::TlsMode>,
+    /// Opt-in HSTS `max-age` seconds.
+    #[arg(long)]
+    hsts_max_age_secs: Option<u64>,
+    /// Operator certificate chain (PEM), pairs with `--tls-key`.
+    #[arg(long)]
+    tls_cert: Option<String>,
+    /// Operator private key (PEM), pairs with `--tls-cert`.
+    #[arg(long)]
+    tls_key: Option<String>,
+    /// Subpath to mount the whole server under (`Config.route_prefix`), normalized the same way.
+    #[arg(long)]
+    route_prefix: Option<String>,
 }
 
 #[tokio::main]
@@ -54,6 +78,36 @@ async fn main() -> anyhow::Result<()> {
     if let Some(dir) = args.modules_dir {
         config.modules_dir = Some(dir);
     }
+    config.bind = args.bind.unwrap_or_else(|| "127.0.0.1:0".into());
+    let requested: std::net::SocketAddr = config.bind.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "--bind {:?} must be an IP:port socket address: {e}",
+            config.bind
+        )
+    })?;
+    anyhow::ensure!(
+        !requested.ip().to_canonical().is_unspecified(),
+        "--bind {}: refused. test_server serves the fixed credentials gm/pw and pl/pw, so it must not listen on every interface; bind a specific interface address (127.0.0.1 or this machine's LAN address)",
+        config.bind
+    );
+    config.db = "sqlite::memory:".into();
+    // The harness spawns this server with the repository root as its working directory, where an
+    // in-memory database resolves the trash to `./trash`. A disabled trash removes at once and
+    // never creates that directory.
+    config.trash_retention = shadowcat::trash::TrashRetention::Disabled;
+    if let Some(mode) = args.tls {
+        config.tls = mode;
+    }
+    config.hsts_max_age_secs = args.hsts_max_age_secs;
+    config.tls_cert = args.tls_cert;
+    config.tls_key = args.tls_key;
+    if let Some(raw) = args.route_prefix {
+        config.route_prefix =
+            shadowcat::config::normalize_route_prefix(&raw).map_err(anyhow::Error::msg)?;
+    }
+    config.validate_tls()?;
+    shadowcat::tls::install_default_provider();
+    let tls = shadowcat::tls::TlsRuntime::start(&config);
     let repo = Arc::new(
         SqliteRepository::connect("sqlite::memory:")
             .await?
@@ -169,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    let trash = Arc::new(shadowcat::trash::Trash::from_config(&config));
     let state = AppState {
         repo,
         config: Arc::new(config),
@@ -180,14 +235,32 @@ async fn main() -> anyhow::Result<()> {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
+        tls: tls.clone(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
+        trash,
     };
     shadowcat::http::assets::uploads::spawn_sweeper(
         state.uploads.clone(),
         state.upload_rate.clone(),
+        state.trash.clone(),
     );
+    let config = state.config.clone();
     let app = http::router(state).await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+    let tcp = tokio::net::TcpListener::bind(&config.bind).await?;
+    let addr = tcp.local_addr()?;
+    // The same raise-then-fit `main` runs, so the browser-suite server never serves under a
+    // descriptor budget the production binary would not accept (`fd_budget::raise_and_fit`).
+    let (sniff_limits, conn_limits) = shadowcat::fd_budget::raise_and_fit(
+        shadowcat::tls::listener::Limits::default(),
+        http::conn_serve::ConnLimits::for_config(&config),
+    );
+    let listener = shadowcat::tls::listener::SniffListener::new(
+        tcp,
+        tls.clone(),
+        config.clone(),
+        sniff_limits,
+    );
     tracing::info!(%addr, world = %world.id, "test_server listening (gm/pw, pl/pw)");
     println!(
         "test_server: http://{addr}  world={}  login gm/pw or pl/pw",
@@ -200,10 +273,12 @@ async fn main() -> anyhow::Result<()> {
             "world": world.id, "doc": doc.id, "gm": gm, "player": player
         })
     );
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
-    Ok(())
+    println!(
+        "test_server-tls: {}",
+        serde_json::json!({ "enabled": tls.status().enabled, "url": format!("https://{addr}") })
+    );
+    let end =
+        http::conn_serve::serve_router(listener, app, std::future::pending(), conn_limits, || {})
+            .await;
+    anyhow::bail!("test_server stopped serving: {end:?}")
 }

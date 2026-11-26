@@ -1,3 +1,8 @@
+//! This module classifies a margin against a tier ladder.
+//!
+//! `oriented_margin` orients a margin by `Direction`, and `classify` maps a margin and a tier list
+//! to a pass/fail result or the matching tier.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -28,6 +33,7 @@ pub struct Classification {
 
 /// Orient a scalar-vs-reference difference so "better" is always more positive.
 /// HighWins: higher scalar is better. LowWins (roll-under): lower scalar is better.
+/// The difference saturates at the `i64` bounds.
 ///
 /// # Examples
 ///
@@ -41,8 +47,8 @@ pub struct Classification {
 /// ```
 pub fn oriented_margin(direction: Direction, scalar: i64, reference: i64) -> i64 {
     match direction {
-        Direction::HighWins => scalar - reference,
-        Direction::LowWins => reference - scalar,
+        Direction::HighWins => scalar.saturating_sub(reference),
+        Direction::LowWins => reference.saturating_sub(scalar),
     }
 }
 
